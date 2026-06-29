@@ -1,0 +1,25 @@
+Package: qio
+Title: Read and Write 'Apache Parquet' Files
+Version: 0.0.0.9000
+Authors@R: c(
+    person("Pedro", "Baltazar", email = "pedrobtz@gmail.com",
+           role = c("aut", "cre", "cph")),
+    person("Johan HG", "Natter", role = "cph",
+           comment = "carquet source code (MIT license)"),
+    person("Yann", "Collet", role = "cph",
+           comment = "LZ4 source code (BSD-2-Clause license)"),
+    person("Meta Platforms, Inc. and affiliates", role = "cph",
+           comment = "Zstandard source code (BSD-3-Clause license)"))
+Description: Read and write files in the 'Apache Parquet' columnar storage
+    format. Provides a native interface built on the fast C-based 'carquet'
+    library. Bundles its C dependencies to avoid external runtime library
+    requirements other than system 'zlib'.
+License: MIT + file LICENSE
+Encoding: UTF-8
+SystemRequirements: GNU make, zlib
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 8.0.0
+Suggests: 
+    testthat (>= 3.0.0),
+    withr
+Config/testthat/edition: 3

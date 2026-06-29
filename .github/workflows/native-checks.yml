@@ -1,0 +1,27 @@
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+name: native-checks
+
+# The reusable workflows declare `permissions: read-all`; a called workflow
+# cannot request more than the caller grants, so grant read-all here. (Repos
+# with a restricted default GITHUB_TOKEN need this explicitly.)
+permissions: read-all
+
+jobs:
+  sanitizers:
+    uses: pedrobtz/r-actions/.github/workflows/sanitizers.yml@main
+
+  valgrind:
+    uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@main
+
+  lto:
+    uses: pedrobtz/r-actions/.github/workflows/lto.yml@main
+
+  gctorture:
+    uses: pedrobtz/r-actions/.github/workflows/gctorture.yml@main
+
+  rchk:
+    uses: pedrobtz/r-actions/.github/workflows/rchk.yml@main
