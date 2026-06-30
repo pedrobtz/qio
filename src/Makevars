@@ -1,5 +1,5 @@
 # Makevars for qio — builds the vendored carquet, zstd and lz4 sources.
-# See src/VENDORED.md for what is bundled and at which versions.
+# See tools/VENDORED.md for what is bundled and at which versions.
 #
 # Requires GNU make (declared via SystemRequirements in DESCRIPTION) for the
 # wildcard/shell logic below.

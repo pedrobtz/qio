@@ -1,2 +1,17 @@
+# RStudio / R session
 .Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# Compiled objects and shared libraries
+*.o
+*.so
+*.dll
+*.dylib
+*.a
+
+# R package build / check output
+*.tar.gz
+*.Rcheck/
 docs

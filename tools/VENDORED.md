@@ -1,14 +1,15 @@
 # Vendored source code
 
 This package bundles ("vendors") the C source of its dependencies so it builds
-without external libraries (except system zlib). Do not edit vendored files in
-place — re-vendor from upstream at the pinned version instead.
+without external libraries (except system zlib). The bundled sources live under
+`src/`. Do not edit vendored files in place — re-vendor from upstream at the
+pinned version instead.
 
 | Library | Version | Commit | Source | Retrieved | License |
 |---------|---------|--------|--------|-----------|---------|
-| carquet | v0.6.0  | `06efab6dce5475a7faa86f0938d42e9078b6d440` | https://github.com/Vitruves/carquet | 2026-06-29 | MIT (`carquet/LICENSE`) |
-| zstd    | v1.5.7  | `f8745da6ff1ad1e7bab384bd1f9d742439278e99` | https://github.com/facebook/zstd | 2026-06-29 | BSD-3-Clause (`zstd/LICENSE`) |
-| lz4     | v1.10.0 | `ebb370ca83af193212df4dcbadcc5d87bc0de2f0` | https://github.com/lz4/lz4 | 2026-06-29 | BSD-2-Clause (`lz4/LICENSE`) |
+| carquet | v0.6.0  | `06efab6dce5475a7faa86f0938d42e9078b6d440` | https://github.com/Vitruves/carquet | 2026-06-29 | MIT (`src/carquet/LICENSE`) |
+| zstd    | v1.5.7  | `f8745da6ff1ad1e7bab384bd1f9d742439278e99` | https://github.com/facebook/zstd | 2026-06-29 | BSD-3-Clause (`src/zstd/LICENSE`) |
+| lz4     | v1.10.0 | `ebb370ca83af193212df4dcbadcc5d87bc0de2f0` | https://github.com/lz4/lz4 | 2026-06-29 | BSD-2-Clause (`src/lz4/LICENSE`) |
 
 System `zlib` is used for the gzip codec and is not vendored (it is universally
 available; on Windows it is supplied by Rtools).
@@ -17,9 +18,9 @@ available; on Windows it is supplied by Rtools).
 
 The library sources only. Copied from the upstream tree:
 
-- `include/carquet/` → `carquet/carquet/` (public headers)
+- `include/carquet/` → `src/carquet/carquet/` (public headers)
 - `src/{compression,core,encoding,metadata,reader,simd,thrift,util,writer}/`
-  → `carquet/<same>/`
+  → `src/carquet/<same>/`
 
 Excluded: `src/cli/`, `tests/`, `benchmark/`, `profiling/`, `fuzz/`, `interop/`,
 `examples/`, `docs/`, and all build-system files.
