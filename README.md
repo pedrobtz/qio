@@ -1,9 +1,5 @@
 # qio
 
-<!-- badges: start -->
-[![R-CMD-check](https://github.com/pedrobtz/qio/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/pedrobtz/qio/actions/workflows/R-CMD-check.yaml)
-<!-- badges: end -->
-
 `qio` reads and writes Apache Parquet files from R. It uses the fast,
 C-based `carquet` library.
 

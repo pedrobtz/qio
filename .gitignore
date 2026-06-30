@@ -15,3 +15,6 @@
 *.tar.gz
 *.Rcheck/
 docs
+
+# GitHub Actions logs/artifacts (tools/check-actions.sh)
+.logs/

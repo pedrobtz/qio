@@ -10,9 +10,12 @@ ext <- function(name) test_path("parquet", name)
 
 test_that("external fixtures are present and look like Parquet", {
   files <- c(
-    "alltypes_plain.parquet", "alltypes_plain.snappy.parquet",
-    "alltypes_dictionary.parquet", "int96_from_spark.parquet",
-    "datapage_v2.snappy.parquet", "nested_maps.snappy.parquet",
+    "alltypes_plain.parquet",
+    "alltypes_plain.snappy.parquet",
+    "alltypes_dictionary.parquet",
+    "int96_from_spark.parquet",
+    "datapage_v2.snappy.parquet",
+    "nested_maps.snappy.parquet",
     "nullable.impala.parquet"
   )
   for (f in files) {
@@ -28,8 +31,12 @@ test_that("external fixtures are present and look like Parquet", {
 # --- INT96 timestamps: not yet supported -----------------------------------
 # alltypes_* carry an INT96 `timestamp_col`; int96_from_spark is all-INT96.
 test_that("INT96 timestamp columns are rejected with a clear error", {
-  for (f in c("alltypes_plain.parquet", "alltypes_plain.snappy.parquet",
-              "alltypes_dictionary.parquet", "int96_from_spark.parquet")) {
+  for (f in c(
+    "alltypes_plain.parquet",
+    "alltypes_plain.snappy.parquet",
+    "alltypes_dictionary.parquet",
+    "int96_from_spark.parquet"
+  )) {
     expect_error(read_parquet(ext(f)), "unsupported physical type", info = f)
   }
 })

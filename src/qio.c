@@ -33,6 +33,8 @@
 #include <Rinternals.h>
 #include <R_ext/Rdynload.h>
 
+#include "qio_file.h"
+
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
@@ -434,6 +436,17 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
 static const R_CallMethodDef CallEntries[] = {
     {"qio_read_parquet",  (DL_FUNC)&qio_read_parquet,  1},
     {"qio_write_parquet", (DL_FUNC)&qio_write_parquet, 3},
+    {"qio_parquet_open", (DL_FUNC)&qio_parquet_open, 4},
+    {"qio_parquet_close", (DL_FUNC)&qio_parquet_close, 1},
+    {"qio_parquet_is_open", (DL_FUNC)&qio_parquet_is_open, 1},
+    {"qio_parquet_path", (DL_FUNC)&qio_parquet_path, 1},
+    {"qio_parquet_dim", (DL_FUNC)&qio_parquet_dim, 1},
+    {"qio_parquet_names", (DL_FUNC)&qio_parquet_names, 1},
+    {"qio_parquet_schema", (DL_FUNC)&qio_parquet_schema, 1},
+    {"qio_parquet_row_groups", (DL_FUNC)&qio_parquet_row_groups, 1},
+    {"qio_parquet_metadata", (DL_FUNC)&qio_parquet_metadata, 1},
+    {"qio_parquet_collect", (DL_FUNC)&qio_parquet_collect, 4},
+    {"qio_parquet_walk", (DL_FUNC)&qio_parquet_walk, 5},
     {NULL, NULL, 0}
 };
 

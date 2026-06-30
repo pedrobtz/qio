@@ -19,7 +19,9 @@ Authors:
 Other contributors:
 \itemize{
   \item Johan HG Natter (carquet source code (MIT license)) [copyright holder]
-  \item Yann Collet (LZ4 source code (BSD-2-Clause license)) [copyright holder]
+  \item Google Inc. (Snappy source code in carquet (BSD-3-Clause license)) [copyright holder]
+  \item Yann Collet (LZ4 and Zstandard source code (BSD licenses)) [copyright holder]
+  \item Tino Reichardt (Zstandard threading source code (BSD-3-Clause license)) [copyright holder]
   \item Meta Platforms, Inc. and affiliates (Zstandard source code (BSD-3-Clause license)) [copyright holder]
 }
 

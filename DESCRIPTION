@@ -6,8 +6,12 @@ Authors@R: c(
            role = c("aut", "cre", "cph")),
     person("Johan HG", "Natter", role = "cph",
            comment = "carquet source code (MIT license)"),
+    person("Google Inc.", role = "cph",
+           comment = "Snappy source code in carquet (BSD-3-Clause license)"),
     person("Yann", "Collet", role = "cph",
-           comment = "LZ4 source code (BSD-2-Clause license)"),
+           comment = "LZ4 and Zstandard source code (BSD licenses)"),
+    person("Tino", "Reichardt", role = "cph",
+           comment = "Zstandard threading source code (BSD-3-Clause license)"),
     person("Meta Platforms, Inc. and affiliates", role = "cph",
            comment = "Zstandard source code (BSD-3-Clause license)"))
 Description: Read and write files in the 'Apache Parquet' columnar storage

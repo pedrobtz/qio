@@ -18,14 +18,9 @@
 #' write_parquet(data.frame(x = 1:3, y = c("a", "b", NA)), path)
 #' read_parquet(path)
 read_parquet <- function(file) {
-  if (!is.character(file) || length(file) != 1L || is.na(file)) {
-    stop("`file` must be a single file path.", call. = FALSE)
-  }
-  file <- path.expand(file)
-  if (!file.exists(file)) {
-    stop("File does not exist: ", file, call. = FALSE)
-  }
-  .Call(C_qio_read_parquet, file)
+  file <- parquet_open(file)
+  on.exit(parquet_close(file), add = TRUE)
+  collect(file)
 }
 
 #' Write a Parquet file
@@ -49,10 +44,11 @@ read_parquet <- function(file) {
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(mtcars, path)
-write_parquet <- function(x,
-                          file,
-                          compression = c("snappy", "zstd", "gzip", "lz4",
-                                          "uncompressed")) {
+write_parquet <- function(
+  x,
+  file,
+  compression = c("snappy", "zstd", "gzip", "lz4", "uncompressed")
+) {
   if (!is.data.frame(x)) {
     if (is.list(x)) {
       x <- as.data.frame(x, stringsAsFactors = FALSE, optional = TRUE)
