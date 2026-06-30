@@ -5,7 +5,6 @@
 ^docs$
 ^pkgdown$
 ^\.github$
-# Compiled objects and shared libraries (stray local build artifacts)
 \.o$
 \.so$
 \.dll$
