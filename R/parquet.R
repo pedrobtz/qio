@@ -39,12 +39,16 @@ read_parquet <- function(file) {
 #' `POSIXct` columns as `INT64` microseconds with a UTC-adjusted `TIMESTAMP`
 #' annotation; both round-trip back to their R class. Sub-microsecond fractions
 #' of a second are rounded. Other classed columns are still written using their
-#' underlying storage type and lose their class.
+#' underlying storage type and lose their class. An explicit [parquet_schema()]
+#' may instead select `INT64`, `FLOAT`, or a different timestamp unit, among the
+#' supported declarations.
 #'
 #' @param x A data frame (or a list of equal-length atomic vectors).
 #' @param file Output path.
 #' @param compression Compression codec: one of `"snappy"` (default), `"zstd"`,
 #'   `"gzip"`, `"lz4"`, or `"uncompressed"`.
+#' @param schema An optional schema created by [parquet_schema()]. Named entries
+#'   override qio's inferred mapping; omitted columns retain automatic mapping.
 #'
 #' @return The output path, invisibly.
 #'
@@ -56,20 +60,16 @@ read_parquet <- function(file) {
 write_parquet <- function(
   x,
   file,
-  compression = c("snappy", "zstd", "gzip", "lz4", "uncompressed")
+  compression = c("snappy", "zstd", "gzip", "lz4", "uncompressed"),
+  schema = NULL
 ) {
-  if (!is.data.frame(x)) {
-    if (is.list(x)) {
-      x <- as.data.frame(x, stringsAsFactors = FALSE, optional = TRUE)
-    } else {
-      stop("`x` must be a data frame.", call. = FALSE)
-    }
-  }
+  x <- qio_as_data_frame(x)
   if (!is.character(file) || length(file) != 1L || is.na(file)) {
     stop("`file` must be a single file path.", call. = FALSE)
   }
   compression <- match.arg(compression)
   file <- path.expand(file)
-  .Call(C_qio_write_parquet, x, file, compression)
+  prepared <- qio_resolve_write_schema(x, schema)
+  .Call(C_qio_write_parquet, prepared$x, file, compression, prepared$native)
   invisible(file)
 }

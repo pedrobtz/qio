@@ -3,7 +3,7 @@
  *
  * Exposes two .Call entry points:
  *   qio_read_parquet(path)            -> data.frame
- *   qio_write_parquet(x, path, codec) -> invisible(path)
+ *   qio_write_parquet(x, path, codec, schema) -> invisible(path)
  *
  * Type mapping (v1, flat schemas only):
  *
@@ -60,19 +60,6 @@ static int qio_codec_from_string(const char *s, carquet_compression_t *out) {
     else if (strcmp(s, "none") == 0)         *out = CARQUET_COMPRESSION_UNCOMPRESSED;
     else return 0;
     return 1;
-}
-
-/* True if a supported atomic column carries at least one NA (NA only, not NaN). */
-static int qio_has_na(SEXP v) {
-    R_xlen_t n = XLENGTH(v), i;
-    switch (TYPEOF(v)) {
-    case LGLSXP: { int *p = LOGICAL(v);    for (i = 0; i < n; i++) if (p[i] == NA_LOGICAL)   return 1; break; }
-    case INTSXP: { int *p = INTEGER(v);    for (i = 0; i < n; i++) if (p[i] == NA_INTEGER)   return 1; break; }
-    case REALSXP:{ double *p = REAL(v);    for (i = 0; i < n; i++) if (R_IsNA(p[i]))         return 1; break; }
-    case STRSXP: {                         for (i = 0; i < n; i++) if (STRING_ELT(v, i) == NA_STRING) return 1; break; }
-    default: break;
-    }
-    return 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -248,13 +235,15 @@ SEXP qio_read_parquet(SEXP path_sexp) {
 /* Write                                                                     */
 /* ------------------------------------------------------------------------- */
 
-SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
+SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp) {
     if (TYPEOF(x) != VECSXP)
         Rf_error("qio: `x` must be a data.frame");
     if (TYPEOF(path_sexp) != STRSXP || LENGTH(path_sexp) < 1)
         Rf_error("qio: `file` must be a single path");
     if (TYPEOF(codec_sexp) != STRSXP || LENGTH(codec_sexp) < 1)
         Rf_error("qio: `compression` must be a string");
+    if (TYPEOF(spec_sexp) != VECSXP || LENGTH(spec_sexp) != 4)
+        Rf_error("qio: invalid writer schema");
 
     const char *path = Rf_translateChar(STRING_ELT(path_sexp, 0));
     carquet_compression_t codec;
@@ -271,54 +260,57 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
 
     SEXP nms = Rf_getAttrib(x, R_NamesSymbol);
 
-    /* Resolve each column to a writable SEXP (factors -> character), its
-     * physical type and nullability. `cols` protects converted columns. */
-    SEXP cols = PROTECT(Rf_allocVector(VECSXP, ncol));
-    int *ptype    = (int *)R_alloc(ncol, sizeof(int));
-    int *nullable = (int *)R_alloc(ncol, sizeof(int));
-    int *is_date  = (int *)R_alloc(ncol, sizeof(int));
-    int *is_ts    = (int *)R_alloc(ncol, sizeof(int));
+    SEXP ptype_sexp = VECTOR_ELT(spec_sexp, 0);
+    SEXP ltype_sexp = VECTOR_ELT(spec_sexp, 1);
+    SEXP unit_sexp = VECTOR_ELT(spec_sexp, 2);
+    SEXP nullable_sexp = VECTOR_ELT(spec_sexp, 3);
+    if (TYPEOF(ptype_sexp) != INTSXP || TYPEOF(ltype_sexp) != INTSXP ||
+        TYPEOF(unit_sexp) != INTSXP || TYPEOF(nullable_sexp) != LGLSXP ||
+        LENGTH(ptype_sexp) != ncol || LENGTH(ltype_sexp) != ncol ||
+        LENGTH(unit_sexp) != ncol || LENGTH(nullable_sexp) != ncol)
+        Rf_error("qio: invalid writer schema vectors");
+
+    int *ptype = INTEGER(ptype_sexp);
+    int *ltype = INTEGER(ltype_sexp);
+    int *time_unit = INTEGER(unit_sexp);
+    int *nullable = LOGICAL(nullable_sexp);
+
+    /* R has already validated and converted each column according to the
+     * schema. Check storage types again before any output file is created. */
+    SEXP cols = x;
 
     for (int c = 0; c < ncol; c++) {
         SEXP v = VECTOR_ELT(x, c);
         if (XLENGTH(v) != nrow) {
-            UNPROTECT(1);
             Rf_error("qio: column %d has length %lld, expected %lld",
                      c + 1, (long long)XLENGTH(v), (long long)nrow);
         }
-        is_date[c] = Rf_inherits(v, "Date");
-        is_ts[c]   = Rf_inherits(v, "POSIXct");
-        if (is_date[c]) {
-            /* Date is days since 1970-01-01, usually double-backed. Coerce so
-             * the write loop can always read it as REAL; store as INT32+DATE. */
-            if (TYPEOF(v) != REALSXP) v = Rf_coerceVector(v, REALSXP);
-            ptype[c] = CARQUET_PHYSICAL_INT32;
-        } else if (is_ts[c]) {
-            /* POSIXct is UTC seconds since the epoch; store as INT64 + a
-             * UTC-adjusted TIMESTAMP in microseconds. */
-            if (TYPEOF(v) != REALSXP) v = Rf_coerceVector(v, REALSXP);
-            ptype[c] = CARQUET_PHYSICAL_INT64;
-        } else {
-            if (Rf_isFactor(v)) v = Rf_asCharacterFactor(v);
-            switch (TYPEOF(v)) {
-            case LGLSXP:  ptype[c] = CARQUET_PHYSICAL_BOOLEAN;    break;
-            case INTSXP:  ptype[c] = CARQUET_PHYSICAL_INT32;      break;
-            case REALSXP: ptype[c] = CARQUET_PHYSICAL_DOUBLE;     break;
-            case STRSXP:  ptype[c] = CARQUET_PHYSICAL_BYTE_ARRAY; break;
-            default:
-                UNPROTECT(1);
-                Rf_error("qio: column %d has unsupported type '%s'",
-                         c + 1, Rf_type2char(TYPEOF(v)));
-            }
-        }
-        SET_VECTOR_ELT(cols, c, v);
-        nullable[c] = qio_has_na(v);
+        int expected = ptype[c] == CARQUET_PHYSICAL_BOOLEAN ? LGLSXP :
+                       ptype[c] == CARQUET_PHYSICAL_INT32 ? INTSXP :
+                       ptype[c] == CARQUET_PHYSICAL_BYTE_ARRAY ? STRSXP : REALSXP;
+        if (ptype[c] != CARQUET_PHYSICAL_BOOLEAN &&
+            ptype[c] != CARQUET_PHYSICAL_INT32 &&
+            ptype[c] != CARQUET_PHYSICAL_INT64 &&
+            ptype[c] != CARQUET_PHYSICAL_FLOAT &&
+            ptype[c] != CARQUET_PHYSICAL_DOUBLE &&
+            ptype[c] != CARQUET_PHYSICAL_BYTE_ARRAY)
+            Rf_error("qio: invalid physical type for column %d", c + 1);
+        if (ltype[c] < 0 || ltype[c] > 3 ||
+            (ltype[c] == 1 && ptype[c] != CARQUET_PHYSICAL_INT32) ||
+            (ltype[c] == 2 && (ptype[c] != CARQUET_PHYSICAL_INT64 ||
+                              time_unit[c] < 1 || time_unit[c] > 3)) ||
+            (ltype[c] == 3 && ptype[c] != CARQUET_PHYSICAL_BYTE_ARRAY))
+            Rf_error("qio: invalid logical type for column %d", c + 1);
+        if (nullable[c] != 0 && nullable[c] != 1)
+            Rf_error("qio: invalid repetition for column %d", c + 1);
+        if (ltype[c] == 1 || ltype[c] == 2) expected = REALSXP;
+        if (TYPEOF(v) != expected)
+            Rf_error("qio: column %d does not match its writer schema", c + 1);
     }
 
     carquet_error_t err = CARQUET_ERROR_INIT;
     carquet_schema_t *schema = carquet_schema_create(&err);
     if (!schema) {
-        UNPROTECT(1);
         Rf_error("qio: failed to create schema: %s", err.message);
     }
 
@@ -330,12 +322,6 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
     memset(&date_lt, 0, sizeof(date_lt));
     date_lt.id = CARQUET_LOGICAL_DATE;
 
-    carquet_logical_type_t timestamp_lt;
-    memset(&timestamp_lt, 0, sizeof(timestamp_lt));
-    timestamp_lt.id = CARQUET_LOGICAL_TIMESTAMP;
-    timestamp_lt.params.timestamp.unit = CARQUET_TIME_UNIT_MICROS;
-    timestamp_lt.params.timestamp.is_adjusted_to_utc = 1;
-
     for (int c = 0; c < ncol; c++) {
         char namebuf[64];
         const char *nm;
@@ -346,23 +332,22 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
             snprintf(namebuf, sizeof(namebuf), "V%d", c + 1);
             nm = namebuf;
         }
-        const carquet_logical_type_t *lt;
-        if (is_date[c]) {
-            lt = &date_lt;
-        } else if (is_ts[c]) {
-            lt = &timestamp_lt;
-        } else if (ptype[c] == CARQUET_PHYSICAL_BYTE_ARRAY) {
-            lt = &string_lt;
-        } else {
-            lt = NULL;
-        }
+        carquet_logical_type_t timestamp_lt;
+        memset(&timestamp_lt, 0, sizeof(timestamp_lt));
+        timestamp_lt.id = CARQUET_LOGICAL_TIMESTAMP;
+        timestamp_lt.params.timestamp.unit = (carquet_time_unit_t)(time_unit[c] - 1);
+        timestamp_lt.params.timestamp.is_adjusted_to_utc = 1;
+
+        const carquet_logical_type_t *lt = NULL;
+        if (ltype[c] == 1) lt = &date_lt;
+        else if (ltype[c] == 2) lt = &timestamp_lt;
+        else if (ltype[c] == 3) lt = &string_lt;
         carquet_field_repetition_t rep =
             nullable[c] ? CARQUET_REPETITION_OPTIONAL : CARQUET_REPETITION_REQUIRED;
 
         if (carquet_schema_add_column(schema, nm, (carquet_physical_type_t)ptype[c],
                                       lt, rep, 0, 0) != CARQUET_OK) {
             carquet_schema_free(schema);
-            UNPROTECT(1);
             Rf_error("qio: failed to add column '%s' to schema", nm);
         }
     }
@@ -374,7 +359,6 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
     carquet_writer_t *writer = carquet_writer_create(path, schema, &wopts, &err);
     if (!writer) {
         carquet_schema_free(schema);
-        UNPROTECT(1);
         Rf_error("qio: cannot create '%s': %s", path, err.message);
     }
 
@@ -389,7 +373,7 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
         R_xlen_t i, k = 0;
         carquet_status_t st = CARQUET_OK;
 
-        if (is_date[c]) {
+        if (ltype[c] == 1) {
             /* Date stores days since 1970-01-01; write them as INT32. */
             int32_t *buf = (int32_t *)R_alloc(nrow, sizeof(int32_t));
             double *p = REAL(v);
@@ -402,13 +386,15 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
                 }
             }
             st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
-        } else if (is_ts[c]) {
-            /* POSIXct stores UTC seconds; write microseconds as INT64. */
+        } else if (ltype[c] == 2) {
+            /* POSIXct stores UTC seconds; rescale to the requested unit. */
             int64_t *buf = (int64_t *)R_alloc(nrow, sizeof(int64_t));
             double *p = REAL(v);
+            double scale = time_unit[c] == 1 ? 1e3 :
+                           time_unit[c] == 2 ? 1e6 : 1e9;
             for (i = 0; i < nrow; i++) {
                 if (!R_IsNA(p[i])) {
-                    buf[k++] = (int64_t)llround(p[i] * 1e6);
+                    buf[k++] = (int64_t)llround(p[i] * scale);
                     if (def) def[i] = 1;
                 } else if (def) {
                     def[i] = 0;
@@ -431,6 +417,26 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
             int *p = INTEGER(v);
             for (i = 0; i < nrow; i++) {
                 if (p[i] != NA_INTEGER) { buf[k++] = p[i]; if (def) def[i] = 1; }
+                else if (def) def[i] = 0;
+            }
+            st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
+            break;
+        }
+        case CARQUET_PHYSICAL_INT64: {
+            int64_t *buf = (int64_t *)R_alloc(nrow, sizeof(int64_t));
+            double *p = REAL(v);
+            for (i = 0; i < nrow; i++) {
+                if (!R_IsNA(p[i])) { buf[k++] = (int64_t)llround(p[i]); if (def) def[i] = 1; }
+                else if (def) def[i] = 0;
+            }
+            st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
+            break;
+        }
+        case CARQUET_PHYSICAL_FLOAT: {
+            float *buf = (float *)R_alloc(nrow, sizeof(float));
+            double *p = REAL(v);
+            for (i = 0; i < nrow; i++) {
+                if (!R_IsNA(p[i])) { buf[k++] = (float)p[i]; if (def) def[i] = 1; }
                 else if (def) def[i] = 0;
             }
             st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
@@ -476,18 +482,15 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
     if (errmsg[0] != '\0') {
         carquet_writer_abort(writer);
         carquet_schema_free(schema);
-        UNPROTECT(1);
         Rf_error("qio: %s", errmsg);
     }
 
     if (carquet_writer_close(writer) != CARQUET_OK) {
         carquet_schema_free(schema);
-        UNPROTECT(1);
         Rf_error("qio: failed to finalize '%s'", path);
     }
     carquet_schema_free(schema);
 
-    UNPROTECT(1); /* cols */
     return path_sexp;
 }
 
@@ -497,7 +500,7 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
 
 static const R_CallMethodDef CallEntries[] = {
     {"qio_read_parquet",  (DL_FUNC)&qio_read_parquet,  1},
-    {"qio_write_parquet", (DL_FUNC)&qio_write_parquet, 3},
+    {"qio_write_parquet", (DL_FUNC)&qio_write_parquet, 4},
     {"qio_parquet_open", (DL_FUNC)&qio_parquet_open, 4},
     {"qio_parquet_close", (DL_FUNC)&qio_parquet_close, 1},
     {"qio_parquet_is_open", (DL_FUNC)&qio_parquet_is_open, 1},

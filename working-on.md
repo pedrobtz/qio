@@ -12,9 +12,9 @@ steps. Detailed type decisions and the full type roadmap live in
 Broader Parquet logical-type support is built on the shared read plan
 (`read_plan()`), so eager reads, collected reads, and batch callbacks convert
 identically. `DATE`, UTC-adjusted `TIMESTAMP`, and legacy `INT96` timestamps are
-implemented. The next focus is explicit writer schema control. It should land
-before more ambiguous scalar types because it provides one place to request
-`INT64`, `FLOAT`, timestamp units, fixed binary lengths, and decimal parameters.
+implemented. Explicit writer schema control is now implemented for the scalar
+types qio can encode. The next focus is binary/fixed binary and UUID, extending
+the same schema rather than adding one-off writer arguments.
 
 ## Implemented
 
@@ -67,6 +67,14 @@ before more ambiguous scalar types because it provides one place to request
 - Write: numeric to `DOUBLE`.
 - Write: character and factor to `BYTE_ARRAY` with `STRING` annotation.
 - `parquet_type_mapping()` exposes the current mapping table.
+- `infer_parquet_schema()` explains automatic writer choices and nullability.
+- `parquet_schema()` creates reusable named partial schemas; `AUTO` preserves
+  inference and repetition may be `AUTO`, `REQUIRED`, or `OPTIONAL`.
+- `write_parquet(schema =)` supports explicit `BOOLEAN`, `INT32`, `INT64`,
+  `FLOAT`, `DOUBLE`, `STRING`, `DATE`, and UTC-adjusted `TIMESTAMP` output.
+  Timestamp units may be millis, micros, or nanos.
+- Explicit `INT32`/`INT64` inputs are checked for finite integral values before
+  the file is created. Numeric `INT64` output is restricted to `[-2^53, 2^53]`.
 
 ### Current logical type mappings
 
@@ -121,8 +129,9 @@ before more ambiguous scalar types because it provides one place to request
 - Ordinary R numeric vectors continue to write as Parquet `DOUBLE`.
 - Writing ambiguous physical types such as `FLOAT` or `INT64` will require an
   explicit writer schema or type declaration.
-- Explicit writer schema control is the next feature, before additional scalar
-  mappings. This avoids adding one-off arguments or classes for each type.
+- Explicit writer schema control landed before additional scalar mappings. This
+  avoids adding one-off arguments or classes for each type; future mappings
+  extend `parquet_schema()`.
 - Exact signed `INT64` support may later be offered through
   `bit64::integer64` or an equivalent bit-preserving class.
 - Binary data must eventually become raw-vector list-columns; only text
@@ -137,33 +146,19 @@ before more ambiguous scalar types because it provides one place to request
 
 ## Next steps
 
-### Immediate: explicit schemas
+### Completed: explicit schemas
 
-1. Make `read_plan()` exactly match native collection for nested fields. It
-   currently rejects repeated leaves but can incorrectly mark a non-repeated
-   nested struct leaf collectible; native collection rejects all paths deeper
-   than one level.
-2. Update the `read_plan()` documentation that still says `DATE` and
-   `TIMESTAMP` annotations are not applied.
-3. Let `read_plan()` accept a file path directly, or add a
-   `read_parquet_schema()` path-oriented wrapper matching the nanoparquet name.
-4. Add `infer_parquet_schema(x)` to explain the writer's current automatic
-   choices before writing data.
-5. Design `parquet_schema(...)` as a validated, reusable schema object.
-6. Add `schema = NULL` to `write_parquet()`. `NULL` preserves current inference;
-   named schema entries override selected columns and an `AUTO` entry keeps the
-   inferred mapping.
-7. Initially support flat scalar declarations already understood by qio:
-   `BOOLEAN`, `INT32`, `INT64`, `FLOAT`, `DOUBLE`, `STRING`, `DATE`, and
-   UTC-adjusted `TIMESTAMP`. Reject unsupported combinations before creating
-   the output file.
-8. Test column matching, partial schemas, nullability, numeric range and
-   integrality validation, timestamp units, and readable error messages.
+1. `read_plan()` now rejects all nested paths consistently with native
+   collection, documents applied date/time conversions, and accepts file paths.
+2. `infer_parquet_schema()` and validated `parquet_schema()` objects are public.
+3. `write_parquet(schema = NULL)` preserves inference; named partial schemas
+   override selected columns and `AUTO` retains inferred types.
+4. Initial flat scalar declarations, nullability control, numeric validation,
+   timestamp units, documentation, and tests are implemented.
 
 ### Next: useful scalar follow-ups
 
-1. Test the numeric `INT64` boundary around `2^53`, including microsecond and
-   nanosecond timestamps far from the epoch.
+1. Test microsecond and nanosecond timestamps near their `INT64` limits.
 2. Decide and implement a non-UTC local `TIMESTAMP` representation. It is a
    civil time, not an instant, so plain `POSIXct` is not semantically exact.
 
@@ -187,7 +182,6 @@ before more ambiguous scalar types because it provides one place to request
 
 ## Open design questions
 
-- What should the public writer schema syntax look like?
 - Should exact signed `INT64` be selected globally, per read, or through a
   separate helper?
 - What R representation should preserve non-UTC local timestamps without
@@ -201,9 +195,6 @@ before more ambiguous scalar types because it provides one place to request
 ## Known limitations
 
 - Only flat, non-repeated columns can be collected.
-- `read_plan()` does not yet detect every non-repeated nested struct leaf that
-  native collection rejects; align the plan before exposing it as reusable
-  schema input.
 - Logical time, decimal, UUID, and integer annotations do not yet change
   materialized R values. Non-UTC `TIMESTAMP` values are also left unapplied.
 - Unannotated binary is currently treated as UTF-8 character data.
@@ -212,8 +203,9 @@ before more ambiguous scalar types because it provides one place to request
   double-precision limit below.
 - `INT64` may lose precision outside R's exact double-integer range, including
   microsecond and nanosecond timestamps far from the epoch.
-- `POSIXct` is always written as microsecond `TIMESTAMP`; the unit is not yet
-  configurable and sub-microsecond fractions are rounded.
+- Inferred `POSIXct` output uses microseconds; explicit schemas may select
+  milliseconds, microseconds, or nanoseconds. Fractions are rounded to the
+  selected unit.
 - Other classed numeric vectors are still written from their underlying storage
   and lose their class (`Date` and `POSIXct` are preserved).
 - Writer tuning is limited to compression.
@@ -224,11 +216,19 @@ before more ambiguous scalar types because it provides one place to request
 
 ### 2026-07-01 (current)
 
-- `devtools::test()`: 142 passed, 0 failed, 0 warnings, 0 skipped.
+- Implemented the explicit-schema slice: path-aware `read_plan()`, nested-plan
+  alignment, `infer_parquet_schema()`, `parquet_schema()`, and
+  `write_parquet(schema =)` with scalar overrides and timestamp units.
+- Test review found and fixed an `INT64` overflow edge: timestamps are now
+  validated after unit scaling and must lie strictly inside the signed 64-bit
+  range before entering C.
+- `devtools::test()`: 194 passed, 0 failed, 0 warnings, 0 skipped.
 - `R CMD check --no-manual`: 0 errors, 0 warnings, 1 note.
 - The sole check note is the untracked top-level `CLAUDE.md`, which is not yet
   excluded by `.Rbuildignore`; package code, compilation, examples, and tests
   pass.
+- `pkgdown::check_pkgdown()` remains blocked only by `_pkgdown.yml` containing
+  `url: ~`.
 
 ### 2026-07-01 (legacy `INT96`)
 

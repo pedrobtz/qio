@@ -45,9 +45,9 @@ qio_type_registry <- function() {
     written_from = c(
       "logical",
       "integer",
+      "numeric (explicit schema)",
       NA,
-      NA,
-      NA,
+      "numeric (explicit schema)",
       "double",
       "character or factor",
       NA
@@ -132,14 +132,13 @@ qio_parse_time_details <- function(details) {
 #' schema, so it is cheap to compute and inspect before reading any data.
 #'
 #' The plan reflects what [collect()], [read_parquet()], and [walk_batches()]
-#' actually do today. Read types are currently chosen from the Parquet
-#' *physical* type; logical annotations such as `DATE`, `TIMESTAMP`, and
-#' `DECIMAL` are reported but not yet applied to the materialized values. When a
-#' collectible column carries such an annotation, the `note` column records that
-#' it is not yet applied.
+#' actually do today. Supported logical annotations override the physical type:
+#' `DATE`, UTC-adjusted `TIMESTAMP`, and legacy physical `INT96` timestamps are
+#' converted to their R date-time classes. Unimplemented annotations are
+#' reported in `note` and retain their physical fallback type.
 #'
-#' @param x A `qio_parquet_file` object, or the data frame returned by
-#'   [schema()].
+#' @param x A Parquet file path, a `qio_parquet_file` object, or the data frame
+#'   returned by [schema()].
 #' @param ... Reserved for future use.
 #'
 #' @return A `qio_read_plan` data frame with one row per physical leaf column
@@ -180,6 +179,18 @@ read_plan.qio_parquet_file <- function(x, ...) {
 
 #' @rdname read_plan
 #' @export
+read_plan.character <- function(x, ...) {
+  qio_empty_dots(...)
+  if (length(x) != 1L || is.na(x)) {
+    stop("`x` must be a single Parquet file path.", call. = FALSE)
+  }
+  pf <- parquet_open(x)
+  on.exit(parquet_close(pf), add = TRUE)
+  read_plan(pf)
+}
+
+#' @rdname read_plan
+#' @export
 read_plan.data.frame <- function(x, ...) {
   qio_empty_dots(...)
   qio_build_plan(x)
@@ -188,7 +199,10 @@ read_plan.data.frame <- function(x, ...) {
 #' @export
 read_plan.default <- function(x, ...) {
   stop(
-    "`x` must be a `qio_parquet_file` or a schema data frame from `schema()`.",
+    paste0(
+      "`x` must be a Parquet file path, a `qio_parquet_file`, or a schema ",
+      "data frame from `schema()`."
+    ),
     call. = FALSE
   )
 }
@@ -225,11 +239,12 @@ qio_build_plan <- function(schema) {
 
   nullable <- schema$max_definition_level > 0L
   repeated <- schema$max_repetition_level > 0L
+  nested <- schema$path != schema$name
 
   # A column is collectible when its physical type maps to an R type and it is
   # not repeated (nested). An unapplied logical annotation does not block
   # collection; the column is still read from its physical type.
-  collectible <- !is.na(r_type) & !repeated
+  collectible <- !is.na(r_type) & !repeated & !nested
 
   # Notes, in increasing priority so the most specific reason wins.
   note <- rep(NA_character_, nrow(schema))
@@ -253,7 +268,7 @@ qio_build_plan <- function(schema) {
     " is not supported for reading"
   )
 
-  note[repeated] <- "repeated or nested column cannot be collected"
+  note[repeated | nested] <- "repeated or nested column cannot be collected"
 
   plan <- data.frame(
     column = seq_len(nrow(schema)),

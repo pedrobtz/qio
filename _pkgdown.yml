@@ -7,6 +7,8 @@ reference:
     contents:
       - read_parquet
       - write_parquet
+      - parquet_schema
+      - infer_parquet_schema
       - parquet_type_mapping
   - title: Lazy reading
     contents:

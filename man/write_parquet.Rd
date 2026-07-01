@@ -7,7 +7,8 @@
 write_parquet(
   x,
   file,
-  compression = c("snappy", "zstd", "gzip", "lz4", "uncompressed")
+  compression = c("snappy", "zstd", "gzip", "lz4", "uncompressed"),
+  schema = NULL
 )
 }
 \arguments{
@@ -17,6 +18,9 @@ write_parquet(
 
 \item{compression}{Compression codec: one of \code{"snappy"} (default), \code{"zstd"},
 \code{"gzip"}, \code{"lz4"}, or \code{"uncompressed"}.}
+
+\item{schema}{An optional schema created by \code{\link[=parquet_schema]{parquet_schema()}}. Named entries
+override qio's inferred mapping; omitted columns retain automatic mapping.}
 }
 \value{
 The output path, invisibly.
@@ -31,7 +35,9 @@ Supported column types are logical, integer, double, character, and factor
 \code{POSIXct} columns as \code{INT64} microseconds with a UTC-adjusted \code{TIMESTAMP}
 annotation; both round-trip back to their R class. Sub-microsecond fractions
 of a second are rounded. Other classed columns are still written using their
-underlying storage type and lose their class.
+underlying storage type and lose their class. An explicit \code{\link[=parquet_schema]{parquet_schema()}}
+may instead select \code{INT64}, \code{FLOAT}, or a different timestamp unit, among the
+supported declarations.
 }
 \examples{
 path <- tempfile(fileext = ".parquet")

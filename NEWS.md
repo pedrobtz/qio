@@ -1,9 +1,14 @@
 # qio 0.0.0.9000
 
+* `infer_parquet_schema()` and `parquet_schema()` now describe automatic writer
+  mappings and create reusable partial schemas. `write_parquet(schema =)` can
+  explicitly write `BOOLEAN`, `INT32`, `INT64`, `FLOAT`, `DOUBLE`, `STRING`,
+  `DATE`, and UTC-adjusted `TIMESTAMP` columns.
 * `read_plan()` turns a `schema()` data frame (or an open file) into a per-column
   plan describing the R type each column materializes as, whether it can be
-  collected, and why not. It is the shared conversion driver for `collect()`,
-  `read_parquet()`, and `walk_batches()`.
+  collected, and why not. It now also accepts a Parquet file path and accurately
+  rejects non-repeated nested leaves. It is the shared conversion driver for
+  `collect()`, `read_parquet()`, and `walk_batches()`.
 * `DATE` columns are now interpreted: an `INT32` column annotated `DATE` reads as
   `Date`, and R `Date` columns are written as `INT32` with a `DATE` annotation.
 * UTC-adjusted `TIMESTAMP` columns read as `POSIXct` in UTC (millisecond,

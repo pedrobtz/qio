@@ -29,6 +29,13 @@ Read a Parquet file:
 cars <- qio::read_parquet("mtcars.parquet")
 ```
 
+Override an inferred writer type when needed:
+
+```r
+types <- qio::parquet_schema(mpg = "FLOAT", cyl = "INT64")
+qio::write_parquet(mtcars, "mtcars.parquet", schema = types)
+```
+
 Open a file for inspection and selective reading:
 
 ```r

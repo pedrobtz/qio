@@ -24,7 +24,7 @@ mappings. Null values become the corresponding R `NA` value.
 | Parquet physical type | Current R type | Status and limitations |
 |---|---|---|
 | `BOOLEAN` | logical | Supported |
-| `INT32` | integer | Supported; logical annotations are not interpreted |
+| `INT32` | integer or `Date` | `DATE` is interpreted; other annotations use the physical fallback |
 | `INT64` | numeric | Supported; precision is not guaranteed beyond `2^53` |
 | `INT96` | `POSIXct` | Read-only legacy timestamp, decoded to a UTC instant |
 | `FLOAT` | numeric | Supported; widened from 32-bit to R's 64-bit double |
@@ -41,6 +41,14 @@ The current writer infers a Parquet type from each R column:
 | numeric | `DOUBLE` | `NA` is null; `NaN` remains a value |
 | character | `BYTE_ARRAY` + `STRING` | Encoded as UTF-8 |
 | factor | `BYTE_ARRAY` + `STRING` | Converted to character; levels are not preserved |
+
+`infer_parquet_schema()` displays these choices before writing.
+`parquet_schema()` creates a reusable partial schema, and
+`write_parquet(schema =)` applies it while leaving unspecified columns on the
+automatic mapping. Explicit schemas currently support `BOOLEAN`, `INT32`,
+`INT64`, `FLOAT`, `DOUBLE`, `STRING`, `DATE`, and UTC-adjusted `TIMESTAMP` with
+millisecond, microsecond, or nanosecond units. `INT64` inputs must be finite
+whole numbers within R's exact double-integer range (`-2^53` through `2^53`).
 
 Only flat, non-repeated columns can currently be materialized. The schema can
 be inspected for nested files, but attempting to collect nested leaves produces
@@ -81,8 +89,8 @@ The initial policy is:
 - continue returning numeric vectors for unannotated signed `INT64` columns;
 - document the precision boundary rather than warning for every such column;
 - continue writing ordinary numeric vectors as `DOUBLE`; and
-- require an explicit requested Parquet type before writing a numeric vector as
-  `INT64`.
+- use `parquet_schema(column = "INT64")` to explicitly write a numeric vector
+  as `INT64`.
 
 An exact opt-in representation based on `bit64::integer64`, or an equivalent
 bit-preserving class, can be added later. Exact support must copy the underlying

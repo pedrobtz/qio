@@ -209,7 +209,9 @@ walk_batches <- function(
   columns <- qio_columns(columns)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
-  callback <- function(batch, index) FUN(qio_apply_plan(batch, plan), index, ...)
+  callback <- function(batch, index) {
+    FUN(qio_apply_plan(batch, plan), index, ...)
+  }
   .Call(C_qio_parquet_walk, x, columns, row_groups, batch_size, callback)
   invisible(x)
 }

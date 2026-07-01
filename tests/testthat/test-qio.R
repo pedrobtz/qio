@@ -127,9 +127,9 @@ test_that("parquet_type_mapping() describes read and write support", {
       written_from = c(
         "logical",
         "integer",
+        "numeric (explicit schema)",
         NA,
-        NA,
-        NA,
+        "numeric (explicit schema)",
         "double",
         "character or factor",
         NA

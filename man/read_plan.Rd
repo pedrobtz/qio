@@ -3,6 +3,7 @@
 \name{read_plan}
 \alias{read_plan}
 \alias{read_plan.qio_parquet_file}
+\alias{read_plan.character}
 \alias{read_plan.data.frame}
 \title{Plan how a Parquet file is read into R}
 \usage{
@@ -10,11 +11,13 @@ read_plan(x, ...)
 
 \method{read_plan}{qio_parquet_file}(x, ...)
 
+\method{read_plan}{character}(x, ...)
+
 \method{read_plan}{data.frame}(x, ...)
 }
 \arguments{
-\item{x}{A \code{qio_parquet_file} object, or the data frame returned by
-\code{\link[=schema]{schema()}}.}
+\item{x}{A Parquet file path, a \code{qio_parquet_file} object, or the data frame
+returned by \code{\link[=schema]{schema()}}.}
 
 \item{...}{Reserved for future use.}
 }
@@ -44,11 +47,10 @@ schema, so it is cheap to compute and inspect before reading any data.
 }
 \details{
 The plan reflects what \code{\link[=collect]{collect()}}, \code{\link[=read_parquet]{read_parquet()}}, and \code{\link[=walk_batches]{walk_batches()}}
-actually do today. Read types are currently chosen from the Parquet
-\emph{physical} type; logical annotations such as \code{DATE}, \code{TIMESTAMP}, and
-\code{DECIMAL} are reported but not yet applied to the materialized values. When a
-collectible column carries such an annotation, the \code{note} column records that
-it is not yet applied.
+actually do today. Supported logical annotations override the physical type:
+\code{DATE}, UTC-adjusted \code{TIMESTAMP}, and legacy physical \code{INT96} timestamps are
+converted to their R date-time classes. Unimplemented annotations are
+reported in \code{note} and retain their physical fallback type.
 }
 \examples{
 path <- tempfile(fileext = ".parquet")
