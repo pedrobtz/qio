@@ -12,6 +12,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* One-shot debug probe: an R function called once from the innermost C frame.
+ * Not thread-safe; intended only for interactive investigation. */
+static SEXP qio_probe_fn = NULL;
+static int  qio_probe_called = 0;
+
+SEXP qio_set_probe(SEXP fn) {
+    qio_probe_fn     = fn;
+    qio_probe_called = 0;
+    return R_NilValue;
+}
+
+SEXP qio_clear_probe(SEXP unused) {
+    (void)unused;
+    qio_probe_fn     = NULL;
+    qio_probe_called = 0;
+    return R_NilValue;
+}
+
 typedef struct {
     carquet_reader_t *reader;
     int32_t threads;
@@ -297,6 +315,15 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                                   carquet_physical_type_t type,
                                   const void *data, const uint8_t *bitmap,
                                   int64_t length) {
+    /* Fire probe once from the deepest C frame so winch_trace_back() captures
+     * the full native call chain: carquet decoder → qio_copy_batch_column →
+     * qio_copy_batch → qio_collect_body / qio_walk_body → R_UnwindProtect. */
+    if (offset == 0 && qio_probe_fn != NULL && !qio_probe_called) {
+        qio_probe_called = 1;
+        SEXP call = PROTECT(Rf_lang1(qio_probe_fn));
+        Rf_eval(call, R_GlobalEnv);
+        UNPROTECT(1);
+    }
     for (int64_t i = 0; i < length; i++) {
         R_xlen_t out = offset + (R_xlen_t)i;
         if (!qio_value_present(bitmap, i)) {
