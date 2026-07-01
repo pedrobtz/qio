@@ -28,16 +28,28 @@ test_that("external fixtures are present and look like Parquet", {
   }
 })
 
-# --- INT96 timestamps: not yet supported -----------------------------------
+# --- INT96 timestamps: read as UTC POSIXct ---------------------------------
 # alltypes_* carry an INT96 `timestamp_col`; int96_from_spark is all-INT96.
-test_that("INT96 timestamp columns are rejected with a clear error", {
+test_that("Spark INT96 timestamps read as UTC POSIXct", {
+  df <- read_parquet(ext("int96_from_spark.parquet"))
+
+  expect_s3_class(df$a, "POSIXct")
+  expect_identical(attr(df$a, "tzone"), "UTC")
+  expect_equal(df$a[[1]], as.POSIXct("2024-01-01 20:34:56", tz = "UTC"))
+  expect_true(is.na(df$a[[5]])) # the fixture includes a null
+})
+
+test_that("alltypes files read their INT96 timestamp_col", {
   for (f in c(
     "alltypes_plain.parquet",
     "alltypes_plain.snappy.parquet",
-    "alltypes_dictionary.parquet",
-    "int96_from_spark.parquet"
+    "alltypes_dictionary.parquet"
   )) {
-    expect_error(read_parquet(ext(f)), "unsupported physical type", info = f)
+    df <- read_parquet(ext(f))
+    expect_true(inherits(df$timestamp_col, "POSIXct"), info = f)
+    # These fixtures hold 2009 timestamps (row count differs across variants).
+    years <- as.integer(format(df$timestamp_col, "%Y", tz = "UTC"))
+    expect_true(all(years == 2009, na.rm = TRUE), info = f)
   }
 })
 

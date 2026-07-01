@@ -1,0 +1,138 @@
+name: Profile read_parquet
+
+on:
+  workflow_dispatch:
+    inputs:
+      frequency:
+        description: 'Sampling frequency in Hz'
+        default: '100'
+        required: false
+        type: string
+      iterations:
+        description: 'Number of read_parquet iterations'
+        default: '3'
+        required: false
+        type: string
+
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake libunwind-dev
+
+      - name: Build and install xrprof
+        run: |
+          git clone --depth=1 https://github.com/atheriel/xrprof /tmp/xrprof-src
+          cmake -S /tmp/xrprof-src -B /tmp/xrprof-src/build
+          cmake --build /tmp/xrprof-src/build
+          sudo cp /tmp/xrprof-src/build/xrprof /usr/local/bin/xrprof
+          xrprof --help 2>&1 | head -5 || true
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+
+      - name: Install qio with debug symbols
+        # PKG_CFLAGS keeps -g so xrprof can resolve symbol names from the .so
+        run: PKG_CFLAGS="-g -O2" R CMD INSTALL .
+
+      - name: Download NYC yellow taxi data
+        run: |
+          mkdir -p local-data
+          curl -fsSL --retry 3 --max-time 300 \
+            "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2023-01.parquet" \
+            -o local-data/yellow_tripdata_2023-01.parquet
+          ls -lh local-data/yellow_tripdata_2023-01.parquet
+
+      - name: Profile
+        run: |
+          cat > /tmp/bench.R << 'REOF'
+          library(qio)
+          n <- as.integer(Sys.getenv("QIO_ITER", "3"))
+          message("qio::read_parquet  x", n, " iteration(s)")
+          for (i in seq_len(n)) {
+            qio::read_parquet("local-data/yellow_tripdata_2023-01.parquet")
+          }
+          message("done")
+          REOF
+
+          QIO_ITER="${{ inputs.iterations }}" \
+            xrprof -F "${{ inputs.frequency }}" -- Rscript /tmp/bench.R \
+            > /tmp/profile.folded
+
+          echo "Captured $(wc -l < /tmp/profile.folded) stack samples"
+          echo ""
+
+          python3 - << 'PYEOF'
+          from collections import defaultdict
+
+          self_counts  = defaultdict(int)
+          total_counts = defaultdict(int)
+
+          with open("/tmp/profile.folded") as f:
+              for line in f:
+                  line = line.strip()
+                  if not line:
+                      continue
+                  # folded format: "frame1;frame2;...;leaf count"
+                  parts  = line.rsplit(" ", 1)
+                  frames = parts[0].split(";")
+                  count  = int(parts[1]) if len(parts) == 2 else 1
+                  if frames:
+                      self_counts[frames[-1]] += count
+                  seen = set()
+                  for fr in frames:
+                      if fr not in seen:
+                          total_counts[fr] += count
+                          seen.add(fr)
+
+          total_samples = sum(self_counts.values())
+          if total_samples == 0:
+              print("No samples captured — xrprof may not have native-stack support on this runner.")
+              exit(0)
+
+          print(f"Total samples: {total_samples}\n")
+
+          header = f"{'%':>6}  {'samples':>8}  function"
+          rule   = "-" * 72
+
+          def table(counts, n=30):
+              print(header)
+              print(rule)
+              for fn, cnt in sorted(counts.items(), key=lambda x: -x[1])[:n]:
+                  pct = 100 * cnt / total_samples
+                  print(f"{pct:6.1f}  {cnt:>8}  {fn}")
+
+          print("=== Top 30 by SELF time (leaf frame) ===")
+          table(self_counts)
+
+          print()
+          print("=== Top 30 by TOTAL time (appeared anywhere in stack) ===")
+          table(total_counts)
+
+          print()
+          print("=== qio / carquet functions — self time ===")
+          qio_self = {fn: cnt for fn, cnt in self_counts.items()
+                      if any(kw in fn for kw in ("qio", "carquet", "C_qio"))}
+          if qio_self:
+              table(qio_self, n=50)
+          else:
+              print("(none found — C frames may not be resolved; check xrprof native-stack support)")
+          PYEOF
+
+      - name: Upload folded profile
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xrprof-folded
+          path: /tmp/profile.folded
+          if-no-files-found: warn

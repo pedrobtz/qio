@@ -168,10 +168,12 @@ collect.qio_parquet_file <- function(
   batch_size = 65536L
 ) {
   qio_empty_dots(...)
+  plan <- read_plan(x)
   columns <- qio_columns(columns)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
-  .Call(C_qio_parquet_collect, x, columns, row_groups, batch_size)
+  result <- .Call(C_qio_parquet_collect, x, columns, row_groups, batch_size)
+  qio_apply_plan(result, plan)
 }
 
 #' Walk over batches from a Parquet file
@@ -203,10 +205,11 @@ walk_batches <- function(
   if (!is.function(FUN)) {
     stop("`FUN` must be a function.", call. = FALSE)
   }
+  plan <- read_plan(x)
   columns <- qio_columns(columns)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
-  callback <- function(batch, index) FUN(batch, index, ...)
+  callback <- function(batch, index) FUN(qio_apply_plan(batch, plan), index, ...)
   .Call(C_qio_parquet_walk, x, columns, row_groups, batch_size, callback)
   invisible(x)
 }

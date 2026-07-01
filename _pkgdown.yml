@@ -2,3 +2,24 @@ url: ~
 template:
   bootstrap: 5
 
+reference:
+  - title: Read and write
+    contents:
+      - read_parquet
+      - write_parquet
+      - parquet_type_mapping
+  - title: Lazy reading
+    contents:
+      - parquet_open
+      - parquet_close
+      - collect
+      - walk_batches
+  - title: Inspect files
+    contents:
+      - schema
+      - row_groups
+      - metadata
+      - read_plan
+  - title: Package
+    contents:
+      - qio-package

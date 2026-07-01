@@ -261,6 +261,17 @@ static int qio_value_present(const uint8_t *bitmap, int64_t index) {
     return !bitmap || (bitmap[index / 8] & (uint8_t)(1u << (index % 8)));
 }
 
+/* Convert a legacy INT96 timestamp to seconds since the Unix epoch, as UTC.
+ * The Impala/Spark layout is int64 nanoseconds-of-day in words 0-1 and a Julian
+ * day number in word 2; 2440588 is the Julian day of 1970-01-01. carquet has
+ * already read the three words little-endian, so this is endian-safe. */
+static double qio_int96_to_seconds(carquet_int96_t value) {
+    uint64_t nanos = ((uint64_t)value.value[1] << 32) | (uint64_t)value.value[0];
+    int64_t julian_day = (int64_t)(int32_t)value.value[2];
+    int64_t days = julian_day - 2440588;
+    return (double)days * 86400.0 + (double)nanos / 1e9;
+}
+
 static SEXP qio_allocate_column(carquet_physical_type_t type,
                                 R_xlen_t length) {
     switch (type) {
@@ -269,6 +280,7 @@ static SEXP qio_allocate_column(carquet_physical_type_t type,
     case CARQUET_PHYSICAL_INT32:
         return Rf_allocVector(INTSXP, length);
     case CARQUET_PHYSICAL_INT64:
+    case CARQUET_PHYSICAL_INT96:
     case CARQUET_PHYSICAL_FLOAT:
     case CARQUET_PHYSICAL_DOUBLE:
         return Rf_allocVector(REALSXP, length);
@@ -296,6 +308,7 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                 INTEGER(destination)[out] = NA_INTEGER;
                 break;
             case CARQUET_PHYSICAL_INT64:
+            case CARQUET_PHYSICAL_INT96:
             case CARQUET_PHYSICAL_FLOAT:
             case CARQUET_PHYSICAL_DOUBLE:
                 REAL(destination)[out] = NA_REAL;
@@ -320,6 +333,10 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
             break;
         case CARQUET_PHYSICAL_INT64:
             REAL(destination)[out] = (double)((const int64_t *)data)[i];
+            break;
+        case CARQUET_PHYSICAL_INT96:
+            REAL(destination)[out] =
+                qio_int96_to_seconds(((const carquet_int96_t *)data)[i]);
             break;
         case CARQUET_PHYSICAL_FLOAT:
             REAL(destination)[out] = (double)((const float *)data)[i];
@@ -398,6 +415,7 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
         case CARQUET_PHYSICAL_BOOLEAN:
         case CARQUET_PHYSICAL_INT32:
         case CARQUET_PHYSICAL_INT64:
+        case CARQUET_PHYSICAL_INT96:
         case CARQUET_PHYSICAL_FLOAT:
         case CARQUET_PHYSICAL_DOUBLE:
         case CARQUET_PHYSICAL_BYTE_ARRAY:

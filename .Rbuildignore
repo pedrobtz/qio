@@ -12,3 +12,5 @@
 \.a$
 ^\.logs$
 ^local-data$
+TYPES.md
+working-on.md

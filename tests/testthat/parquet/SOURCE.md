@@ -20,10 +20,11 @@ are used to test reading real-world, third-party-written Parquet files.
 Note: `int96_from_spark.parquet` is the upstream name for what was requested as
 `int96.parquet`.
 
-The current reader supports flat schemas of the primitive types only; the tests
-that exercise these files pin the present behavior (INT96, DATA_PAGE_V2 delta,
-and nested columns are not yet readable) and should be promoted to positive
-read assertions as those features land.
+The current reader supports flat schemas of the primitive types, plus `DATE`,
+UTC `TIMESTAMP`, and legacy `INT96` timestamps (read as UTC `POSIXct`). The
+`alltypes_*` and `int96_from_spark` files are now read as positive assertions.
+DATA_PAGE_V2 delta encodings and nested columns are still not readable; those
+tests pin the present behavior and should be promoted as those features land.
 
 ## Package-owned fixture
 

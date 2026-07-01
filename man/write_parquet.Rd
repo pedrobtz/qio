@@ -27,8 +27,11 @@ Writes a data frame to an Apache Parquet file.
 \details{
 Supported column types are logical, integer, double, character, and factor
 (written as character). A column is written as nullable when it contains any
-\code{NA}. Date, time, and other classed columns are written using their
-underlying storage type and lose their class on a round trip.
+\code{NA}. \code{Date} columns are written as \code{INT32} with a \code{DATE} annotation, and
+\code{POSIXct} columns as \code{INT64} microseconds with a UTC-adjusted \code{TIMESTAMP}
+annotation; both round-trip back to their R class. Sub-microsecond fractions
+of a second are rounded. Other classed columns are still written using their
+underlying storage type and lose their class.
 }
 \examples{
 path <- tempfile(fileext = ".parquet")

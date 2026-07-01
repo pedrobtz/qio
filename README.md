@@ -29,6 +29,25 @@ Read a Parquet file:
 cars <- qio::read_parquet("mtcars.parquet")
 ```
 
+Open a file for inspection and selective reading:
+
+```r
+pf <- qio::parquet_open("mtcars.parquet")
+pf
+#> <qio_parquet_file>
+#> /path/to/mtcars.parquet
+#> 32 rows x 11 columns; 1 row group
+
+dim(pf)      # c(32L, 11L)
+names(pf)    # column names
+schema(pf)   # column types and physical encodings
+
+# Read only two columns
+df <- collect(pf, columns = c("mpg", "cyl"))
+
+qio::parquet_close(pf)
+```
+
 ## References
 
 - [Apache Parquet](https://parquet.apache.org/docs/)

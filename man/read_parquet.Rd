@@ -18,8 +18,14 @@ Reads an Apache Parquet file into a data frame.
 \details{
 Column types are mapped from Parquet as follows: \code{BOOLEAN} to logical,
 \code{INT32} to integer, \code{INT64}/\code{FLOAT}/\code{DOUBLE} to double, and \code{BYTE_ARRAY}
-(assumed UTF-8) to character. Parquet nulls become \code{NA}. \code{INT64} values are
-returned as doubles and lose precision beyond 2^53.
+(assumed UTF-8) to character. An \code{INT32} column annotated \code{DATE} is returned
+as a \code{Date}, a UTC-adjusted \code{TIMESTAMP} (physical \code{INT64}) as a \code{POSIXct} in
+UTC, and a legacy \code{INT96} timestamp as a \code{POSIXct} in UTC (interpreting its
+Julian-day and nanosecond-of-day parts as an instant). Parquet nulls become
+\code{NA}. \code{INT64} values are returned as doubles and lose precision beyond 2^53,
+which for microsecond and nanosecond timestamps can drop sub-second precision
+far from the epoch. Use \code{\link[=read_plan]{read_plan()}} to preview the R type of each column
+before reading.
 }
 \examples{
 path <- tempfile(fileext = ".parquet")

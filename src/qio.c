@@ -21,6 +21,8 @@
  *   logical               BOOLEAN
  *   integer               INT32
  *   double                DOUBLE
+ *   Date                  INT32 + DATE
+ *   POSIXct               INT64 + TIMESTAMP(MICROS, UTC)
  *   character             BYTE_ARRAY + STRING
  *   factor                character -> BYTE_ARRAY + STRING
  *
@@ -36,6 +38,7 @@
 #include "qio_file.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -273,6 +276,8 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
     SEXP cols = PROTECT(Rf_allocVector(VECSXP, ncol));
     int *ptype    = (int *)R_alloc(ncol, sizeof(int));
     int *nullable = (int *)R_alloc(ncol, sizeof(int));
+    int *is_date  = (int *)R_alloc(ncol, sizeof(int));
+    int *is_ts    = (int *)R_alloc(ncol, sizeof(int));
 
     for (int c = 0; c < ncol; c++) {
         SEXP v = VECTOR_ELT(x, c);
@@ -281,19 +286,32 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
             Rf_error("qio: column %d has length %lld, expected %lld",
                      c + 1, (long long)XLENGTH(v), (long long)nrow);
         }
-        if (Rf_isFactor(v)) v = Rf_asCharacterFactor(v);
-        SET_VECTOR_ELT(cols, c, v);
-
-        switch (TYPEOF(v)) {
-        case LGLSXP:  ptype[c] = CARQUET_PHYSICAL_BOOLEAN;    break;
-        case INTSXP:  ptype[c] = CARQUET_PHYSICAL_INT32;      break;
-        case REALSXP: ptype[c] = CARQUET_PHYSICAL_DOUBLE;     break;
-        case STRSXP:  ptype[c] = CARQUET_PHYSICAL_BYTE_ARRAY; break;
-        default:
-            UNPROTECT(1);
-            Rf_error("qio: column %d has unsupported type '%s'",
-                     c + 1, Rf_type2char(TYPEOF(v)));
+        is_date[c] = Rf_inherits(v, "Date");
+        is_ts[c]   = Rf_inherits(v, "POSIXct");
+        if (is_date[c]) {
+            /* Date is days since 1970-01-01, usually double-backed. Coerce so
+             * the write loop can always read it as REAL; store as INT32+DATE. */
+            if (TYPEOF(v) != REALSXP) v = Rf_coerceVector(v, REALSXP);
+            ptype[c] = CARQUET_PHYSICAL_INT32;
+        } else if (is_ts[c]) {
+            /* POSIXct is UTC seconds since the epoch; store as INT64 + a
+             * UTC-adjusted TIMESTAMP in microseconds. */
+            if (TYPEOF(v) != REALSXP) v = Rf_coerceVector(v, REALSXP);
+            ptype[c] = CARQUET_PHYSICAL_INT64;
+        } else {
+            if (Rf_isFactor(v)) v = Rf_asCharacterFactor(v);
+            switch (TYPEOF(v)) {
+            case LGLSXP:  ptype[c] = CARQUET_PHYSICAL_BOOLEAN;    break;
+            case INTSXP:  ptype[c] = CARQUET_PHYSICAL_INT32;      break;
+            case REALSXP: ptype[c] = CARQUET_PHYSICAL_DOUBLE;     break;
+            case STRSXP:  ptype[c] = CARQUET_PHYSICAL_BYTE_ARRAY; break;
+            default:
+                UNPROTECT(1);
+                Rf_error("qio: column %d has unsupported type '%s'",
+                         c + 1, Rf_type2char(TYPEOF(v)));
+            }
         }
+        SET_VECTOR_ELT(cols, c, v);
         nullable[c] = qio_has_na(v);
     }
 
@@ -308,6 +326,16 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
     memset(&string_lt, 0, sizeof(string_lt));
     string_lt.id = CARQUET_LOGICAL_STRING;
 
+    carquet_logical_type_t date_lt;
+    memset(&date_lt, 0, sizeof(date_lt));
+    date_lt.id = CARQUET_LOGICAL_DATE;
+
+    carquet_logical_type_t timestamp_lt;
+    memset(&timestamp_lt, 0, sizeof(timestamp_lt));
+    timestamp_lt.id = CARQUET_LOGICAL_TIMESTAMP;
+    timestamp_lt.params.timestamp.unit = CARQUET_TIME_UNIT_MICROS;
+    timestamp_lt.params.timestamp.is_adjusted_to_utc = 1;
+
     for (int c = 0; c < ncol; c++) {
         char namebuf[64];
         const char *nm;
@@ -318,8 +346,16 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
             snprintf(namebuf, sizeof(namebuf), "V%d", c + 1);
             nm = namebuf;
         }
-        const carquet_logical_type_t *lt =
-            (ptype[c] == CARQUET_PHYSICAL_BYTE_ARRAY) ? &string_lt : NULL;
+        const carquet_logical_type_t *lt;
+        if (is_date[c]) {
+            lt = &date_lt;
+        } else if (is_ts[c]) {
+            lt = &timestamp_lt;
+        } else if (ptype[c] == CARQUET_PHYSICAL_BYTE_ARRAY) {
+            lt = &string_lt;
+        } else {
+            lt = NULL;
+        }
         carquet_field_repetition_t rep =
             nullable[c] ? CARQUET_REPETITION_OPTIONAL : CARQUET_REPETITION_REQUIRED;
 
@@ -353,7 +389,33 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp) {
         R_xlen_t i, k = 0;
         carquet_status_t st = CARQUET_OK;
 
-        switch (ptype[c]) {
+        if (is_date[c]) {
+            /* Date stores days since 1970-01-01; write them as INT32. */
+            int32_t *buf = (int32_t *)R_alloc(nrow, sizeof(int32_t));
+            double *p = REAL(v);
+            for (i = 0; i < nrow; i++) {
+                if (!R_IsNA(p[i])) {
+                    buf[k++] = (int32_t)round(p[i]);
+                    if (def) def[i] = 1;
+                } else if (def) {
+                    def[i] = 0;
+                }
+            }
+            st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
+        } else if (is_ts[c]) {
+            /* POSIXct stores UTC seconds; write microseconds as INT64. */
+            int64_t *buf = (int64_t *)R_alloc(nrow, sizeof(int64_t));
+            double *p = REAL(v);
+            for (i = 0; i < nrow; i++) {
+                if (!R_IsNA(p[i])) {
+                    buf[k++] = (int64_t)llround(p[i] * 1e6);
+                    if (def) def[i] = 1;
+                } else if (def) {
+                    def[i] = 0;
+                }
+            }
+            st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
+        } else switch (ptype[c]) {
         case CARQUET_PHYSICAL_BOOLEAN: {
             uint8_t *buf = (uint8_t *)R_alloc(nrow, 1);
             int *p = LOGICAL(v);
