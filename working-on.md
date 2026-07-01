@@ -12,8 +12,9 @@ steps. Detailed type decisions and the full type roadmap live in
 Broader Parquet logical-type support is built on the shared read plan
 (`read_plan()`), so eager reads, collected reads, and batch callbacks convert
 identically. `DATE`, UTC-adjusted `TIMESTAMP`, and legacy `INT96` timestamps are
-implemented. Candidate next steps are a non-UTC local `TIMESTAMP`
-representation, exact `INT64`, or correct binary handling.
+implemented. The next focus is explicit writer schema control. It should land
+before more ambiguous scalar types because it provides one place to request
+`INT64`, `FLOAT`, timestamp units, fixed binary lengths, and decimal parameters.
 
 ## Implemented
 
@@ -120,6 +121,8 @@ representation, exact `INT64`, or correct binary handling.
 - Ordinary R numeric vectors continue to write as Parquet `DOUBLE`.
 - Writing ambiguous physical types such as `FLOAT` or `INT64` will require an
   explicit writer schema or type declaration.
+- Explicit writer schema control is the next feature, before additional scalar
+  mappings. This avoids adding one-off arguments or classes for each type.
 - Exact signed `INT64` support may later be offered through
   `bit64::integer64` or an equivalent bit-preserving class.
 - Binary data must eventually become raw-vector list-columns; only text
@@ -134,27 +137,35 @@ representation, exact `INT64`, or correct binary handling.
 
 ## Next steps
 
-### Immediate: unify scalar conversion
+### Immediate: explicit schemas
 
-1. Introduce a native conversion-plan structure containing physical type,
-   logical type and parameters, fixed byte length, definition/repetition
-   levels, R target type, and conversion operations.
-2. Use the plan for allocation and batch copying in both `collect()` and
-   `walk_batches()`.
-3. Normalize modern and legacy logical annotations before selecting a mapping.
-4. Move `parquet_type_mapping()` onto the authoritative mapping registry.
-5. Add fixtures and boundary tests before changing existing returned classes.
+1. Make `read_plan()` exactly match native collection for nested fields. It
+   currently rejects repeated leaves but can incorrectly mark a non-repeated
+   nested struct leaf collectible; native collection rejects all paths deeper
+   than one level.
+2. Update the `read_plan()` documentation that still says `DATE` and
+   `TIMESTAMP` annotations are not applied.
+3. Let `read_plan()` accept a file path directly, or add a
+   `read_parquet_schema()` path-oriented wrapper matching the nanoparquet name.
+4. Add `infer_parquet_schema(x)` to explain the writer's current automatic
+   choices before writing data.
+5. Design `parquet_schema(...)` as a validated, reusable schema object.
+6. Add `schema = NULL` to `write_parquet()`. `NULL` preserves current inference;
+   named schema entries override selected columns and an `AUTO` entry keeps the
+   inferred mapping.
+7. Initially support flat scalar declarations already understood by qio:
+   `BOOLEAN`, `INT32`, `INT64`, `FLOAT`, `DOUBLE`, `STRING`, `DATE`, and
+   UTC-adjusted `TIMESTAMP`. Reject unsupported combinations before creating
+   the output file.
+8. Test column matching, partial schemas, nullability, numeric range and
+   integrality validation, timestamp units, and readable error messages.
 
-### Next: useful logical scalar types
+### Next: useful scalar follow-ups
 
-1. Decide and implement a non-UTC local `TIMESTAMP` representation. It is a civil
-   time, not an instant, so plain `POSIXct` is not semantically exact.
-2. Test the numeric `INT64` boundary around `2^53`, including microsecond and
+1. Test the numeric `INT64` boundary around `2^53`, including microsecond and
    nanosecond timestamps far from the epoch.
-3. Design an explicit writer schema for `INT64`, `FLOAT`, timestamp units,
-   fixed binary lengths, and decimal precision/scale. This would also let the
-   writer emit millisecond or nanosecond timestamps instead of the fixed
-   microsecond default.
+2. Decide and implement a non-UTC local `TIMESTAMP` representation. It is a
+   civil time, not an instant, so plain `POSIXct` is not semantically exact.
 
 ### Then: binary and exact values
 
@@ -190,6 +201,9 @@ representation, exact `INT64`, or correct binary handling.
 ## Known limitations
 
 - Only flat, non-repeated columns can be collected.
+- `read_plan()` does not yet detect every non-repeated nested struct leaf that
+  native collection rejects; align the plan before exposing it as reusable
+  schema input.
 - Logical time, decimal, UUID, and integer annotations do not yet change
   materialized R values. Non-UTC `TIMESTAMP` values are also left unapplied.
 - Unannotated binary is currently treated as UTF-8 character data.
@@ -207,6 +221,14 @@ representation, exact `INT64`, or correct binary handling.
   `url: ~`; no speculative site URL has been added.
 
 ## Verification
+
+### 2026-07-01 (current)
+
+- `devtools::test()`: 142 passed, 0 failed, 0 warnings, 0 skipped.
+- `R CMD check --no-manual`: 0 errors, 0 warnings, 1 note.
+- The sole check note is the untracked top-level `CLAUDE.md`, which is not yet
+  excluded by `.Rbuildignore`; package code, compilation, examples, and tests
+  pass.
 
 ### 2026-07-01 (legacy `INT96`)
 
