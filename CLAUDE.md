@@ -66,6 +66,6 @@ Never edit files under `src/carquet/`, `src/zstd/`, or `src/lz4/` directly. To u
 
 ## Tests
 
-Tests live in `tests/testthat/test-qio.R`. The test suite uses `withr::local_tempfile()` for isolation. External fixtures (interoperability tests) and the package-owned fixture (four row groups, all supported types, duplicate footer keys) are used alongside round-trip tests.
+Tests live in `tests/testthat/` (`test-qio.R`, `test-parquet-file.R`, `test-parquet-plan.R`, `test-parquet-schema.R`, `test-external.R`). The test suite uses `withr::local_tempfile()` for isolation. External fixtures (interoperability tests) and the package-owned fixture (four row groups, all supported types, duplicate footer keys) are used alongside round-trip tests.
 
-Current baseline: 87 tests, 0 failures, 0 warnings (as of 2026-07-01).
+Current baseline: 190 tests, 0 failures, 0 warnings (as of 2026-07-02).
