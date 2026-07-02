@@ -116,6 +116,34 @@ test_that("collect() with mmap decodes columns in parallel and matches serial", 
   expect_identical(collect(parallel), collect(serial))
 })
 
+test_that("DIAGNOSTIC batch-reader vs direct-read vs cardinality (x86 triage)", {
+  # TEMPORARY: triage a CI failure seen only on x86 (Linux+Windows), not
+  # macOS/ARM, in the high-cardinality partial-page test below. Determines
+  # whether the corruption is (a) shared by the batch-reader path too, and
+  # (b) tied to high-cardinality dictionary decode.
+  n <- 300L
+  x <- seq_len(n)
+  drop_in <- function(v) { v[c(1L, 2L, 3L, 150L, 151L, 299L, n)] <- NA; v }
+
+  hi <- data.frame(dense = as.double(x), stringsAsFactors = FALSE)
+  lo <- data.frame(dense = as.double(x %% 8L), stringsAsFactors = FALSE)
+
+  path_hi <- withr::local_tempfile(fileext = ".parquet"); write_parquet(hi, path_hi)
+  path_lo <- withr::local_tempfile(fileext = ".parquet"); write_parquet(lo, path_lo)
+
+  # (a) batch-reader path (walk_batches) on the high-cardinality column
+  batches <- list()
+  walk_batches(local_parquet_file(path_hi),
+               function(b, i) batches[[i]] <<- b, batch_size = 7L)
+  via_walk <- do.call(rbind, batches)
+  expect_equal(via_walk$dense, hi$dense,
+               info = "batch-reader / walk_batches, high-cardinality")
+
+  # (b) low-cardinality direct read (small dictionary, no 9-bit indices)
+  expect_equal(collect(local_parquet_file(path_lo), batch_size = 7L)$dense,
+               lo$dense, info = "direct-read, low-cardinality")
+})
+
 test_that("collect() places null offsets correctly across partial-page reads", {
   # Regression guard for the incremental dense-value cursor in carquet's page
   # reader: when one page is consumed over many partial reads, present values
