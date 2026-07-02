@@ -354,6 +354,13 @@ static carquet_status_t ensure_decompress_capacity(
         reader->decompress_capacity = want;
     }
 
+    /* Zero the whole buffer before every decompress. The decompressor may write
+     * fewer bytes than the declared uncompressed size, yet decoders read up to
+     * that declared size (plus a few words of group over-read). Zeroing up front
+     * makes every such read defined regardless of how much the codec produced —
+     * matching the behaviour on allocators that hand back zeroed pages. */
+    memset(reader->decompress_buffer, 0, reader->decompress_capacity);
+
     return CARQUET_OK;
 }
 
@@ -1675,11 +1682,6 @@ static carquet_status_t prepare_data_page_payload(
 
             *page_data = reader->decompress_buffer;
             *page_size = levels_size + decompressed_data_size;
-            /* Zero everything the decompressor did not write, up to capacity,
-             * so any decode read past the produced bytes is defined (see
-             * CARQUET_DECODE_SLACK). */
-            memset(reader->decompress_buffer + *page_size, 0,
-                   reader->decompress_capacity - *page_size);
             *used_decompress_buffer = true;
             return CARQUET_OK;
         }
@@ -1712,10 +1714,6 @@ static carquet_status_t prepare_data_page_payload(
     }
 
     *page_data = reader->decompress_buffer;
-    /* Zero everything the decompressor did not write, up to capacity, so any
-     * decode read past the produced bytes is defined (see CARQUET_DECODE_SLACK). */
-    memset(reader->decompress_buffer + *page_size, 0,
-           reader->decompress_capacity - *page_size);
     *used_decompress_buffer = true;
     return CARQUET_OK;
 }
