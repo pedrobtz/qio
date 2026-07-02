@@ -324,6 +324,14 @@ static carquet_status_t validate_page_payload_span(
     return CARQUET_OK;
 }
 
+/* Bit-unpacking and RLE decoders read a few words past the logical end of the
+ * payload to fill the final group of values. The decompress buffer is realloc'd
+ * (not zeroed), so that over-read lands on uninitialised heap: benign where the
+ * OS hands back zeroed pages (macOS), garbage on glibc (x86) — corrupting the
+ * decoded values. Over-allocate this much slack and zero it after each
+ * decompression (see prepare_data_page_payload) so the over-read is defined. */
+#define CARQUET_DECODE_SLACK 64
+
 static carquet_status_t ensure_decompress_capacity(
     carquet_column_reader_t* reader,
     size_t needed,
@@ -335,14 +343,15 @@ static carquet_status_t ensure_decompress_capacity(
         return CARQUET_ERROR_INVALID_PAGE;
     }
 
-    if (needed > reader->decompress_capacity) {
-        uint8_t* new_buf = carquet_mem_realloc(reader->decompress_buffer, needed);
+    size_t want = needed + CARQUET_DECODE_SLACK;
+    if (want > reader->decompress_capacity) {
+        uint8_t* new_buf = carquet_mem_realloc(reader->decompress_buffer, want);
         if (!new_buf) {
             CARQUET_SET_ERROR(error, CARQUET_ERROR_OUT_OF_MEMORY, "%s", message);
             return CARQUET_ERROR_OUT_OF_MEMORY;
         }
         reader->decompress_buffer = new_buf;
-        reader->decompress_capacity = needed;
+        reader->decompress_capacity = want;
     }
 
     return CARQUET_OK;
@@ -1666,6 +1675,9 @@ static carquet_status_t prepare_data_page_payload(
 
             *page_data = reader->decompress_buffer;
             *page_size = levels_size + decompressed_data_size;
+            /* Zero the decode over-read slack (see CARQUET_DECODE_SLACK). */
+            memset(reader->decompress_buffer + *page_size, 0,
+                   CARQUET_DECODE_SLACK);
             *used_decompress_buffer = true;
             return CARQUET_OK;
         }
@@ -1698,6 +1710,8 @@ static carquet_status_t prepare_data_page_payload(
     }
 
     *page_data = reader->decompress_buffer;
+    /* Zero the decode over-read slack (see CARQUET_DECODE_SLACK). */
+    memset(reader->decompress_buffer + *page_size, 0, CARQUET_DECODE_SLACK);
     *used_decompress_buffer = true;
     return CARQUET_OK;
 }

@@ -83,6 +83,18 @@ upstream them and bump the pin.
   `R CMD INSTALL`), or stale objects keep the old struct layout and corrupt
   memory at runtime.
 
+- **carquet: zero decode over-read slack on the decompress buffer.**
+  `src/carquet/reader/page_reader.c`. The reusable decompress buffer was
+  `realloc`'d to exactly the page's uncompressed size; bit-unpacking / RLE
+  decoders read a few words past the payload end to fill the final value group,
+  landing on uninitialised heap. Benign where the OS returns zeroed pages
+  (arm64 macOS), garbage on glibc (x86) — silently corrupting decoded values
+  for any compressed column beyond ~a dozen rows. Fix: over-allocate
+  `CARQUET_DECODE_SLACK` (64) bytes and zero that slack after each
+  decompression (both V1 and V2 paths). Found with valgrind `--track-origins`
+  on x86 (ASan is blind to it — the read is in-allocation-bounds once padded,
+  and uninitialised, not out-of-bounds). Guarded by the partial-page test.
+
 ## Re-vendoring
 
 To bump a version: re-run the copy steps above from a fresh checkout of the new

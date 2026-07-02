@@ -121,20 +121,10 @@ test_that("collect() places null offsets correctly across partial-page reads", {
   # reader: when one page is consumed over many partial reads, present values
   # must land at the right dense offset no matter where nulls fall. Nulls are
   # placed at leading, trailing, and consecutive positions to catch off-by-one
-  # errors in the running count.
-  #
-  # FIXME(x86): fails only on x86 (Linux/Windows); macOS/arm64 is correct.
-  # Valgrind reports use of UNINITIALISED values (not out-of-bounds — ASan is
-  # clean), flowing from carquet's read decode into the returned doubles.
-  # A DOUBLE-only column (no strings, no nulls) reproduces it, so it is a
-  # read-side carquet decode bug on x86, distinct from — and unaffected by —
-  # the byte-array writer uninit already fixed, and NOT caused by the read
-  # optimizations (the unchanged batch-reader path corrupts identically, and
-  # read-only external fixtures pass on x86). Pinpointing needs valgrind
-  # --track-origins on x86. Skipped on x86 until fixed; keep as the reproducer.
-  if (Sys.info()[["machine"]] %in% c("x86_64", "x86-64", "AMD64")) {
-    skip("pre-existing x86 carquet double-decode bug (FIXME above)")
-  }
+  # errors in the running count. Also guards against the x86 decode over-read
+  # of carquet's decompress buffer (fixed by CARQUET_DECODE_SLACK): the buffer
+  # was realloc'd without zeroed tail padding, so bit-unpacking read
+  # uninitialised heap past the payload — benign on macOS, garbage on x86.
   n <- 300L
   x <- seq_len(n)
   drop_in <- function(v) {
