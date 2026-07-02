@@ -455,6 +455,13 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp) 
         case CARQUET_PHYSICAL_BYTE_ARRAY: {
             carquet_byte_array_t *buf =
                 (carquet_byte_array_t *)R_alloc(nrow, sizeof(carquet_byte_array_t));
+            /* R_alloc does not zero. Present values are packed densely into
+             * [0, k); the null tail [k, nrow) is never filled, but carquet's
+             * batch-size estimate scans all nrow entries and reads
+             * arrays[i].length. Zero the buffer so those reads are defined
+             * (length 0) instead of garbage — uninitialized bytes are benign
+             * on some allocators but corrupt the estimate on others (x86). */
+            memset(buf, 0, (size_t)nrow * sizeof(carquet_byte_array_t));
             for (i = 0; i < nrow; i++) {
                 SEXP e = STRING_ELT(v, i);
                 if (e != NA_STRING) {
