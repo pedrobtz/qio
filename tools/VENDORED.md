@@ -83,17 +83,39 @@ upstream them and bump the pin.
   `R CMD INSTALL`), or stale objects keep the old struct layout and corrupt
   memory at runtime.
 
-- **carquet: zero decode over-read slack on the decompress buffer.**
-  `src/carquet/reader/page_reader.c`. The reusable decompress buffer was
-  `realloc`'d to exactly the page's uncompressed size; bit-unpacking / RLE
-  decoders read a few words past the payload end to fill the final value group,
-  landing on uninitialised heap. Benign where the OS returns zeroed pages
-  (arm64 macOS), garbage on glibc (x86) — silently corrupting decoded values
-  for any compressed column beyond ~a dozen rows. Fix: over-allocate
-  `CARQUET_DECODE_SLACK` (64) bytes and zero that slack after each
-  decompression (both V1 and V2 paths). Found with valgrind `--track-origins`
-  on x86 (ASan is blind to it — the read is in-allocation-bounds once padded,
-  and uninitialised, not out-of-bounds). Guarded by the partial-page test.
+- **carquet: fix snappy scalar `incremental_copy` for 8..15-byte matches.**
+  `src/carquet/compression/snappy.c`. Snappy's overlapping match copy has three
+  builds: a NEON reshuffle (`__ARM_NEON`, baseline arm64), an SSSE3 reshuffle
+  (`__SSSE3__`, needs `-mssse3`), and a pure-scalar fallback. The scalar path set
+  its short-pattern threshold `big_pattern = 8`, so a match distance in `[8, 16)`
+  skipped the 8-byte `copy64` fill and fell into the "simple block copies" tail,
+  which uses 16-byte `copy128`s. With `src = op - pattern_size`, a 16-byte read
+  from `src` spans `[op-pattern_size, op+ (16-pattern_size))` — its second half is
+  the not-yet-written destination, so it copies garbage (the uninitialised
+  decompress buffer). Result: any snappy stream containing an 8..15-byte match —
+  e.g. the default codec on repetitive/zero-heavy columns like plain doubles —
+  decoded to garbage past the first such match. Benign on builds with NEON/SSSE3
+  (arm64, or x86 with `-mssse3`); garbage on the scalar fallback, which is what a
+  default-flags x86-64 build (this package) uses. Fix: `big_pattern = 16` for the
+  scalar path too, so `[8, 16)` matches use the correct 8-byte overlapping fill.
+  This was the true source of the "uninitialised value" valgrind flagged against
+  the decompress buffer below. Reproduce on arm64 by compiling snappy without
+  `__ARM_NEON`. Guarded by the partial-page test in
+  `tests/testthat/test-parquet-file.R`.
+
+- **carquet: zero the decompress buffer before decode (defensive).**
+  `src/carquet/reader/page_reader.c`. The reusable decompress buffer is
+  `realloc`'d (not zeroed); `ensure_decompress_capacity` over-allocates
+  `CARQUET_DECODE_SLACK` (64) bytes and `memset`s the whole buffer before each
+  decompression so any decoder over-read past the produced bytes is defined
+  rather than uninitialised heap (benign on arm64 macOS where pages come zeroed,
+  garbage on glibc x86). NOTE: the concrete corruption this was chasing turned
+  out to be the snappy scalar bug above, not a bit-unpack/RLE over-read; with
+  that fixed this zeroing is defensive belt-and-suspenders. It can be slimmed to
+  zeroing only the `[needed, needed+slack)` region (or dropped) as a hot-path
+  perf reclaim once x86 CI confirms clean — see `working-on.md`. Found with
+  valgrind `--track-origins` on x86 (ASan is blind to it — the read is
+  in-allocation-bounds once padded, and uninitialised, not out-of-bounds).
 
 ## Re-vendoring
 

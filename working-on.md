@@ -167,22 +167,27 @@ the same schema rather than adding one-off writer arguments.
 
 ### Now: correctness and housekeeping
 
-0. **x86 DOUBLE-decode corruption (release blocker).** On x86 (Linux/Windows)
-   qio reads back garbage for DOUBLE columns beyond ~a dozen rows; macOS/arm64
-   is correct. Surfaced by the partial-page test in `test-parquet-file.R`
-   (skipped on x86 with a FIXME; it is the reproducer). Established: valgrind
-   reports use of UNINITIALISED values (ASan clean, so not out-of-bounds);
-   a double-only column reproduces it, so it is read-side carquet decode, not
-   the byte-array writer uninit (fixed) and not the read optimizations (the
-   unchanged batch reader corrupts identically; read-only external fixtures
-   pass on x86). Next: valgrind `--track-origins` on x86 (add to native-checks
-   or use an x86 box) to pinpoint the decode site, then patch. Pre-existing
-   carquet bug, but data corruption on the primary platforms — must fix before
-   any release.
+0. **x86 DOUBLE-decode corruption (release blocker) — FIXED.** On x86
+   (Linux/Windows) qio read back garbage for DOUBLE columns beyond ~a dozen
+   rows; macOS/arm64 was correct. Root cause: **carquet's snappy scalar
+   `incremental_copy`** used `big_pattern = 8`, so an 8..15-byte match distance
+   skipped the 8-byte overlapping fill and used 16-byte `copy128`s that read the
+   not-yet-written destination — garbage. It only bites the pure-scalar snappy
+   fallback (default-flags x86-64); arm64 uses NEON and x86-with-`-mssse3` uses
+   SSSE3, both correct. That over-read of the uninitialised decompress buffer is
+   exactly what valgrind `--track-origins` pinned to `ensure_decompress_capacity`
+   — one bug, not two. Fix: `big_pattern = 16` in `compression/snappy.c` (see
+   `tools/VENDORED.md`). Reproduced locally on arm64 by compiling snappy without
+   `__ARM_NEON`. Guarded by the (now un-skipped) partial-page test. The earlier
+   whole-buffer decompress zeroing (`ensure_decompress_capacity`) was masking the
+   symptom and is now defensive only — **perf reclaim:** slim it to zero just the
+   `[needed, needed+slack)` slack, or drop it, once x86 CI confirms clean (it
+   `memset`s the whole decompress buffer per page, on the hot read path).
 1. **Upstream the carquet patches** (O(1) dense cursor; count nulls once per
-   page — see `tools/VENDORED.md` § "Local patches") to
+   page; snappy scalar `incremental_copy` 8..15-byte match fix — see
+   `tools/VENDORED.md` § "Local patches") to
    <https://github.com/Vitruves/carquet>. Also the only item where waiting
-   risks silent loss on the next re-vendor. Fold the x86 decode fix in too.
+   risks silent loss on the next re-vendor.
 2. **Validate the new C code on Windows CI** (worker pool uses the Win32
    branch of carquet's `worker_pool.c`; mmap uses `CreateFileMapping`). The
    R-CMD-check workflow covers this once pushed.

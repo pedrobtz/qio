@@ -121,10 +121,12 @@ test_that("collect() places null offsets correctly across partial-page reads", {
   # reader: when one page is consumed over many partial reads, present values
   # must land at the right dense offset no matter where nulls fall. Nulls are
   # placed at leading, trailing, and consecutive positions to catch off-by-one
-  # errors in the running count. Also guards against the x86 decode over-read
-  # of carquet's decompress buffer (fixed by CARQUET_DECODE_SLACK): the buffer
-  # was realloc'd without zeroed tail padding, so bit-unpacking read
-  # uninitialised heap past the payload — benign on macOS, garbage on x86.
+  # errors in the running count. Also guards against the snappy scalar-decode
+  # corruption (fixed in compression/snappy.c): its incremental_copy used
+  # 16-byte block copies for match distances of 8..15 bytes, reading the
+  # not-yet-written destination — benign where snappy uses NEON/SSSE3 (arm64,
+  # SSSE3 x86) but garbage on the pure-scalar fallback (default-flags x86-64).
+  # The columns below are snappy-compressed by default, so this exercises it.
   n <- 300L
   x <- seq_len(n)
   drop_in <- function(v) {
