@@ -104,6 +104,18 @@ test_that("collect() reads supported physical types and nulls", {
   expect_equal(collect(file, batch_size = 1000), expected, tolerance = 1e-7)
 })
 
+test_that("collect() with mmap decodes columns in parallel and matches serial", {
+  expected <- fixture_data()
+  # threads = 0 (auto): numeric columns decode on carquet's worker pool, the
+  # string column on the main thread; 4 row groups x 5 numeric columns keeps
+  # the pool genuinely busy. Nulls in price/label cover the def-level path.
+  parallel <- local_parquet_file(mmap = TRUE)
+  expect_equal(collect(parallel), expected, tolerance = 1e-7)
+  serial <- local_parquet_file(mmap = TRUE, threads = 1)
+  expect_equal(collect(serial), expected, tolerance = 1e-7)
+  expect_identical(collect(parallel), collect(serial))
+})
+
 test_that("collect() places null offsets correctly across partial-page reads", {
   # Regression guard for the incremental dense-value cursor in carquet's page
   # reader: when one page is consumed over many partial reads, present values

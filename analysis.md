@@ -1,9 +1,12 @@
 # qio read performance — analysis and optimization record
 
-**Status: implemented.** `qio::read_parquet` went from **4.54s to 438ms (10.4×)**
-on the reference workload and now matches nanoparquet (419ms) while allocating
-~30% less memory (497 vs 711 MB). This file records the diagnosis, the four
-changes that delivered it, and the remaining levers.
+**Status: implemented.** Serial `qio::read_parquet` went from **4.54s to
+~440ms (10×)** on the reference workload — parity with nanoparquet — while
+allocating ~30% less memory (497 vs 711 MB). With memory-mapped input,
+`collect()` additionally decodes numeric columns in parallel on carquet's
+worker pool: **~220ms, ~3× faster than nanoparquet** (which is single-threaded
+by design). This file records the diagnosis, the five changes, and the
+remaining levers.
 
 Reference workload: `local-data/yellow_tripdata_2023-01.parquet` (NYC yellow
 taxi, 3.07M rows × 19 columns, gzip, dictionary-encoded, all columns OPTIONAL),
@@ -35,6 +38,7 @@ faster.
 | 2 | direct column reads in `collect()` (skip batch reader's expand + null bitmap) | `src/qio_file.c` | 1.73s |
 | 3 | count each page's nulls once, reuse across layers | vendored carquet patch | 519ms |
 | 4 | type-specialized scatter (hoisted `REAL()`/`INTEGER()` accessors, `memcpy` fast paths) | `src/qio_file.c` | **438ms** |
+| 5 | parallel numeric-column decode on carquet's worker pool (mmap only) | `src/qio_file.c` | **~220ms** (mmap + threads) |
 
 ### 1. Quadratic prefix rescan (carquet patch)
 
@@ -71,6 +75,29 @@ R 3.5 — **per value**, and re-ran a type `switch` per value. Rewritten
 nanoparquet-style: one specialized loop per physical type, destination pointer
 hoisted out of the loop, straight `memcpy` for REQUIRED DOUBLE/INT32 columns.
 
+### 5. Parallel numeric-column decode (qio)
+
+`collect()` builds one task per (row group × numeric column) and runs them on
+carquet's own worker pool (`reader/worker_pool.h`, the pool the batch reader
+uses). R's C API is main-thread-only, so the design is: the main thread
+allocates all result vectors up front and hands workers **raw data pointers**;
+workers decode into private malloc'd scratch and scatter through those
+pointers with zero R API calls (`qio_scatter_numeric_raw`). BYTE_ARRAY columns
+stay on the main thread (interning + write barrier), overlapping the workers.
+Worker errors are recorded per task and raised on the main thread after
+`carquet_worker_pool_wait`; on an R-side unwind, `qio_batch_cleanup` waits for
+the pool before the longjmp continues so workers never write into released
+vectors.
+
+Parallelism is gated on `mmap = TRUE`: the fread path shares FILE-handle and
+prebuffer state across column readers and is not thread-safe. `threads = 0`
+(the default) uses the machine's core count; `threads = 1` forces serial.
+
+```r
+pf <- parquet_open(path, mmap = TRUE)   # threads = 0 -> auto
+x  <- collect(pf)                        # ~220ms vs nano's ~650ms
+```
+
 ## Isolation experiments worth remembering
 
 - **Null-path tax**: identical qio-written files differing only in
@@ -100,29 +127,37 @@ keep the old struct layout and corrupt memory at runtime (silent SIGABRT).
 
 ## Remaining levers (not implemented)
 
-Ordered by expected value, all optional now that parity is reached:
-
-1. **No-null fast path**: `carquet_reader_column_statistics()` exposes
+1. **`read_parquet()` does not thread by default** — it opens with
+   `mmap = FALSE`, so the eager one-shot API stays on the serial fread path.
+   Flipping its open to mmap (or exposing arguments) is a defaults decision:
+   mmap changes file-locking semantics on Windows and risks SIGBUS if the file
+   is truncated while mapped.
+2. **No-null fast path**: `carquet_reader_column_statistics()` exposes
    `null_count`; when 0, skip definition-level handling entirely and take the
    REQUIRED path (bulk copy). Most real-world OPTIONAL columns are null-free.
-2. **Decode into R memory** for DOUBLE/INT32: pass `REAL(x)`/`INTEGER(x)` as
+3. **Decode into R memory** for DOUBLE/INT32: pass `REAL(x)`/`INTEGER(x)` as
    `carquet_column_read_batch`'s output buffer; nullable columns then use
    nanoparquet's in-place back-to-front NA expand. Removes the scratch buffer
    copy. (carquet still stages pages internally — a 1-copy floor vs
    nanoparquet's 0; that residual needs an upstream carquet redesign.)
-3. **Threading** the per-column reads: columns are embarrassingly parallel;
-   nanoparquet is single-threaded by design, so this is the lever that would
-   put qio decisively ahead. Arrow's remaining advantage is largely this.
 4. **carquet bitunpack dispatch hoist**: `carquet_bitunpack8_32` re-fetches its
    SIMD function pointer (with an atomic init check) every few values; hoist to
    once per page. Small vendored patch.
+5. **Threading the fread path** would need per-column-reader file descriptors
+   (pread) upstream in carquet.
 
 ## Verification (2026-07-02)
 
-- `bench::mark`, 10 iterations, warm cache: qio 438ms / 497MB,
-  nanoparquet 419ms / 711MB.
-- Full test suite: 187 pass, 0 fail (includes a partial-page null-offset
-  regression test added with change 1).
-- Data validated against `arrow::read_parquet` column-by-column: identical
-  values and NA counts (358,715), modulo qio's documented representation of
-  non-UTC timestamps as raw numeric.
+- `bench::mark`, 10 iterations, warm cache, GC included:
+  qio threaded (mmap) **223ms**, qio serial 676ms, qio fread 676ms,
+  nanoparquet 654ms — all qio variants at 497MB vs nano's 711MB.
+- Full test suite: 190 pass, 0 fail (includes the partial-page null-offset
+  regression test and a threaded-vs-serial mmap equivalence test).
+- Threaded, serial-mmap, and fread reads are `identical()`; data validated
+  against `arrow::read_parquet` column-by-column: identical values and NA
+  counts (358,715), modulo qio's documented representation of non-UTC
+  timestamps as raw numeric.
+- Caution when benchmarking: `devtools::load_all()` compiles a **debug build**
+  (`-O0`, ~3× slower) and leaves `-O0` objects in `src/` that a later
+  `R CMD INSTALL` silently reuses; benchmark only the installed package in a
+  fresh session (see the header of `local-script/benchmark.R`).

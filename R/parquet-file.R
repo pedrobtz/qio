@@ -6,7 +6,10 @@
 #' @param file Path to a Parquet file.
 #' @param mmap Use memory-mapped input.
 #' @param verify_checksums Verify Parquet page checksums when present.
-#' @param threads Number of reader threads. Zero lets carquet choose.
+#' @param threads Number of reader threads. Zero picks the machine's core
+#'   count. [collect()] decodes columns in parallel only when the file is
+#'   opened with `mmap = TRUE` (buffered reads share file state and stay
+#'   single-threaded); pass `threads = 1` to force serial reads.
 #'
 #' @return A `qio_parquet_file` object. Close it with [parquet_close()].
 #' @export

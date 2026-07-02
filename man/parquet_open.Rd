@@ -13,7 +13,10 @@ parquet_open(file, mmap = FALSE, verify_checksums = TRUE, threads = 0L)
 
 \item{verify_checksums}{Verify Parquet page checksums when present.}
 
-\item{threads}{Number of reader threads. Zero lets carquet choose.}
+\item{threads}{Number of reader threads. Zero picks the machine's core
+count. \code{\link[=collect]{collect()}} decodes columns in parallel only when the file is
+opened with \code{mmap = TRUE} (buffered reads share file state and stay
+single-threaded); pass \code{threads = 1} to force serial reads.}
 }
 \value{
 A \code{qio_parquet_file} object. Close it with \code{\link[=parquet_close]{parquet_close()}}.

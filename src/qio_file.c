@@ -5,12 +5,19 @@
 #include <Rinternals.h>
 
 #include <carquet/carquet.h>
+#include <reader/worker_pool.h>
 
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 /* One-shot debug probe: an R function called once from the innermost C frame.
  * Not thread-safe; intended only for interactive investigation. */
@@ -59,6 +66,7 @@ typedef struct {
     carquet_batch_reader_t *batch_reader;
     carquet_row_batch_t *batch;
     carquet_column_reader_t *column;  /* in-flight direct-read column reader */
+    carquet_worker_pool_t *pool;      /* in-flight parallel-collect pool */
     SEXP file;
     SEXP callback;
     int walk;
@@ -424,19 +432,23 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
 #define QIO_CONVERT_BOOL(v) ((v) ? TRUE : FALSE)
 #define QIO_CONVERT_INT96(v) (qio_int96_to_seconds(v))
 
-static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
-                                     carquet_physical_type_t type,
-                                     const void *values,
-                                     const int16_t *def_levels,
-                                     int16_t max_def, int64_t length) {
+/* Numeric scatter over raw destination memory. `dst_base` is the R vector's
+ * data pointer (int* for BOOLEAN/INT32, double* otherwise), obtained on the
+ * main thread; this function makes no R API calls, so it is safe to run on a
+ * carquet worker thread (NA_* are constants/globals, only read). */
+static void qio_scatter_numeric_raw(void *dst_base, R_xlen_t dst_offset,
+                                    carquet_physical_type_t type,
+                                    const void *values,
+                                    const int16_t *def_levels,
+                                    int16_t max_def, int64_t length) {
     switch (type) {
     case CARQUET_PHYSICAL_BOOLEAN: {
-        int *dst = LOGICAL(destination) + offset;
+        int *dst = (int *)dst_base + dst_offset;
         QIO_SCATTER_LOOP(uint8_t, dst, NA_LOGICAL, QIO_CONVERT_BOOL);
         break;
     }
     case CARQUET_PHYSICAL_INT32: {
-        int *dst = INTEGER(destination) + offset;
+        int *dst = (int *)dst_base + dst_offset;
         if (def_levels == NULL) {
             memcpy(dst, values, (size_t)length * sizeof(int32_t));
         } else {
@@ -445,22 +457,22 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
         break;
     }
     case CARQUET_PHYSICAL_INT64: {
-        double *dst = REAL(destination) + offset;
+        double *dst = (double *)dst_base + dst_offset;
         QIO_SCATTER_LOOP(int64_t, dst, NA_REAL, QIO_CONVERT_DOUBLE);
         break;
     }
     case CARQUET_PHYSICAL_INT96: {
-        double *dst = REAL(destination) + offset;
+        double *dst = (double *)dst_base + dst_offset;
         QIO_SCATTER_LOOP(carquet_int96_t, dst, NA_REAL, QIO_CONVERT_INT96);
         break;
     }
     case CARQUET_PHYSICAL_FLOAT: {
-        double *dst = REAL(destination) + offset;
+        double *dst = (double *)dst_base + dst_offset;
         QIO_SCATTER_LOOP(float, dst, NA_REAL, QIO_CONVERT_DOUBLE);
         break;
     }
     case CARQUET_PHYSICAL_DOUBLE: {
-        double *dst = REAL(destination) + offset;
+        double *dst = (double *)dst_base + dst_offset;
         if (def_levels == NULL) {
             memcpy(dst, values, (size_t)length * sizeof(double));
         } else {
@@ -468,6 +480,30 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
         }
         break;
     }
+    default:
+        break;
+    }
+}
+
+/* Raw data pointer for a numeric destination vector (main thread only). */
+static void *qio_column_data_pointer(SEXP destination,
+                                     carquet_physical_type_t type) {
+    switch (type) {
+    case CARQUET_PHYSICAL_BOOLEAN:
+        return LOGICAL(destination);
+    case CARQUET_PHYSICAL_INT32:
+        return INTEGER(destination);
+    default:
+        return REAL(destination);
+    }
+}
+
+static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
+                                     carquet_physical_type_t type,
+                                     const void *values,
+                                     const int16_t *def_levels,
+                                     int16_t max_def, int64_t length) {
+    switch (type) {
     case CARQUET_PHYSICAL_BYTE_ARRAY: {
         /* Strings must go through SET_STRING_ELT (write barrier) and
          * Rf_mkCharLenCE (interning); only the null branch can be hoisted. */
@@ -494,8 +530,105 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
         break;
     }
     default:
+        qio_scatter_numeric_raw(qio_column_data_pointer(destination, type),
+                                offset, type, values, def_levels, max_def,
+                                length);
         break;
     }
+}
+
+/* ============================================================================
+ * Parallel collect: one task per (row group x numeric column)
+ * ============================================================================
+ *
+ * Worker tasks run carquet decode into private malloc'd scratch and scatter
+ * into pre-allocated R vector memory through raw pointers — no R API calls.
+ * They are only dispatched when the reader is memory-mapped: the fread path
+ * shares FILE-handle and prebuffer state across column readers and is not
+ * thread-safe.
+ * BYTE_ARRAY columns stay on the main thread (string interning and the write
+ * barrier are R API). Errors are recorded in the task and raised on the main
+ * thread after carquet_worker_pool_wait().
+ */
+
+#define QIO_TASK_BATCH 65536
+
+typedef struct {
+    carquet_reader_t *reader;
+    int32_t row_group;
+    int32_t file_column;
+    carquet_physical_type_t type;
+    int16_t max_def;
+    void *dst;           /* raw R vector data pointer (int* or double*) */
+    R_xlen_t dst_offset; /* first row of this row group in the result */
+    int64_t rows;        /* rows in this row group */
+    int status;          /* 0 = ok; set to 1 on failure */
+    char message[256];
+} qio_column_task_t;
+
+static void qio_column_task_run(void *arg) {
+    qio_column_task_t *task = (qio_column_task_t *)arg;
+    carquet_error_t err = CARQUET_ERROR_INIT;
+    carquet_column_reader_t *column = carquet_reader_get_column(
+        task->reader, task->row_group, task->file_column, &err);
+    if (!column) {
+        carquet_error_format(&err, task->message, sizeof(task->message));
+        task->status = 1;
+        return;
+    }
+
+    int64_t batch = task->rows < QIO_TASK_BATCH ? task->rows : QIO_TASK_BATCH;
+    size_t value_width = sizeof(carquet_byte_array_t) > sizeof(carquet_int96_t)
+                             ? sizeof(carquet_byte_array_t)
+                             : sizeof(carquet_int96_t);
+    void *values = malloc((size_t)batch * value_width);
+    int16_t *defs = task->max_def > 0
+                        ? (int16_t *)malloc((size_t)batch * sizeof(int16_t))
+                        : NULL;
+    if (!values || (task->max_def > 0 && !defs)) {
+        snprintf(task->message, sizeof(task->message),
+                 "cannot allocate decode scratch");
+        task->status = 1;
+        goto done;
+    }
+
+    for (int64_t read = 0; read < task->rows;) {
+        int64_t want = task->rows - read;
+        if (want > batch) want = batch;
+        int64_t n = carquet_column_read_batch(column, values, want, defs,
+                                              NULL);
+        if (n != want) {
+            snprintf(task->message, sizeof(task->message),
+                     "column %d of row group %d yielded %lld of %lld rows",
+                     task->file_column + 1, task->row_group + 1,
+                     (long long)(read + (n > 0 ? n : 0)),
+                     (long long)task->rows);
+            task->status = 1;
+            goto done;
+        }
+        qio_scatter_numeric_raw(task->dst, task->dst_offset + read,
+                                task->type, values, defs, task->max_def, n);
+        read += n;
+    }
+
+done:
+    free(values);
+    free(defs);
+    carquet_column_reader_free(column);
+}
+
+/* Resolve threads for parallel collect: explicit count, or core count when
+ * the handle was opened with threads = 0 ("let carquet choose"). */
+static int32_t qio_collect_threads(int32_t requested) {
+    if (requested > 0) return requested;
+#ifdef _WIN32
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    return (int32_t)info.dwNumberOfProcessors;
+#else
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int32_t)n : 4;
+#endif
 }
 
 static bool qio_row_group_filter(const carquet_reader_t *reader,
@@ -714,76 +847,157 @@ static SEXP qio_collect_body(void *data) {
     const carquet_schema_t *schema = carquet_reader_schema(reader);
     int32_t ncol = context->selection.num_columns;
 
-    /* One reusable scratch buffer sized to the largest selected row group and
-     * the widest physical value (byte arrays are pointer+length structs). */
+    /* Selected row groups: carquet index, row count, and result offset. */
+    int32_t n_all = context->selection.num_row_groups;
+    int32_t *rg_index = (int32_t *)R_alloc(
+        (size_t)(n_all > 0 ? n_all : 1), sizeof(int32_t));
+    int64_t *rg_rows = (int64_t *)R_alloc(
+        (size_t)(n_all > 0 ? n_all : 1), sizeof(int64_t));
+    R_xlen_t *rg_offset = (R_xlen_t *)R_alloc(
+        (size_t)(n_all > 0 ? n_all : 1), sizeof(R_xlen_t));
+    int32_t n_groups = 0;
     int64_t max_rg_rows = 0;
-    for (int32_t g = 0; g < context->selection.num_row_groups; g++) {
-        if (!context->selection.row_group_mask[g]) continue;
-        carquet_row_group_metadata_t meta;
-        if (carquet_reader_row_group_metadata(reader, g, &meta) != CARQUET_OK) {
-            Rf_error("qio: cannot inspect row group %d", g + 1);
-        }
-        if (meta.num_rows > max_rg_rows) max_rg_rows = meta.num_rows;
-    }
-    size_t value_width = sizeof(carquet_byte_array_t) > sizeof(carquet_int96_t)
-                             ? sizeof(carquet_byte_array_t)
-                             : sizeof(carquet_int96_t);
-    void *value_buf = R_alloc((size_t)max_rg_rows, (int)value_width);
-    int16_t *def_buf = (int16_t *)R_alloc((size_t)max_rg_rows, sizeof(int16_t));
-
     R_xlen_t offset = 0;
-    for (int32_t g = 0; g < context->selection.num_row_groups; g++) {
+    for (int32_t g = 0; g < n_all; g++) {
         if (!context->selection.row_group_mask[g]) continue;
         carquet_row_group_metadata_t meta;
         if (carquet_reader_row_group_metadata(reader, g, &meta) != CARQUET_OK) {
             Rf_error("qio: cannot inspect row group %d", g + 1);
         }
-        int64_t rg_rows = meta.num_rows;
-        if (rg_rows <= 0) continue;
-        if (offset + rg_rows > rows) {
+        if (meta.num_rows <= 0) continue;
+        if (offset + meta.num_rows > rows) {
             Rf_error("qio: row group %d exceeds the expected row count", g + 1);
         }
+        rg_index[n_groups] = g;
+        rg_rows[n_groups] = meta.num_rows;
+        rg_offset[n_groups] = offset;
+        offset += (R_xlen_t)meta.num_rows;
+        if (meta.num_rows > max_rg_rows) max_rg_rows = meta.num_rows;
+        n_groups++;
+    }
+    if (offset != rows) {
+        Rf_error("qio: expected %lld rows but the selected row groups hold "
+                 "%lld",
+                 (long long)rows, (long long)offset);
+    }
 
+    /* One task per (row group x numeric column); BYTE_ARRAY columns are
+     * handled on the main thread below. */
+    qio_column_task_t *tasks = (qio_column_task_t *)R_alloc(
+        (size_t)(n_groups * ncol > 0 ? (size_t)n_groups * (size_t)ncol : 1),
+        sizeof(qio_column_task_t));
+    int32_t n_tasks = 0;
+    int has_strings = 0;
+    for (int32_t s = 0; s < n_groups; s++) {
         for (int32_t i = 0; i < ncol; i++) {
             int32_t file_col = context->selection.columns[i];
             carquet_physical_type_t type =
                 carquet_schema_column_type(schema, file_col);
-            int16_t max_def = carquet_schema_max_def_level(schema, file_col);
-
-            carquet_error_t err = CARQUET_ERROR_INIT;
-            carquet_column_reader_t *col =
-                carquet_reader_get_column(reader, g, file_col, &err);
-            if (!col) {
-                char message[512];
-                carquet_error_format(&err, message, sizeof(message));
-                Rf_error("qio: cannot open column %d of row group %d: %s",
-                         file_col + 1, g + 1, message);
+            if (type == CARQUET_PHYSICAL_BYTE_ARRAY) {
+                has_strings = 1;
+                continue;
             }
-            context->column = col;
-
-            int16_t *def_ptr = (max_def > 0) ? def_buf : NULL;
-            int64_t n = carquet_column_read_batch(col, value_buf, rg_rows,
-                                                  def_ptr, NULL);
-            if (n != rg_rows) {
-                Rf_error("qio: column %d of row group %d yielded %lld of %lld "
-                         "rows",
-                         file_col + 1, g + 1, (long long)n, (long long)rg_rows);
-            }
-            /* Scatter before freeing: BYTE_ARRAY values point into the column
-             * reader's page buffers, which are released on free. */
-            qio_scatter_dense_column(VECTOR_ELT(result, i), offset, type,
-                                     value_buf, def_ptr, max_def, n);
-            carquet_column_reader_free(col);
-            context->column = NULL;
+            qio_column_task_t *task = &tasks[n_tasks++];
+            memset(task, 0, sizeof(*task));
+            task->reader = reader;
+            task->row_group = rg_index[s];
+            task->file_column = file_col;
+            task->type = type;
+            task->max_def = carquet_schema_max_def_level(schema, file_col);
+            task->dst = qio_column_data_pointer(VECTOR_ELT(result, i), type);
+            task->dst_offset = rg_offset[s];
+            task->rows = rg_rows[s];
         }
-        offset += (R_xlen_t)rg_rows;
-        R_CheckUserInterrupt();
     }
 
-    if (offset != rows) {
-        Rf_error("qio: expected %lld rows but decoded %lld",
-                 (long long)rows, (long long)offset);
+    /* Numeric tasks run on carquet's worker pool when the reader is
+     * memory-mapped (the fread path shares FILE-handle and prebuffer state
+     * and is not thread-safe) and threads != 1; inline otherwise. */
+    int32_t threads = qio_collect_threads(context->handle->threads);
+    if (context->handle->threads != 1 && threads > 1 && n_tasks > 1 &&
+        carquet_reader_is_mmap(reader)) {
+        if (threads > n_tasks) threads = n_tasks;
+        context->pool = carquet_worker_pool_create(threads);
+        /* NULL just means no parallelism; fall through to the inline path. */
     }
+    if (context->pool) {
+        for (int32_t t = 0; t < n_tasks; t++) {
+            carquet_worker_pool_submit(context->pool, qio_column_task_run,
+                                       &tasks[t]);
+        }
+    } else {
+        for (int32_t t = 0; t < n_tasks; t++) {
+            qio_column_task_run(&tasks[t]);
+            if (tasks[t].status) {
+                Rf_error("qio: %s", tasks[t].message);
+            }
+            R_CheckUserInterrupt();
+        }
+    }
+
+    /* String columns on the main thread (interning and the write barrier are
+     * R API), overlapping the workers. An error here unwinds through
+     * qio_batch_cleanup, which waits for the pool before the jump continues. */
+    if (has_strings) {
+        size_t value_width = sizeof(carquet_byte_array_t);
+        void *value_buf = R_alloc((size_t)max_rg_rows, (int)value_width);
+        int16_t *def_buf =
+            (int16_t *)R_alloc((size_t)max_rg_rows, sizeof(int16_t));
+        for (int32_t s = 0; s < n_groups; s++) {
+            for (int32_t i = 0; i < ncol; i++) {
+                int32_t file_col = context->selection.columns[i];
+                carquet_physical_type_t type =
+                    carquet_schema_column_type(schema, file_col);
+                if (type != CARQUET_PHYSICAL_BYTE_ARRAY) continue;
+                int16_t max_def =
+                    carquet_schema_max_def_level(schema, file_col);
+
+                carquet_error_t err = CARQUET_ERROR_INIT;
+                carquet_column_reader_t *col = carquet_reader_get_column(
+                    reader, rg_index[s], file_col, &err);
+                if (!col) {
+                    char message[512];
+                    carquet_error_format(&err, message, sizeof(message));
+                    Rf_error("qio: cannot open column %d of row group %d: %s",
+                             file_col + 1, rg_index[s] + 1, message);
+                }
+                context->column = col;
+
+                int16_t *def_ptr = (max_def > 0) ? def_buf : NULL;
+                int64_t n = carquet_column_read_batch(col, value_buf,
+                                                      rg_rows[s], def_ptr,
+                                                      NULL);
+                if (n != rg_rows[s]) {
+                    Rf_error("qio: column %d of row group %d yielded %lld of "
+                             "%lld rows",
+                             file_col + 1, rg_index[s] + 1, (long long)n,
+                             (long long)rg_rows[s]);
+                }
+                /* Scatter before freeing: BYTE_ARRAY values point into the
+                 * column reader's page buffers, released on free. */
+                qio_scatter_dense_column(VECTOR_ELT(result, i), rg_offset[s],
+                                         type, value_buf, def_ptr, max_def,
+                                         n);
+                carquet_column_reader_free(col);
+                context->column = NULL;
+            }
+            R_CheckUserInterrupt();
+        }
+    }
+
+    /* Join the workers, then surface the first recorded failure (workers
+     * must never call Rf_error themselves). */
+    if (context->pool) {
+        carquet_worker_pool_wait(context->pool);
+        carquet_worker_pool_destroy(context->pool);
+        context->pool = NULL;
+        for (int32_t t = 0; t < n_tasks; t++) {
+            if (tasks[t].status) {
+                Rf_error("qio: %s", tasks[t].message);
+            }
+        }
+    }
+
     UNPROTECT(1);
     return result;
 }
@@ -875,6 +1089,13 @@ static void qio_batch_cleanup(void *data, Rboolean jump) {
     if (context->column) {
         carquet_column_reader_free(context->column);
         context->column = NULL;
+    }
+    if (context->pool) {
+        /* Workers write into the (still PROTECTed) result vectors; block until
+         * they finish before the unwind continues and the result is released. */
+        carquet_worker_pool_wait(context->pool);
+        carquet_worker_pool_destroy(context->pool);
+        context->pool = NULL;
     }
     context->handle->busy = 0;
 }
