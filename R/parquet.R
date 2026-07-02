@@ -13,6 +13,11 @@
 #' far from the epoch. Use [read_plan()] to preview the R type of each column
 #' before reading.
 #'
+#' The file is memory-mapped for the duration of the read (falling back to
+#' buffered reads if mapping fails) so columns decode in parallel; the mapping
+#' is released before the function returns. Use [parquet_open()] +
+#' [collect()] for control over `mmap` and `threads`.
+#'
 #' @param file Path to a Parquet file.
 #'
 #' @return A data frame.
@@ -24,7 +29,9 @@
 #' write_parquet(data.frame(x = 1:3, y = c("a", "b", NA)), path)
 #' read_parquet(path)
 read_parquet <- function(file) {
-  file <- parquet_open(file)
+  # mmap enables parallel column decode in collect(); the handle is closed on
+  # exit, so the mapping (and any Windows delete-lock) lives only for the read.
+  file <- parquet_open(file, mmap = TRUE)
   on.exit(parquet_close(file), add = TRUE)
   collect(file)
 }

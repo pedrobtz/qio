@@ -243,6 +243,10 @@ the same schema rather than adding one-off writer arguments.
 - Reference benchmark (NYC taxi, 3.07M×19, gzip, nullable): qio serial ~440ms
   / 497MB vs nanoparquet ~420ms / 711MB — parity, from a 4.54s baseline. With
   `mmap = TRUE` + auto threads: **223ms**, ~3× faster than nanoparquet.
+- `read_parquet()` now opens with `mmap = TRUE` (auto-fallback to buffered
+  reads), so the eager default is the threaded ~200ms path; the mapping lives
+  only for the read. `parquet_open()` keeps `mmap = FALSE` for long-lived
+  handles.
 - Threaded, serial-mmap, and fread reads are `identical()`; data validated
   column-by-column against `arrow::read_parquet` (identical values and NA
   counts).

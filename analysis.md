@@ -127,24 +127,27 @@ keep the old struct layout and corrupt memory at runtime (silent SIGABRT).
 
 ## Remaining levers (not implemented)
 
-1. **`read_parquet()` does not thread by default** — it opens with
-   `mmap = FALSE`, so the eager one-shot API stays on the serial fread path.
-   Flipping its open to mmap (or exposing arguments) is a defaults decision:
-   mmap changes file-locking semantics on Windows and risks SIGBUS if the file
-   is truncated while mapped.
-2. **No-null fast path**: `carquet_reader_column_statistics()` exposes
+0. ~~`read_parquet()` does not thread by default~~ — **resolved**:
+   `read_parquet()` now opens with `mmap = TRUE` (carquet falls back to
+   buffered reads automatically if mapping fails), so the eager API threads by
+   default: ~200ms vs nanoparquet's ~650ms. The mapping lives only for the
+   read (the handle closes on exit), keeping the Windows delete-lock and
+   truncation-SIGBUS exposure to a ~0.2s window. `parquet_open()` keeps
+   `mmap = FALSE` because its handles are long-lived.
+1. **No-null fast path**: `carquet_reader_column_statistics()` exposes
    `null_count`; when 0, skip definition-level handling entirely and take the
    REQUIRED path (bulk copy). Most real-world OPTIONAL columns are null-free.
-3. **Decode into R memory** for DOUBLE/INT32: pass `REAL(x)`/`INTEGER(x)` as
+2. **Decode into R memory** for DOUBLE/INT32: pass `REAL(x)`/`INTEGER(x)` as
    `carquet_column_read_batch`'s output buffer; nullable columns then use
    nanoparquet's in-place back-to-front NA expand. Removes the scratch buffer
    copy. (carquet still stages pages internally — a 1-copy floor vs
    nanoparquet's 0; that residual needs an upstream carquet redesign.)
-4. **carquet bitunpack dispatch hoist**: `carquet_bitunpack8_32` re-fetches its
+3. **carquet bitunpack dispatch hoist**: `carquet_bitunpack8_32` re-fetches its
    SIMD function pointer (with an atomic init check) every few values; hoist to
    once per page. Small vendored patch.
-5. **Threading the fread path** would need per-column-reader file descriptors
-   (pread) upstream in carquet.
+4. **Threading the fread path** would need per-column-reader file descriptors
+   (pread) upstream in carquet, or one private carquet reader per worker task
+   in qio.
 
 ## Verification (2026-07-02)
 

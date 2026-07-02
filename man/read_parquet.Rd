@@ -26,6 +26,11 @@ Julian-day and nanosecond-of-day parts as an instant). Parquet nulls become
 which for microsecond and nanosecond timestamps can drop sub-second precision
 far from the epoch. Use \code{\link[=read_plan]{read_plan()}} to preview the R type of each column
 before reading.
+
+The file is memory-mapped for the duration of the read (falling back to
+buffered reads if mapping fails) so columns decode in parallel; the mapping
+is released before the function returns. Use \code{\link[=parquet_open]{parquet_open()}} +
+\code{\link[=collect]{collect()}} for control over \code{mmap} and \code{threads}.
 }
 \examples{
 path <- tempfile(fileext = ".parquet")
