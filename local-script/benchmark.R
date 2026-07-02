@@ -6,8 +6,10 @@ qio::read_parquet("local-data/yellow_tripdata_2023-01.parquet")
 Rprof(NULL)
 
 p <- summaryRprof(prof)
-cat("--- by self time ---\n");  print(head(p$by.self,  20))
-cat("--- by total time ---\n"); print(head(p$by.total, 20))
+cat("--- by self time ---\n")
+print(head(p$by.self, 20))
+cat("--- by total time ---\n")
+print(head(p$by.total, 20))
 # ------------------------------------------------------------------------
 
 bench::mark(
@@ -17,14 +19,13 @@ bench::mark(
   ),
   arrow::read_parquet("local-data/yellow_tripdata_2023-01.parquet"),
   check = F,
+  filter_gc = FALSE,
   iterations = 1
 )
 
 
 install.packages("profvis")
-
 library(profvis)
-
 library(proffer)
 
 res <- pprof({
@@ -32,20 +33,24 @@ res <- pprof({
 })
 
 
-# --- native call-stack probe ------------------------------------------------
-# Fires debug_stack() once from qio_copy_batch_column (the innermost C hot
-# path), so winch captures the full native chain:
-#   winch_trace_back → debug_stack [R]
-#   Rf_eval → qio_copy_batch_column → qio_copy_batch
-#   → qio_collect_body → R_UnwindProtect → qio_parquet_collect [C]
-#   → .Call → collect.qio_parquet_file → read_parquet [R]
-devtools::load_all()
-
-debug_stack <- function() {
-  print(winch::winch_trace_back())
-}
-
-.Call(qio:::C_qio_set_probe, debug_stack)
-qio::read_parquet("local-data/yellow_tripdata_2023-01.parquet")
-.Call(qio:::C_qio_clear_probe, NULL)
-# ----------------------------------------------------------------------------
+# Benchmark the INSTALLED package in a FRESH R session only.
+#   - Never after devtools::load_all(): it compiles a DEBUG build (-O0, no
+#     optimization) — 3x slower — and leaves -O0 objects in src/ that a later
+#     R CMD INSTALL silently reuses. Clean first:
+#       find src \( -name '*.o' -o -name '*.so' \) -delete && R CMD INSTALL .
+#   - Restart R before benchmarking: a live session keeps the previously
+#     loaded qio DLL; reinstalling on disk does not swap it.
+#   - iterations = 20 with filter_gc = FALSE includes ~40 GC pauses (each
+#     iteration allocates ~0.5 GB); medians are ~50% higher than 10-iteration
+#     runs. Compare like with like.
+suppressMessages(library(qio))
+p <- "local-data/yellow_tripdata_2023-01.parquet"
+invisible(qio::read_parquet(p))
+gc()
+b <- bench::mark(
+  qio = qio::read_parquet(p),
+  nano = nanoparquet::read_parquet(p),
+  check = FALSE,
+  iterations = 20,
+  filter_gc = FALSE
+)

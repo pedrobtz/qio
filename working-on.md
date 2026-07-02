@@ -1,6 +1,6 @@
 # Working on qio
 
-Last updated: 2026-07-01
+Last updated: 2026-07-02
 
 This file is the source of truth for current qio development status and next
 steps. Detailed type decisions and the full type roadmap live in
@@ -105,6 +105,23 @@ the same schema rather than adding one-off writer arguments.
   physical types, nulls, and duplicate footer metadata.
 - Lazy API tests cover metadata, projections, row groups, batch sizes, callback
   behavior, invalid inputs, closed handles, and reentrant operations.
+
+### Read performance
+
+- Eager and collected reads were profiled against nanoparquet and optimized
+  from 4.54s to 438ms (10.4×) on the 3M-row NYC taxi reference file — now at
+  parity with nanoparquet with ~30% less allocation. Full diagnosis, the four
+  changes, and remaining levers are recorded in [`analysis.md`](analysis.md).
+- `collect()` reads directly through carquet's column API
+  (`carquet_reader_get_column` + `carquet_column_read_batch`) and scatters
+  dense values + definition levels into R vectors in one type-specialized
+  pass; `walk_batches()` still uses carquet's batch reader.
+- Two performance patches were applied to vendored carquet (O(1) dense-value
+  cursor; count nulls once per page). They are documented in
+  `tools/VENDORED.md` § "Local patches" and must be upstreamed or re-applied
+  on re-vendor. After editing `src/carquet/reader/reader_internal.h`,
+  clean-build (`find src -name '*.o' -delete`) — R does not track header
+  dependencies and stale objects corrupt memory.
 
 ### Packaging and portability
 
@@ -214,7 +231,23 @@ the same schema rather than adding one-off writer arguments.
 
 ## Verification
 
-### 2026-07-01 (current)
+### 2026-07-02 (read performance — current)
+
+- Implemented the read-performance work recorded in `analysis.md`: two vendored
+  carquet patches (O(1) dense cursor; count nulls once per page), direct
+  column-level reads in `collect()`, and a type-specialized scatter.
+- Reference benchmark (NYC taxi, 3.07M×19, gzip, nullable): qio 438ms / 497MB
+  vs nanoparquet 419ms / 711MB — parity, from a 4.54s baseline.
+- Data validated column-by-column against `arrow::read_parquet` (identical
+  values and NA counts).
+- `testthat::test_dir()`: 187 passed, 0 failed. Includes a new partial-page
+  null-offset regression test (nulls at leading/trailing/consecutive positions
+  across page-splitting batch sizes).
+- `R CMD build` + `R CMD check --no-manual` on the tarball: 0 errors,
+  0 warnings, 0 notes. This clears the check that had been pending since the
+  DATE/TIMESTAMP/INT96 C changes.
+
+### 2026-07-01
 
 - Implemented the explicit-schema slice: path-aware `read_plan()`, nested-plan
   alignment, `infer_parquet_schema()`, `parquet_schema()`, and

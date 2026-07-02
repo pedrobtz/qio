@@ -104,6 +104,41 @@ test_that("collect() reads supported physical types and nulls", {
   expect_equal(collect(file, batch_size = 1000), expected, tolerance = 1e-7)
 })
 
+test_that("collect() places null offsets correctly across partial-page reads", {
+  # Regression guard for the incremental dense-value cursor in carquet's page
+  # reader: when one page is consumed over many partial reads, present values
+  # must land at the right dense offset no matter where nulls fall. Nulls are
+  # placed at leading, trailing, and consecutive positions to catch off-by-one
+  # errors in the running count.
+  n <- 300L
+  x <- seq_len(n)
+  drop_in <- function(v) {
+    v[c(1L, 2L, 3L, 150L, 151L, 299L, n)] <- NA
+    v
+  }
+  expected <- data.frame(
+    dense = as.double(x), # no nulls (control column)
+    nums = drop_in(as.double(x) + 0.5), # nullable double
+    ints = drop_in(x), # nullable int32
+    labels = drop_in(sprintf("v%03d", x)), # nullable string
+    stringsAsFactors = FALSE
+  )
+  path <- withr::local_tempfile(fileext = ".parquet")
+  write_parquet(expected, path)
+
+  file <- local_parquet_file(path)
+  expect_equal(collect(file), expected, tolerance = 1e-7)
+  # Batch sizes that do not divide n force partial reads at shifting offsets.
+  for (bs in c(1L, 7L, 64L, 299L)) {
+    expect_equal(
+      collect(file, batch_size = bs),
+      expected,
+      tolerance = 1e-7,
+      info = paste("batch_size =", bs)
+    )
+  }
+})
+
 test_that("collect() projects columns and selects row groups", {
   file <- local_parquet_file()
   expected <- fixture_data()

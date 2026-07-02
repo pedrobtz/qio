@@ -47,8 +47,45 @@ carquet only uses the LZ4 block API (`LZ4_compress_default`,
 `LZ4_decompress_safe`, `LZ4_compressBound`), so only `lz4.c` and `lz4.h` are
 vendored. The frame/HC/file APIs and lz4's own `xxhash.c` are not needed.
 
+## Local patches
+
+These changes were applied on top of the vendored sources and are **not** in
+upstream at the pinned commit. Re-vendoring will drop them — re-apply, or (better)
+upstream them and bump the pin.
+
+- **carquet: O(1) dense-value cursor in the page reader.**
+  `src/carquet/reader/page_reader.c` + `reader_internal.h`. Adds
+  `page_dense_values_read` to the column reader and maintains it incrementally,
+  replacing an O(N) rescan of `[0, page_values_read)` in
+  `carquet_read_next_page` that ran on every partial read — making one page
+  O(N²/batch) in its value count. Consuming a large page in small batches
+  (qio's default `batch_size`) spent the majority of read time in
+  `carquet_neon_count_non_nulls`. See `analysis.md`. The dense cursor is reset
+  on every fresh page load (in `carquet_column_ensure_page_loaded`) and advanced
+  in both `carquet_read_next_page` and the `carquet_column_skip` partial-page
+  drop, so null offsets stay correct. Guarded by the partial-page-read test in
+  `tests/testthat/test-parquet-file.R`.
+
+- **carquet: count a page's nulls once, not per read.**
+  `src/carquet/reader/page_reader.c`, `column_reader.c` + `reader_internal.h`.
+  Adds `page_non_null_count` (present values in the current page, counted once at
+  decode) and `last_dense_read` (present values from the last read) to the column
+  reader. `carquet_read_next_page` reuses the page total for whole-page reads
+  instead of re-scanning the definition levels, and the column reader reuses the
+  per-read count instead of re-scanning again. Previously the same definition
+  levels were SIMD-counted three times (decode + read + column layers), making
+  `carquet_neon_count_non_nulls` ~39% of a nullable read; after this it is ~1%,
+  dropping the NYC taxi read from ~1.7s to ~0.5s (near nanoparquet).
+
+  NOTE: `reader_internal.h` defines the column-reader struct used across every
+  reader `.c` file, but R's build does not track header dependencies — after
+  editing it you MUST clean-build (`find src -name '*.o' -delete` before
+  `R CMD INSTALL`), or stale objects keep the old struct layout and corrupt
+  memory at runtime.
+
 ## Re-vendoring
 
 To bump a version: re-run the copy steps above from a fresh checkout of the new
-tag, update the table (version + commit + date), and re-run `R CMD INSTALL` to
-confirm it still builds.
+tag, update the table (version + commit + date), re-apply the local patches
+above (or confirm they landed upstream), and re-run `R CMD INSTALL` to confirm it
+still builds.

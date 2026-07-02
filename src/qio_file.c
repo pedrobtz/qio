@@ -58,6 +58,7 @@ typedef struct {
     int32_t batch_size;
     carquet_batch_reader_t *batch_reader;
     carquet_row_batch_t *batch;
+    carquet_column_reader_t *column;  /* in-flight direct-read column reader */
     SEXP file;
     SEXP callback;
     int walk;
@@ -391,6 +392,112 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
     }
 }
 
+/* Scatter a column read directly from the carquet column API into an R vector.
+ * Input is the Parquet-native dense layout: `values` holds only present values,
+ * packed; `def_levels` (NULL for REQUIRED columns) gives the logical shape, with
+ * def_levels[i] == max_def marking a present value. A single pass distributes
+ * dense values to their logical rows and writes NA elsewhere — replacing the
+ * batch reader's expand + null-bitmap passes and qio_copy_batch_column's scatter
+ * with one loop. */
+/* Emit one type-specialized scatter: a branch-free dense loop for REQUIRED
+ * columns and a def-level-guarded loop for nullable ones. `dst` must be the
+ * raw destination pointer already advanced by `offset` — the R accessor
+ * (REAL/INTEGER/...) is called once per column, never per value. */
+#define QIO_SCATTER_LOOP(SRC_T, dst, na_value, CONVERT)                        \
+    do {                                                                       \
+        const SRC_T *src = (const SRC_T *)values;                              \
+        if (def_levels == NULL) {                                              \
+            for (int64_t i = 0; i < length; i++) {                             \
+                (dst)[i] = CONVERT(src[i]);                                    \
+            }                                                                  \
+        } else {                                                               \
+            int64_t j = 0; /* cursor into the dense present-value stream */    \
+            for (int64_t i = 0; i < length; i++) {                             \
+                (dst)[i] = (def_levels[i] == max_def) ? CONVERT(src[j++])      \
+                                                      : (na_value);            \
+            }                                                                  \
+        }                                                                      \
+    } while (0)
+
+#define QIO_CONVERT_IDENTITY(v) (v)
+#define QIO_CONVERT_DOUBLE(v) ((double)(v))
+#define QIO_CONVERT_BOOL(v) ((v) ? TRUE : FALSE)
+#define QIO_CONVERT_INT96(v) (qio_int96_to_seconds(v))
+
+static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
+                                     carquet_physical_type_t type,
+                                     const void *values,
+                                     const int16_t *def_levels,
+                                     int16_t max_def, int64_t length) {
+    switch (type) {
+    case CARQUET_PHYSICAL_BOOLEAN: {
+        int *dst = LOGICAL(destination) + offset;
+        QIO_SCATTER_LOOP(uint8_t, dst, NA_LOGICAL, QIO_CONVERT_BOOL);
+        break;
+    }
+    case CARQUET_PHYSICAL_INT32: {
+        int *dst = INTEGER(destination) + offset;
+        if (def_levels == NULL) {
+            memcpy(dst, values, (size_t)length * sizeof(int32_t));
+        } else {
+            QIO_SCATTER_LOOP(int32_t, dst, NA_INTEGER, QIO_CONVERT_IDENTITY);
+        }
+        break;
+    }
+    case CARQUET_PHYSICAL_INT64: {
+        double *dst = REAL(destination) + offset;
+        QIO_SCATTER_LOOP(int64_t, dst, NA_REAL, QIO_CONVERT_DOUBLE);
+        break;
+    }
+    case CARQUET_PHYSICAL_INT96: {
+        double *dst = REAL(destination) + offset;
+        QIO_SCATTER_LOOP(carquet_int96_t, dst, NA_REAL, QIO_CONVERT_INT96);
+        break;
+    }
+    case CARQUET_PHYSICAL_FLOAT: {
+        double *dst = REAL(destination) + offset;
+        QIO_SCATTER_LOOP(float, dst, NA_REAL, QIO_CONVERT_DOUBLE);
+        break;
+    }
+    case CARQUET_PHYSICAL_DOUBLE: {
+        double *dst = REAL(destination) + offset;
+        if (def_levels == NULL) {
+            memcpy(dst, values, (size_t)length * sizeof(double));
+        } else {
+            QIO_SCATTER_LOOP(double, dst, NA_REAL, QIO_CONVERT_IDENTITY);
+        }
+        break;
+    }
+    case CARQUET_PHYSICAL_BYTE_ARRAY: {
+        /* Strings must go through SET_STRING_ELT (write barrier) and
+         * Rf_mkCharLenCE (interning); only the null branch can be hoisted. */
+        const carquet_byte_array_t *src =
+            (const carquet_byte_array_t *)values;
+        int64_t j = 0;
+        for (int64_t i = 0; i < length; i++) {
+            R_xlen_t out = offset + (R_xlen_t)i;
+            if (def_levels != NULL && def_levels[i] != max_def) {
+                SET_STRING_ELT(destination, out, NA_STRING);
+                continue;
+            }
+            const carquet_byte_array_t *value = &src[j++];
+            if (value->length < 0 ||
+                (value->length > 0 && value->data == NULL)) {
+                Rf_error("qio: parquet column returned an invalid byte array");
+            }
+            const char *bytes = value->length > 0
+                                    ? (const char *)value->data
+                                    : "";
+            SET_STRING_ELT(destination, out,
+                           Rf_mkCharLenCE(bytes, value->length, CE_UTF8));
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 static bool qio_row_group_filter(const carquet_reader_t *reader,
                                  int32_t row_group_index, void *user_data) {
     (void)reader;
@@ -597,35 +704,79 @@ static SEXP qio_collect_body(void *data) {
         return result;
     }
 
-    qio_row_group_filter_t filter;
-    context->batch_reader = qio_create_batch_reader(context, &filter);
+    /* Read directly at the column level (carquet_reader_get_column +
+     * carquet_column_read_batch) rather than through the batch reader. That
+     * yields Parquet-native dense values + definition levels, which
+     * qio_scatter_dense_column places into the result in a single pass —
+     * skipping the batch reader's dense->row-aligned expansion and null-bitmap
+     * build. walk_batches() still uses the batch reader (qio_walk_body). */
+    carquet_reader_t *reader = context->handle->reader;
+    const carquet_schema_t *schema = carquet_reader_schema(reader);
+    int32_t ncol = context->selection.num_columns;
+
+    /* One reusable scratch buffer sized to the largest selected row group and
+     * the widest physical value (byte arrays are pointer+length structs). */
+    int64_t max_rg_rows = 0;
+    for (int32_t g = 0; g < context->selection.num_row_groups; g++) {
+        if (!context->selection.row_group_mask[g]) continue;
+        carquet_row_group_metadata_t meta;
+        if (carquet_reader_row_group_metadata(reader, g, &meta) != CARQUET_OK) {
+            Rf_error("qio: cannot inspect row group %d", g + 1);
+        }
+        if (meta.num_rows > max_rg_rows) max_rg_rows = meta.num_rows;
+    }
+    size_t value_width = sizeof(carquet_byte_array_t) > sizeof(carquet_int96_t)
+                             ? sizeof(carquet_byte_array_t)
+                             : sizeof(carquet_int96_t);
+    void *value_buf = R_alloc((size_t)max_rg_rows, (int)value_width);
+    int16_t *def_buf = (int16_t *)R_alloc((size_t)max_rg_rows, sizeof(int16_t));
+
     R_xlen_t offset = 0;
-    for (;;) {
-        carquet_row_batch_t *batch = NULL;
-        carquet_status_t status = carquet_batch_reader_next(
-            context->batch_reader, &batch);
-        if (status == CARQUET_ERROR_END_OF_DATA) {
-            if (batch) carquet_row_batch_free(batch);
-            break;
+    for (int32_t g = 0; g < context->selection.num_row_groups; g++) {
+        if (!context->selection.row_group_mask[g]) continue;
+        carquet_row_group_metadata_t meta;
+        if (carquet_reader_row_group_metadata(reader, g, &meta) != CARQUET_OK) {
+            Rf_error("qio: cannot inspect row group %d", g + 1);
         }
-        context->batch = batch;
-        if (status != CARQUET_OK) {
-            Rf_error("qio: parquet batch read failed: %s",
-                     carquet_status_string(status));
+        int64_t rg_rows = meta.num_rows;
+        if (rg_rows <= 0) continue;
+        if (offset + rg_rows > rows) {
+            Rf_error("qio: row group %d exceeds the expected row count", g + 1);
         }
-        if (!batch) {
-            Rf_error("qio: parquet batch reader returned no batch");
+
+        for (int32_t i = 0; i < ncol; i++) {
+            int32_t file_col = context->selection.columns[i];
+            carquet_physical_type_t type =
+                carquet_schema_column_type(schema, file_col);
+            int16_t max_def = carquet_schema_max_def_level(schema, file_col);
+
+            carquet_error_t err = CARQUET_ERROR_INIT;
+            carquet_column_reader_t *col =
+                carquet_reader_get_column(reader, g, file_col, &err);
+            if (!col) {
+                char message[512];
+                carquet_error_format(&err, message, sizeof(message));
+                Rf_error("qio: cannot open column %d of row group %d: %s",
+                         file_col + 1, g + 1, message);
+            }
+            context->column = col;
+
+            int16_t *def_ptr = (max_def > 0) ? def_buf : NULL;
+            int64_t n = carquet_column_read_batch(col, value_buf, rg_rows,
+                                                  def_ptr, NULL);
+            if (n != rg_rows) {
+                Rf_error("qio: column %d of row group %d yielded %lld of %lld "
+                         "rows",
+                         file_col + 1, g + 1, (long long)n, (long long)rg_rows);
+            }
+            /* Scatter before freeing: BYTE_ARRAY values point into the column
+             * reader's page buffers, which are released on free. */
+            qio_scatter_dense_column(VECTOR_ELT(result, i), offset, type,
+                                     value_buf, def_ptr, max_def, n);
+            carquet_column_reader_free(col);
+            context->column = NULL;
         }
-        int64_t batch_rows = carquet_row_batch_num_rows(batch);
-        if (batch_rows < 0 || offset + batch_rows > rows) {
-            Rf_error("qio: parquet batch returned an invalid row count");
-        }
-        if (batch_rows > 0) {
-            qio_copy_batch(context, result, offset, batch);
-            offset += (R_xlen_t)batch_rows;
-        }
-        carquet_row_batch_free(batch);
-        context->batch = NULL;
+        offset += (R_xlen_t)rg_rows;
         R_CheckUserInterrupt();
     }
 
@@ -720,6 +871,10 @@ static void qio_batch_cleanup(void *data, Rboolean jump) {
     if (context->batch_reader) {
         carquet_batch_reader_free(context->batch_reader);
         context->batch_reader = NULL;
+    }
+    if (context->column) {
+        carquet_column_reader_free(context->column);
+        context->column = NULL;
     }
     context->handle->busy = 0;
 }
