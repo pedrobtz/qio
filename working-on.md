@@ -165,12 +165,24 @@ the same schema rather than adding one-off writer arguments.
 
 ## Next steps
 
-### Now: performance and vendored-patch housekeeping
+### Now: correctness and housekeeping
 
-1. **Upstream the two carquet patches** (O(1) dense cursor; count nulls once
-   per page — see `tools/VENDORED.md` § "Local patches") to
-   <https://github.com/Vitruves/carquet>. This is the only open item where
-   waiting creates risk: the patches are silently lost on the next re-vendor.
+0. **x86 DOUBLE-decode corruption (release blocker).** On x86 (Linux/Windows)
+   qio reads back garbage for DOUBLE columns beyond ~a dozen rows; macOS/arm64
+   is correct. Surfaced by the partial-page test in `test-parquet-file.R`
+   (skipped on x86 with a FIXME; it is the reproducer). Established: valgrind
+   reports use of UNINITIALISED values (ASan clean, so not out-of-bounds);
+   a double-only column reproduces it, so it is read-side carquet decode, not
+   the byte-array writer uninit (fixed) and not the read optimizations (the
+   unchanged batch reader corrupts identically; read-only external fixtures
+   pass on x86). Next: valgrind `--track-origins` on x86 (add to native-checks
+   or use an x86 box) to pinpoint the decode site, then patch. Pre-existing
+   carquet bug, but data corruption on the primary platforms — must fix before
+   any release.
+1. **Upstream the carquet patches** (O(1) dense cursor; count nulls once per
+   page — see `tools/VENDORED.md` § "Local patches") to
+   <https://github.com/Vitruves/carquet>. Also the only item where waiting
+   risks silent loss on the next re-vendor. Fold the x86 decode fix in too.
 2. **Validate the new C code on Windows CI** (worker pool uses the Win32
    branch of carquet's `worker_pool.c`; mmap uses `CreateFileMapping`). The
    R-CMD-check workflow covers this once pushed.
