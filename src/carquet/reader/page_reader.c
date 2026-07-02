@@ -1675,9 +1675,11 @@ static carquet_status_t prepare_data_page_payload(
 
             *page_data = reader->decompress_buffer;
             *page_size = levels_size + decompressed_data_size;
-            /* Zero the decode over-read slack (see CARQUET_DECODE_SLACK). */
+            /* Zero everything the decompressor did not write, up to capacity,
+             * so any decode read past the produced bytes is defined (see
+             * CARQUET_DECODE_SLACK). */
             memset(reader->decompress_buffer + *page_size, 0,
-                   CARQUET_DECODE_SLACK);
+                   reader->decompress_capacity - *page_size);
             *used_decompress_buffer = true;
             return CARQUET_OK;
         }
@@ -1710,8 +1712,10 @@ static carquet_status_t prepare_data_page_payload(
     }
 
     *page_data = reader->decompress_buffer;
-    /* Zero the decode over-read slack (see CARQUET_DECODE_SLACK). */
-    memset(reader->decompress_buffer + *page_size, 0, CARQUET_DECODE_SLACK);
+    /* Zero everything the decompressor did not write, up to capacity, so any
+     * decode read past the produced bytes is defined (see CARQUET_DECODE_SLACK). */
+    memset(reader->decompress_buffer + *page_size, 0,
+           reader->decompress_capacity - *page_size);
     *used_decompress_buffer = true;
     return CARQUET_OK;
 }
