@@ -178,11 +178,12 @@ the same schema rather than adding one-off writer arguments.
    exactly what valgrind `--track-origins` pinned to `ensure_decompress_capacity`
    — one bug, not two. Fix: `big_pattern = 16` in `compression/snappy.c` (see
    `tools/VENDORED.md`). Reproduced locally on arm64 by compiling snappy without
-   `__ARM_NEON`. Guarded by the (now un-skipped) partial-page test. The earlier
-   whole-buffer decompress zeroing (`ensure_decompress_capacity`) was masking the
-   symptom and is now defensive only — **perf reclaim:** slim it to zero just the
-   `[needed, needed+slack)` slack, or drop it, once x86 CI confirms clean (it
-   `memset`s the whole decompress buffer per page, on the hot read path).
+   `__ARM_NEON`. Guarded by the (now un-skipped) partial-page test. Confirmed on
+   x86 CI: all R-CMD-check legs green (ubuntu release/devel/oldrel + windows).
+   The earlier whole-buffer decompress zeroing (`ensure_decompress_capacity`) was
+   masking the symptom; now that the real bug is fixed it has been slimmed to
+   zero only the `[needed, needed+slack)` group-over-read region (64 B/page)
+   instead of the whole decompress buffer, reclaiming the read hot path.
 1. **Upstream the carquet patches** (O(1) dense cursor; count nulls once per
    page; snappy scalar `incremental_copy` 8..15-byte match fix — see
    `tools/VENDORED.md` § "Local patches") to

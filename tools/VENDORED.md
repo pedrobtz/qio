@@ -103,18 +103,19 @@ upstream them and bump the pin.
   `__ARM_NEON`. Guarded by the partial-page test in
   `tests/testthat/test-parquet-file.R`.
 
-- **carquet: zero the decompress buffer before decode (defensive).**
+- **carquet: zero the decode over-read slack on the decompress buffer (defensive).**
   `src/carquet/reader/page_reader.c`. The reusable decompress buffer is
   `realloc`'d (not zeroed); `ensure_decompress_capacity` over-allocates
-  `CARQUET_DECODE_SLACK` (64) bytes and `memset`s the whole buffer before each
-  decompression so any decoder over-read past the produced bytes is defined
-  rather than uninitialised heap (benign on arm64 macOS where pages come zeroed,
-  garbage on glibc x86). NOTE: the concrete corruption this was chasing turned
-  out to be the snappy scalar bug above, not a bit-unpack/RLE over-read; with
-  that fixed this zeroing is defensive belt-and-suspenders. It can be slimmed to
-  zeroing only the `[needed, needed+slack)` region (or dropped) as a hot-path
-  perf reclaim once x86 CI confirms clean — see `working-on.md`. Found with
-  valgrind `--track-origins` on x86 (ASan is blind to it — the read is
+  `CARQUET_DECODE_SLACK` (64) bytes past the payload and `memset`s just that
+  `[needed, needed+slack)` slack before each decompress, so a decoder's group
+  over-read past the produced bytes reads defined zeros rather than uninitialised
+  heap (benign on arm64 macOS where pages come zeroed, undefined on glibc x86).
+  Only the slack is zeroed, not the whole buffer — the decompress that follows
+  writes the full `[0, needed)` payload, so a per-page whole-buffer `memset` on
+  the read hot path is unnecessary. NOTE: the concrete corruption originally
+  chased here turned out to be the snappy scalar bug above, not a bit-unpack/RLE
+  over-read; with that fixed this slack is defensive belt-and-suspenders. Found
+  with valgrind `--track-origins` on x86 (ASan is blind to it — the read is
   in-allocation-bounds once padded, and uninitialised, not out-of-bounds).
 
 ## Re-vendoring

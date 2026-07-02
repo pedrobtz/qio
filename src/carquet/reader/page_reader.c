@@ -324,12 +324,14 @@ static carquet_status_t validate_page_payload_span(
     return CARQUET_OK;
 }
 
-/* Bit-unpacking and RLE decoders read a few words past the logical end of the
- * payload to fill the final group of values. The decompress buffer is realloc'd
- * (not zeroed), so that over-read lands on uninitialised heap: benign where the
- * OS hands back zeroed pages (macOS), garbage on glibc (x86) — corrupting the
- * decoded values. Over-allocate this much slack and zero it after each
- * decompression (see prepare_data_page_payload) so the over-read is defined. */
+/* Bit-unpacking and RLE decoders can read a few words past the logical end of
+ * the payload to fill the final group of values. The decompress buffer is
+ * realloc'd (not zeroed), so that over-read would land on uninitialised heap:
+ * benign where the OS hands back zeroed pages (macOS), undefined on glibc (x86).
+ * Over-allocate this much slack past the payload and zero it so the over-read is
+ * defined. (The historically-observed x86 corruption was actually the snappy
+ * scalar decode bug — see tools/VENDORED.md — not this over-read; this slack is
+ * retained as a cheap defensive guard.) */
 #define CARQUET_DECODE_SLACK 64
 
 static carquet_status_t ensure_decompress_capacity(
@@ -354,12 +356,12 @@ static carquet_status_t ensure_decompress_capacity(
         reader->decompress_capacity = want;
     }
 
-    /* Zero the whole buffer before every decompress. The decompressor may write
-     * fewer bytes than the declared uncompressed size, yet decoders read up to
-     * that declared size (plus a few words of group over-read). Zeroing up front
-     * makes every such read defined regardless of how much the codec produced —
-     * matching the behaviour on allocators that hand back zeroed pages. */
-    memset(reader->decompress_buffer, 0, reader->decompress_capacity);
+    /* Zero only the slack past the payload, not the whole buffer. The subsequent
+     * decompress writes the full [0, needed) payload, so the only bytes a decoder
+     * can read while still undefined are the [needed, needed+slack) group
+     * over-read region — zeroing those 64 bytes keeps that defined without paying
+     * a whole-buffer memset on every page (this is the read hot path). */
+    memset(reader->decompress_buffer + needed, 0, CARQUET_DECODE_SLACK);
 
     return CARQUET_OK;
 }
