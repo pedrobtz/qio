@@ -17,7 +17,5 @@ SEXP qio_parquet_collect(SEXP file, SEXP columns, SEXP row_groups,
                          SEXP batch_size);
 SEXP qio_parquet_walk(SEXP file, SEXP columns, SEXP row_groups,
                       SEXP batch_size, SEXP callback);
-SEXP qio_set_probe(SEXP fn);
-SEXP qio_clear_probe(SEXP unused);
 
 #endif

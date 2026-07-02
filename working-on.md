@@ -171,19 +171,15 @@ the same schema rather than adding one-off writer arguments.
    per page — see `tools/VENDORED.md` § "Local patches") to
    <https://github.com/Vitruves/carquet>. This is the only open item where
    waiting creates risk: the patches are silently lost on the next re-vendor.
-2. **Remove or gate the debug probe** before any release:
-   `qio_set_probe()`/`qio_clear_probe()` in `src/qio_file.c` and their
-   `CallEntries` registrations in `src/qio.c` were interactive
-   stack-investigation tooling and should not ship to CRAN.
-3. **Validate the new C code on Windows CI** (worker pool uses the Win32
+2. **Validate the new C code on Windows CI** (worker pool uses the Win32
    branch of carquet's `worker_pool.c`; mmap uses `CreateFileMapping`). The
    R-CMD-check workflow covers this once pushed.
-4. Optional performance levers, recorded with details in `analysis.md`:
+3. Optional performance levers, recorded with details in `analysis.md`:
    no-null fast path from `null_count` statistics; decode directly into R
    memory for `DOUBLE`/`INT32`; hoist the bitunpack SIMD dispatch out of the
    inner loop (vendored patch — fold into the upstream PR); thread the
    buffered (non-mmap) path via per-task readers.
-5. Housekeeping: refresh the stale test-count baseline in `CLAUDE.md`
+4. Housekeeping: refresh the stale test-count baseline in `CLAUDE.md`
    (87 → 190); the `profile.yml` workflow only exists on `feature/init`, so
    its manual `workflow_dispatch` trigger is invisible until it lands on
    `main`; sub-batch within a row group in `collect()` so a single giant row
