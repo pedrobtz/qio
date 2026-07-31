@@ -20,7 +20,9 @@ columns.}
 \item{row_groups}{Integer vector of 1-based row-group IDs, or \code{NULL} for all
 row groups.}
 
-\item{batch_size}{Positive number of rows decoded per batch.}
+\item{batch_size}{Positive batch size in rows. Currently unused by
+\code{collect()} (see Details); \code{\link[=walk_batches]{walk_batches()}} decodes this many rows per
+batch.}
 }
 \value{
 A data frame.
@@ -28,8 +30,19 @@ A data frame.
 \description{
 Columns are returned in requested order. Row groups are always returned in
 their physical file order, even if their selector is not sorted.
-\code{batch_size} controls decoding work; it does not bound the memory occupied by
-the final data frame. Use \code{\link[=walk_batches]{walk_batches()}} for bounded-memory processing.
+}
+\details{
+\code{collect()} reads each column in full and does not currently sub-divide the
+read by \code{batch_size}; the argument is accepted for symmetry with
+\code{\link[=walk_batches]{walk_batches()}} and forward compatibility. Neither function bounds the
+memory occupied by the returned data frame — use \code{\link[=walk_batches]{walk_batches()}} for
+bounded-memory processing.
+
+Nested and repeated columns are not materialized in qio 0.1.0. When a
+selection includes them, they are omitted and one message reports how many
+physical leaf columns were skipped. Nested reading is deferred to qio 0.2.0.
+If every selected column is nested, the result is a zero-column data frame
+with the selected number of rows.
 }
 \examples{
 path <- tempfile(fileext = ".parquet")

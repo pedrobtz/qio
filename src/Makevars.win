@@ -1,5 +1,5 @@
 # Makevars.win for qio (Windows / Rtools) — builds vendored carquet, zstd, lz4.
-# See tools/VENDORED.md for what is bundled and at which versions.
+# Repository-only vendoring notes live in .agents/VENDORED.md.
 #
 # zstd and lz4 are compiled from bundled source; only zlib is external and is
 # supplied by Rtools. carquet's worker_pool.c uses Win32 threads (no pthread).

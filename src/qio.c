@@ -1,20 +1,13 @@
 /*
- * qio.c — R <-> carquet glue for reading and writing Parquet files.
+ * qio.c — R -> carquet glue for writing Parquet files.
  *
- * Exposes two .Call entry points:
- *   qio_read_parquet(path)            -> data.frame
+ * Exposes one .Call entry point:
  *   qio_write_parquet(x, path, codec, schema) -> invisible(path)
  *
- * Type mapping (v1, flat schemas only):
+ * The read path lives in qio_file.c (the persistent handle and its collect /
+ * walk / metadata entry points); read_parquet() is parquet_open() + collect().
  *
- *   Parquet physical   ->  R
- *   ----------------       ------------------
- *   BOOLEAN                logical
- *   INT32                  integer
- *   INT64                  double  (precision loss beyond 2^53)
- *   FLOAT                  double
- *   DOUBLE                 double
- *   BYTE_ARRAY             character (assumed UTF-8)
+ * Type mapping (flat schemas only):
  *
  *   R                  ->  Parquet physical (+ logical)
  *   ----------------       ------------------
@@ -60,175 +53,6 @@ static int qio_codec_from_string(const char *s, carquet_compression_t *out) {
     else if (strcmp(s, "none") == 0)         *out = CARQUET_COMPRESSION_UNCOMPRESSED;
     else return 0;
     return 1;
-}
-
-/* ------------------------------------------------------------------------- */
-/* Read                                                                      */
-/* ------------------------------------------------------------------------- */
-
-/* Scatter one decoded batch (packed values + per-row def levels) into the R
- * column starting at logical row `row`. Nulls become R NA. */
-static void qio_scatter(SEXP col, carquet_physical_type_t pt, R_xlen_t row,
-                        const void *values, const int16_t *def, int16_t max_def,
-                        int64_t n) {
-    int64_t i, vi = 0;
-    for (i = 0; i < n; i++) {
-        int present = (max_def <= 0) ? 1 : (def[i] >= max_def);
-        R_xlen_t at = row + i;
-        switch (pt) {
-        case CARQUET_PHYSICAL_BOOLEAN:
-            LOGICAL(col)[at] = present ? (((const uint8_t *)values)[vi++] ? TRUE : FALSE)
-                                       : NA_LOGICAL;
-            break;
-        case CARQUET_PHYSICAL_INT32:
-            INTEGER(col)[at] = present ? ((const int32_t *)values)[vi++] : NA_INTEGER;
-            break;
-        case CARQUET_PHYSICAL_INT64:
-            REAL(col)[at] = present ? (double)((const int64_t *)values)[vi++] : NA_REAL;
-            break;
-        case CARQUET_PHYSICAL_FLOAT:
-            REAL(col)[at] = present ? (double)((const float *)values)[vi++] : NA_REAL;
-            break;
-        case CARQUET_PHYSICAL_DOUBLE:
-            REAL(col)[at] = present ? ((const double *)values)[vi++] : NA_REAL;
-            break;
-        case CARQUET_PHYSICAL_BYTE_ARRAY: {
-            if (present) {
-                const carquet_byte_array_t *e = &((const carquet_byte_array_t *)values)[vi++];
-                int len = e->length > 0 ? e->length : 0;
-                const char *d = (len > 0) ? (const char *)e->data : "";
-                SET_STRING_ELT(col, at, Rf_mkCharLenCE(d, len, CE_UTF8));
-            } else {
-                SET_STRING_ELT(col, at, NA_STRING);
-            }
-            break;
-        }
-        default:
-            break;
-        }
-    }
-}
-
-SEXP qio_read_parquet(SEXP path_sexp) {
-    if (TYPEOF(path_sexp) != STRSXP || LENGTH(path_sexp) < 1)
-        Rf_error("qio: `file` must be a single path");
-
-    const char *path = Rf_translateChar(STRING_ELT(path_sexp, 0));
-    carquet_error_t err = CARQUET_ERROR_INIT;
-
-    carquet_reader_t *reader = carquet_reader_open(path, NULL, &err);
-    if (!reader)
-        Rf_error("qio: cannot open '%s': %s", path, err.message);
-
-    const carquet_schema_t *schema = carquet_reader_schema(reader);
-    int64_t nrow64 = carquet_reader_num_rows(reader);
-    int ncol = carquet_reader_num_columns(reader);
-    int nrg  = carquet_reader_num_row_groups(reader);
-
-    if (nrow64 < 0 || nrow64 > INT_MAX) {
-        carquet_reader_close(reader);
-        Rf_error("qio: unsupported row count %lld (max %d)", (long long)nrow64, INT_MAX);
-    }
-    R_xlen_t nrow = (R_xlen_t)nrow64;
-
-    /* Validate every column's physical type before allocating anything, so an
-     * unsupported file fails cleanly with the reader still open to close. */
-    for (int c = 0; c < ncol; c++) {
-        switch (carquet_schema_column_type(schema, c)) {
-        case CARQUET_PHYSICAL_BOOLEAN:
-        case CARQUET_PHYSICAL_INT32:
-        case CARQUET_PHYSICAL_INT64:
-        case CARQUET_PHYSICAL_FLOAT:
-        case CARQUET_PHYSICAL_DOUBLE:
-        case CARQUET_PHYSICAL_BYTE_ARRAY:
-            break;
-        default: {
-            const char *nm = carquet_schema_column_name(schema, c);
-            carquet_reader_close(reader);
-            Rf_error("qio: column '%s' has an unsupported physical type", nm ? nm : "");
-        }
-        }
-    }
-
-    SEXP df  = PROTECT(Rf_allocVector(VECSXP, ncol));
-    SEXP nms = PROTECT(Rf_allocVector(STRSXP, ncol));
-    for (int c = 0; c < ncol; c++) {
-        const char *cname = carquet_schema_column_name(schema, c);
-        SET_STRING_ELT(nms, c, Rf_mkCharCE(cname ? cname : "", CE_UTF8));
-        SEXP col;
-        switch (carquet_schema_column_type(schema, c)) {
-        case CARQUET_PHYSICAL_BOOLEAN:    col = Rf_allocVector(LGLSXP,  nrow); break;
-        case CARQUET_PHYSICAL_INT32:      col = Rf_allocVector(INTSXP,  nrow); break;
-        case CARQUET_PHYSICAL_BYTE_ARRAY: col = Rf_allocVector(STRSXP,  nrow); break;
-        default:                          col = Rf_allocVector(REALSXP, nrow); break;
-        }
-        SET_VECTOR_ELT(df, c, col);
-    }
-
-    char errmsg[CARQUET_ERROR_MESSAGE_MAX + 64];
-    errmsg[0] = '\0';
-
-    for (int c = 0; c < ncol && errmsg[0] == '\0'; c++) {
-        void *vmax = vmaxget();
-        carquet_physical_type_t pt = carquet_schema_column_type(schema, c);
-        int16_t max_def = carquet_schema_max_def_level(schema, c);
-        if (max_def < 0) max_def = 0;
-        SEXP col = VECTOR_ELT(df, c);
-
-        size_t esz;
-        switch (pt) {
-        case CARQUET_PHYSICAL_BOOLEAN:    esz = 1; break;
-        case CARQUET_PHYSICAL_INT32:      esz = 4; break;
-        case CARQUET_PHYSICAL_INT64:      esz = 8; break;
-        case CARQUET_PHYSICAL_FLOAT:      esz = 4; break;
-        case CARQUET_PHYSICAL_DOUBLE:     esz = 8; break;
-        default:                          esz = sizeof(carquet_byte_array_t); break;
-        }
-        void *valbuf = R_alloc(QIO_CHUNK, esz);
-        int16_t *defbuf = (max_def > 0) ? (int16_t *)R_alloc(QIO_CHUNK, sizeof(int16_t)) : NULL;
-
-        R_xlen_t row = 0;
-        for (int g = 0; g < nrg && errmsg[0] == '\0'; g++) {
-            carquet_error_t cerr = CARQUET_ERROR_INIT;
-            carquet_column_reader_t *cr = carquet_reader_get_column(reader, g, c, &cerr);
-            if (!cr) {
-                snprintf(errmsg, sizeof(errmsg), "column '%s' row group %d: %s",
-                         carquet_schema_column_name(schema, c), g, cerr.message);
-                break;
-            }
-            for (;;) {
-                int64_t n = carquet_column_read_batch(cr, valbuf, QIO_CHUNK, defbuf, NULL);
-                if (n < 0) {
-                    snprintf(errmsg, sizeof(errmsg), "decode error in column '%s'",
-                             carquet_schema_column_name(schema, c));
-                    break;
-                }
-                if (n == 0) break;
-                if (row + n > nrow) { n = nrow - row; }
-                qio_scatter(col, pt, row, valbuf, defbuf, max_def, n);
-                row += n;
-            }
-            carquet_column_reader_free(cr);
-        }
-        vmaxset(vmax);
-    }
-
-    carquet_reader_close(reader);
-
-    if (errmsg[0] != '\0') {
-        UNPROTECT(2); /* df, nms */
-        Rf_error("qio: %s", errmsg);
-    }
-
-    Rf_setAttrib(df, R_NamesSymbol, nms);
-    SEXP rn = PROTECT(Rf_allocVector(INTSXP, 2));
-    INTEGER(rn)[0] = NA_INTEGER;
-    INTEGER(rn)[1] = -(int)nrow; /* compact row.names: c(NA, -n) */
-    Rf_setAttrib(df, R_RowNamesSymbol, rn);
-    Rf_classgets(df, Rf_mkString("data.frame"));
-
-    UNPROTECT(3); /* df, nms, rn */
-    return df;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -506,7 +330,6 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp) 
 /* ------------------------------------------------------------------------- */
 
 static const R_CallMethodDef CallEntries[] = {
-    {"qio_read_parquet",  (DL_FUNC)&qio_read_parquet,  1},
     {"qio_write_parquet", (DL_FUNC)&qio_write_parquet, 4},
     {"qio_parquet_open", (DL_FUNC)&qio_parquet_open, 4},
     {"qio_parquet_close", (DL_FUNC)&qio_parquet_close, 1},

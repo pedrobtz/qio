@@ -152,6 +152,7 @@ qio_parse_time_details <- function(details) {
 #'       collected.}
 #'     \item{`converter`}{Stable identifier of the conversion the reader uses.}
 #'     \item{`nullable`}{Whether the column can contain nulls.}
+#'     \item{`nested`}{Whether the leaf belongs to a nested or repeated field.}
 #'     \item{`collectible`}{Whether [collect()] can currently materialize the
 #'       column.}
 #'     \item{`note`}{Reason a column is not collectible, or a pending logical
@@ -239,12 +240,12 @@ qio_build_plan <- function(schema) {
 
   nullable <- schema$max_definition_level > 0L
   repeated <- schema$max_repetition_level > 0L
-  nested <- schema$path != schema$name
+  nested <- repeated | schema$path != schema$name
 
   # A column is collectible when its physical type maps to an R type and it is
   # not repeated (nested). An unapplied logical annotation does not block
   # collection; the column is still read from its physical type.
-  collectible <- !is.na(r_type) & !repeated & !nested
+  collectible <- !is.na(r_type) & !nested
 
   # Notes, in increasing priority so the most specific reason wins.
   note <- rep(NA_character_, nrow(schema))
@@ -268,7 +269,10 @@ qio_build_plan <- function(schema) {
     " is not supported for reading"
   )
 
-  note[repeated | nested] <- "repeated or nested column cannot be collected"
+  note[nested] <- paste0(
+    "nested or repeated column is skipped; nested reading is deferred to ",
+    "qio 0.2.0"
+  )
 
   plan <- data.frame(
     column = seq_len(nrow(schema)),
@@ -279,6 +283,7 @@ qio_build_plan <- function(schema) {
     r_type = r_type,
     converter = converter,
     nullable = nullable,
+    nested = nested,
     collectible = collectible,
     note = note,
     stringsAsFactors = FALSE

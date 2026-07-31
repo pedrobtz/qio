@@ -55,12 +55,42 @@ test_that("alltypes files read their INT96 timestamp_col", {
 
 # --- DATA_PAGE_V2 with delta encodings: not yet readable --------------------
 test_that("DATA_PAGE_V2 delta-encoded file is not yet readable", {
-  expect_error(read_parquet(ext("datapage_v2.snappy.parquet")), "qio:")
+  expect_error(
+    suppressMessages(read_parquet(ext("datapage_v2.snappy.parquet"))),
+    "qio:"
+  )
 })
 
-# --- Nested map/list columns: not yet readable ------------------------------
-test_that("nested map/list columns are not yet readable", {
-  for (f in c("nested_maps.snappy.parquet", "nullable.impala.parquet")) {
-    expect_error(read_parquet(ext(f)), "qio:", info = f)
-  }
+# --- Nested map/list columns: skipped until 0.2.0 ---------------------------
+test_that("nested columns are skipped with one message per operation", {
+  path <- ext("nullable.impala.parquet")
+
+  expect_snapshot(result <- read_parquet(path))
+  expect_identical(names(result), "id")
+  expect_equal(nrow(result), 7L)
+
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+
+  expect_snapshot(
+    empty <- collect(file, columns = "int_array.list.element")
+  )
+  expect_equal(dim(empty), c(7L, 0L))
+
+  dimensions <- list()
+  expect_snapshot(
+    walk_batches(
+      file,
+      function(batch, index) dimensions[[index]] <<- dim(batch),
+      batch_size = 3L
+    )
+  )
+  expect_equal(dimensions, list(c(3L, 1L), c(3L, 1L), c(1L, 1L)))
+})
+
+test_that("errors in remaining flat columns are still reported", {
+  expect_error(
+    suppressMessages(read_parquet(ext("nested_maps.snappy.parquet"))),
+    "qio:"
+  )
 })

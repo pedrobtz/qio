@@ -33,6 +33,7 @@ annotation (\code{NA} when absent).}
 collected.}
 \item{\code{converter}}{Stable identifier of the conversion the reader uses.}
 \item{\code{nullable}}{Whether the column can contain nulls.}
+\item{\code{nested}}{Whether the leaf belongs to a nested or repeated field.}
 \item{\code{collectible}}{Whether \code{\link[=collect]{collect()}} can currently materialize the
 column.}
 \item{\code{note}}{Reason a column is not collectible, or a pending logical

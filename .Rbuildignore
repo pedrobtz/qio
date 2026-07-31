@@ -13,7 +13,4 @@
 ^\.logs$
 ^local-data$
 ^local-script$
-TYPES.md
-working-on.md
-CLAUDE.md
-analysis.md
+^\.agents$

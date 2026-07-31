@@ -27,6 +27,9 @@ which for microsecond and nanosecond timestamps can drop sub-second precision
 far from the epoch. Use \code{\link[=read_plan]{read_plan()}} to preview the R type of each column
 before reading.
 
+Nested and repeated columns are skipped with one message. Nested reading is
+deferred to qio 0.2.0.
+
 The file is memory-mapped for the duration of the read (falling back to
 buffered reads if mapping fails) so columns decode in parallel; the mapping
 is released before the function returns. Use \code{\link[=parquet_open]{parquet_open()}} +

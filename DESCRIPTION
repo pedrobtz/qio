@@ -23,7 +23,9 @@ Encoding: UTF-8
 SystemRequirements: GNU make, zlib
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 8.0.0
-Suggests: 
+Suggests:
+    bit64,
+    hms,
     testthat (>= 3.0.0),
     withr
 Config/testthat/edition: 3

@@ -155,6 +155,11 @@ test_that("read_plan() flags collectible columns and explains the rest", {
   plan <- read_plan(fake_schema())
 
   expect_equal(
+    plan$nested,
+    c(rep(FALSE, 11), TRUE, TRUE)
+  )
+
+  expect_equal(
     plan$collectible,
     c(
       TRUE,
@@ -181,8 +186,8 @@ test_that("read_plan() flags collectible columns and explains the rest", {
     plan$note[plan$name == "flba"],
     "FIXED_LEN_BYTE_ARRAY is not supported"
   )
-  expect_match(plan$note[plan$name == "lst"], "repeated or nested")
-  expect_match(plan$note[plan$path == "struct.value"], "repeated or nested")
+  expect_match(plan$note[plan$name == "lst"], "nested or repeated")
+  expect_match(plan$note[plan$path == "struct.value"], "nested or repeated")
 })
 
 ts_schema <- function(details) {

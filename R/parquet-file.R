@@ -138,8 +138,18 @@ metadata.qio_parquet_file <- function(x, ...) {
 #'
 #' Columns are returned in requested order. Row groups are always returned in
 #' their physical file order, even if their selector is not sorted.
-#' `batch_size` controls decoding work; it does not bound the memory occupied by
-#' the final data frame. Use [walk_batches()] for bounded-memory processing.
+#'
+#' `collect()` reads each column in full and does not currently sub-divide the
+#' read by `batch_size`; the argument is accepted for symmetry with
+#' [walk_batches()] and forward compatibility. Neither function bounds the
+#' memory occupied by the returned data frame — use [walk_batches()] for
+#' bounded-memory processing.
+#'
+#' Nested and repeated columns are not materialized in qio 0.1.0. When a
+#' selection includes them, they are omitted and one message reports how many
+#' physical leaf columns were skipped. Nested reading is deferred to qio 0.2.0.
+#' If every selected column is nested, the result is a zero-column data frame
+#' with the selected number of rows.
 #'
 #' @param x A `qio_parquet_file` object.
 #' @param ... Reserved for future use.
@@ -147,7 +157,9 @@ metadata.qio_parquet_file <- function(x, ...) {
 #'   columns.
 #' @param row_groups Integer vector of 1-based row-group IDs, or `NULL` for all
 #'   row groups.
-#' @param batch_size Positive number of rows decoded per batch.
+#' @param batch_size Positive batch size in rows. Currently unused by
+#'   `collect()` (see Details); [walk_batches()] decodes this many rows per
+#'   batch.
 #'
 #' @return A data frame.
 #' @export
@@ -173,6 +185,7 @@ collect.qio_parquet_file <- function(
   qio_empty_dots(...)
   plan <- read_plan(x)
   columns <- qio_columns(columns)
+  columns <- qio_skip_nested_columns(plan, columns)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
   result <- .Call(C_qio_parquet_collect, x, columns, row_groups, batch_size)
@@ -188,6 +201,7 @@ collect.qio_parquet_file <- function(
 #' @inheritParams collect
 #' @param FUN Function called with a data frame and a 1-based global batch
 #'   index, followed by `...`.
+#' @param batch_size Positive number of rows decoded per batch.
 #'
 #' @return `x`, invisibly.
 #' @export
@@ -210,6 +224,7 @@ walk_batches <- function(
   }
   plan <- read_plan(x)
   columns <- qio_columns(columns)
+  columns <- qio_skip_nested_columns(plan, columns)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
   callback <- function(batch, index) {
@@ -311,6 +326,31 @@ qio_columns <- function(columns) {
     stop("`columns` must not contain duplicates.", call. = FALSE)
   }
   columns
+}
+
+qio_skip_nested_columns <- function(plan, columns) {
+  if (is.null(columns)) {
+    if (!any(plan$nested)) {
+      return(NULL)
+    }
+    columns <- plan$path
+    selected <- seq_len(nrow(plan))
+  } else {
+    selected <- match(columns, plan$path)
+  }
+
+  nested <- !is.na(selected) & plan$nested[selected]
+  n <- sum(nested)
+  if (n > 0L) {
+    message(
+      "Skipping ",
+      n,
+      " nested Parquet column",
+      if (n == 1L) "" else "s",
+      "; nested reading is deferred to qio 0.2.0."
+    )
+  }
+  columns[!nested]
 }
 
 qio_row_groups <- function(row_groups) {

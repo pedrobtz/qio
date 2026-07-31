@@ -60,8 +60,8 @@ upstream them and bump the pin.
   `carquet_read_next_page` that ran on every partial read — making one page
   O(N²/batch) in its value count. Consuming a large page in small batches
   (qio's default `batch_size`) spent the majority of read time in
-  `carquet_neon_count_non_nulls`. See `analysis.md`. The dense cursor is reset
-  on every fresh page load (in `carquet_column_ensure_page_loaded`) and advanced
+  `carquet_neon_count_non_nulls`. The dense cursor is reset on every fresh page
+  load (in `carquet_column_ensure_page_loaded`) and advanced
   in both `carquet_read_next_page` and the `carquet_column_skip` partial-page
   drop, so null offsets stay correct. Guarded by the partial-page-read test in
   `tests/testthat/test-parquet-file.R`.
@@ -117,6 +117,24 @@ upstream them and bump the pin.
   over-read; with that fixed this slack is defensive belt-and-suspenders. Found
   with valgrind `--track-origins` on x86 (ASan is blind to it — the read is
   in-allocation-bounds once padded, and uninitialised, not out-of-bounds).
+
+- **carquet: propagate page preload and offset-index failures.**
+  `src/carquet/reader/batch_reader.c`, `column_reader.c`, and `page_filter.c`.
+  Replaces ignored column-read and offset-index statuses with checked failures;
+  page-filter cleanup releases both indexes before returning. The batch preload
+  path still returns a bare `CARQUET_ERROR_DECODE`, so richer column context
+  remains an upstream improvement.
+
+- **carquet: use a portable format for prebuffer allocation errors.**
+  `src/carquet/reader/file_reader.c`. Formats allocation sizes through
+  `PRIuMAX` and `uintmax_t`, avoiding `%zu` incompatibility with the Microsoft C
+  runtime used by MinGW/Rtools.
+
+- **carquet: require an actual SSE4.2 feature signal outside MSVC.**
+  `src/carquet/simd/x86/sse_ops.c`. MinGW defines `_M_X64` for compatibility but
+  still needs `-msse4.2` before SSE4.2 intrinsics are legal. The guard now accepts
+  the architecture macros implicitly only under MSVC and otherwise requires
+  `__SSE4_2__`.
 
 ## Re-vendoring
 

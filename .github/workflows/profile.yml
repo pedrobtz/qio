@@ -1,8 +1,6 @@
 name: Profile read_parquet
 
 on:
-  push:
-  pull_request:
   workflow_dispatch:
     inputs:
       frequency:
@@ -13,6 +11,11 @@ on:
       iterations:
         description: 'Number of read_parquet iterations'
         default: '3'
+        required: false
+        type: string
+      retention_days:
+        description: 'Days to keep the Rprof.out artifact'
+        default: '7'
         required: false
         type: string
 
@@ -97,6 +100,8 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: Rprof-out
+          name: Rprof-out-${{ github.run_id }}
           path: /tmp/Rprof.out
           if-no-files-found: warn
+          retention-days: ${{ inputs.retention_days || '7' }}
+          compression-level: 9

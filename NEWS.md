@@ -1,5 +1,8 @@
 # qio 0.0.0.9000
 
+* `collect()`, `read_parquet()`, and `walk_batches()` now skip selected nested
+  or repeated columns with one message per operation. Nested reading is deferred
+  to qio 0.2.0.
 * `infer_parquet_schema()` and `parquet_schema()` now describe automatic writer
   mappings and create reusable partial schemas. `write_parquet(schema =)` can
   explicitly write `BOOLEAN`, `INT32`, `INT64`, `FLOAT`, `DOUBLE`, `STRING`,
