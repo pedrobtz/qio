@@ -51,54 +51,56 @@ sanitizers, Valgrind, LTO, gctorture, and rchk.
 
 ### 1. Trust and portability
 
-- [ ] Fix the defects found reviewing package-owned C glue before other v0.1.0
+- [x] Fix the defects found reviewing package-owned C glue before other v0.1.0
   work: the INT32 sentinel mapping below, an unprotected write loop that leaks
   and truncates on any longjmp, missing argument-type validation at native
   entry points, and dead state. Ordered in
   [`plan.md`](plan.md#phase-p-native-glue-preflight).
-- [ ] Track one authoritative `carquet-changes.patch`, exclude it from the
+- [x] Track one authoritative `carquet-changes.patch`, exclude it from the
   source package, and add a CI reverse-apply drift check.
-- [ ] Add vendored-header prerequisites to `src/Makevars*` so header changes
+- [x] Add vendored-header prerequisites to `src/Makevars*` so header changes
   cannot leave ABI-incompatible objects.
 - [ ] Upstream local carquet patches and re-vendor from a new pin. This is best
   effort: if upstream has not merged them before release validation, v0.1.0
   ships on the current pin with the patches documented and the re-vendor moves
   to v0.2.0.
-- [ ] Exercise Windows mmap with at least two threads in CI.
-- [ ] Make qualifying `walk_batches(threads = 1)` calls single-threaded; the
+- [x] Exercise Windows mmap with at least two threads in CI.
+- [x] Make qualifying `walk_batches(threads = 1)` calls single-threaded; the
   vendored batch pipeline currently forces two workers.
 
 ### 2. Types and column identity
 
-- [ ] Complete the v0.1.0 portion of the
+- [x] Complete the v0.1.0 portion of the
   [`TYPES.md` implementation sequence](TYPES.md#implementation-sequence):
   shared planning through temporal and integer annotations, less the
   `INTERVAL` class carved out below. Nested and extension types remain
   deferred.
-- [ ] Resolve projected columns by complete schema path, not leaf name.
+- [x] Resolve projected columns by complete schema path, not leaf name.
 - [ ] Build an interoperability corpus across physical/logical types, page
   versions, encodings, and boundary values. Unsupported files must fail
   clearly.
 
 ### 3. Read performance and memory
 
-- [ ] Sub-batch strings so scratch space does not scale with the largest row
+- [x] Sub-batch strings so scratch space does not scale with the largest row
   group and `collect(batch_size =)` has real behavior.
-- [ ] Materialize dictionary text efficiently, with a safe fallback for mixed
+- [x] Materialize dictionary text efficiently, with a safe fallback for mixed
   encoding.
-- [ ] Use statistics for a measured no-null fast path.
-- [ ] Decode suitable numeric columns into R memory and expand nullable values
-  backward in place.
-- [ ] Consider private readers for buffered parallelism only if persistent,
-  non-mmap performance proves important.
+- [x] Use statistics for a measured no-null fast path. **Measured and
+  declined**; see [`plan.md`](plan.md#phase-4-bound-reader-memory-and-optimize-measured-hot-paths).
+- [x] Decode suitable numeric columns into R memory and expand nullable values
+  backward in place. **Measured and declined.**
+- [x] Consider private readers for buffered parallelism only if persistent,
+  non-mmap performance proves important. Implemented; worth about 2.6x.
 
 ### 4. Writer
 
-- [ ] Write bounded chunks, check interrupts, and abort partial files safely
+- [x] Write bounded chunks, check interrupts, and abort partial files safely
   through `R_UnwindProtect`.
-- [ ] Surface richer carquet write errors when available.
-- [ ] Add the reusable writer configuration described below.
-- [ ] Establish reproducible write benchmarks before optimizing.
+- [x] Surface richer carquet write errors when available.
+- [ ] Add the reusable writer configuration described below. **Deferred to
+  v0.2.0**, with the other open writer API decisions.
+- [x] Establish reproducible write benchmarks before optimizing.
 
 ### 5. API and release
 

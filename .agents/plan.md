@@ -69,8 +69,7 @@ release work begins.
 
 ## Phase P: native glue preflight
 
-Status: complete, except for one gate that no available tool covers; see the
-exit gate.
+Status: complete.
 
 Defects and dead code found by reviewing `src/qio.c` and `src/qio_file.c`
 against the carquet headers and the R callers. None of this is new feature
