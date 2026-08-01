@@ -314,3 +314,80 @@ test_that("mmap and explicit thread options can read a file", {
   file <- local_parquet_file(mmap = TRUE, threads = 1)
   expect_equal(collect(file, columns = "id")$id, 1:12)
 })
+
+# --- Phase P: native glue preflight ----------------------------------------
+
+test_that("an INT32 sentinel value is reported, not silently dropped", {
+  # -2147483648 is a legal Parquet INT32 but is R's NA_integer_. qio cannot
+  # write it from an integer vector, so route it through a DATE column, whose
+  # validated range includes INT_MIN. See .agents/TYPES.md.
+  path <- withr::local_tempfile(fileext = ".parquet")
+  schema <- parquet_schema(d = list(type = "DATE"))
+  write_parquet(data.frame(d = c(-2147483648, -1, 0, 1)), path, schema = schema)
+
+  expect_warning(result <- read_parquet(path), "reserves -2147483648")
+  expect_true(is.na(result$d[[1]]))
+  expect_equal(as.integer(unclass(result$d))[2:4], c(-1L, 0L, 1L))
+
+  file <- local_parquet_file(path)
+  expect_warning(collect(file), "reserves -2147483648")
+  expect_warning(
+    walk_batches(file, function(batch, index) invisible(NULL)),
+    "reserves -2147483648"
+  )
+})
+
+test_that("the sentinel warning is emitted once per read, not per value", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  schema <- parquet_schema(d = list(type = "DATE"))
+  write_parquet(data.frame(d = rep(-2147483648, 20)), path, schema = schema)
+
+  warnings <- character()
+  withCallingHandlers(
+    read_parquet(path),
+    warning = function(w) {
+      warnings <<- c(warnings, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  )
+  expect_length(warnings, 1L)
+})
+
+test_that("reads without a sentinel value do not warn", {
+  file <- local_parquet_file()
+  expect_no_warning(collect(file))
+})
+
+test_that("collect() and walk_batches() reject a non-positive batch size", {
+  file <- local_parquet_file()
+  expect_error(collect(file, batch_size = 0L), "batch_size")
+  expect_error(
+    walk_batches(file, function(batch, index) NULL, batch_size = 0L),
+    "batch_size"
+  )
+})
+
+test_that("a callback error does not deparse the whole batch", {
+  file <- local_parquet_file()
+  condition <- tryCatch(
+    walk_batches(file, function(batch, index) stop("boom")),
+    error = function(e) e
+  )
+  # The call carries argument symbols, not the materialized data frame.
+  expect_lt(
+    nchar(paste(deparse(conditionCall(condition)), collapse = "")),
+    200L
+  )
+})
+
+test_that("schema() reports every leaf of a wide file", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  wide <- as.data.frame(matrix(1L, nrow = 2L, ncol = 200L))
+  write_parquet(wide, path)
+
+  file <- local_parquet_file(path)
+  result <- schema(file)
+  expect_identical(nrow(result), 200L)
+  expect_identical(result$column, seq_len(200L))
+  expect_identical(result$name, names(wide))
+})

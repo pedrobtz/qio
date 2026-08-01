@@ -94,3 +94,33 @@ test_that("errors in remaining flat columns are still reported", {
     "qio:"
   )
 })
+
+# --- INT32 sentinel (bare INT32 written by Apache Arrow) --------------------
+# R's integer reserves -2147483648 as NA_integer_, so a legal Parquet value is
+# unrepresentable. qio keeps the integer mapping and reports the substitution
+# once per read. See .agents/TYPES.md and parquet/SOURCE.md.
+
+test_that("a third-party bare INT32 sentinel warns and preserves other values", {
+  path <- ext("int32_min.parquet")
+
+  expect_warning(df <- read_parquet(path), "reserves -2147483648")
+  expect_type(df$value, "integer")
+  expect_identical(
+    df$value,
+    c(NA_integer_, -1L, 0L, 2147483647L, NA_integer_)
+  )
+  expect_identical(df$label, c("min", "neg", "zero", "max", NA_character_))
+})
+
+test_that("the sentinel does not change the column type", {
+  # A data-dependent type would break the guarantee that read_plan() is a pure
+  # function of the schema and that all three read APIs agree.
+  path <- ext("int32_min.parquet")
+  plan <- read_plan(path)
+
+  expect_identical(plan$r_type[plan$name == "value"], "integer")
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+  expect_warning(collected <- collect(file), "reserves -2147483648")
+  expect_type(collected$value, "integer")
+})

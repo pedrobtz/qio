@@ -1,0 +1,500 @@
+# qio v0.1.0 implementation plan
+
+Last updated: 2026-08-01
+
+This plan turns the [`roadmap.md`](roadmap.md) priorities into an execution
+order. The roadmap owns scope; [`TYPES.md`](TYPES.md) owns type behavior;
+[`carquet.md`](carquet.md) and [`VENDORED.md`](VENDORED.md) own native
+constraints. Change those sources before changing this plan's interpretation of
+them.
+
+## Release outcome
+
+v0.1.0 is complete when:
+
+- every required phase below has passed its exit gate;
+- the deliberate exclusions in the roadmap remain excluded and fail clearly;
+- supported files produce consistent results through `read_parquet()`,
+  `collect()`, and `walk_batches()`;
+- failed reads and writes leave no invalid handles or partial output;
+- the source package builds and checks on supported platforms; and
+- the README, reference site, NEWS, benchmarks, and vendored-code record match
+  the shipped behavior.
+
+## Working rules
+
+- Complete phases in dependency order. Work inside a phase may use separate,
+  focused pull requests.
+- A checked implementation item is not complete until its tests,
+  documentation, and exit gate pass.
+- Add interoperability fixtures with provenance in
+  `tests/testthat/parquet/SOURCE.md` as each format feature lands; do not defer
+  them to release week.
+- Add a `NEWS.md` entry for every user-visible change.
+- Clean native objects before testing any vendored-header change.
+- Measure before and after performance work on the same fixture, machine, and
+  build configuration. Keep the benchmark reproducible.
+- If work changes scope, update `roadmap.md` first. Do not pull nested values,
+  predicates, raw-vector I/O, or other deferred features into v0.1.0.
+- Every exit-gate line names its evidence: a test file, a workflow job, or a
+  benchmark command. A gate that cannot be checked mechanically is not a gate.
+- Keep the `Status:` line under each phase heading current.
+
+## Dependency order
+
+```text
+P. Native glue preflight
+          |
+0. Scope and baseline
+          |
+1. Vendored foundation
+          |
+2. Read identity and planning
+       /     |      \
+3. Types  4. Reader  5. Writer
+       \     |      /
+  6. Inspection and writer controls
+          |
+7. Interoperability and documentation
+          |
+8. Release validation
+```
+
+Phase P precedes phase 0 so that baselines are recorded against corrected glue.
+Phases 3 through 5 may proceed independently after phase 2. Phase 5 has its own
+entry gate for writer configuration; that decision does not block phases 1
+through 4. Phase 6 may begin earlier where it does not depend on unfinished
+writer configuration, but it must pass together with phases 3 through 5 before
+release work begins.
+
+## Phase P: native glue preflight
+
+Status: code and tests complete; two exit-gate lines await a `native-checks`
+run on the branch.
+
+Defects and dead code found by reviewing `src/qio.c` and `src/qio_file.c`
+against the carquet headers and the R callers. None of this is new feature
+work. Complete it before phase 0 so the recorded baselines and benchmarks
+measure corrected code, and so later phases do not build on a known-wrong
+mapping or an unprotected write loop.
+
+Three items overlap later phases. Preflight fixes the defect; the later phase
+still owns the full contract:
+
+| Item | Preflight does | Owner of the rest |
+|---|---|---|
+| INT32 sentinel | Correct the mapping, add a fixture | Phase 3.1 warning aggregation |
+| Writer unwind safety | Stop the leak and the truncated file | Phase 5 chunking and interrupts |
+| Worker-pool submit | Remove the stall, fix the comment | Phase 4 measured optimization |
+
+### Work
+
+Correctness
+
+- [x] Stop mapping a stored INT32 `-2147483648` to `NA`. `NA_INTEGER` is
+  `INT_MIN`, so `src/qio_file.c:426` (dense `memcpy`) and `src/qio_file.c:341`
+  (nullable copy) turn a legal Parquet value written by other tools into a
+  missing value with no warning. Decide the mapping in `TYPES.md` first, then
+  implement it and add a third-party fixture; qio's own writer cannot produce
+  the value, so no existing test covers it.
+- [x] Protect the write loop with `R_UnwindProtect`. Nothing between
+  `carquet_writer_create` (`src/qio.c:183`) and `carquet_writer_close`
+  (`src/qio.c:319`) survives a longjmp, and two are reachable inside it:
+  `Rf_translateCharUTF8` (`src/qio.c:292`) on untranslatable strings, and the
+  `nrow`-sized `R_alloc` calls (`src/qio.c:196` and each type branch) on
+  allocation failure. Either leaks the writer and schema and leaves a truncated
+  file. Cleanup must abort the writer and free the schema.
+- [x] Fix the signed-overflow guard at `src/qio_file.c:859`. The product inside
+  the cast is widened to `size_t`, but the `n_groups * ncol > 0` test is
+  evaluated in `int`; on overflow it takes the one-element branch and the fill
+  loop writes past the allocation. Compute the product once into an `int64_t`
+  and branch on that.
+
+Boundary validation
+
+- [x] Add the missing `TYPEOF` guards in `qio_prepare_selection`:
+  `STRING_ELT(columns, i)` (`src/qio_file.c:634`) and
+  `INTEGER(row_groups)[i]` (`src/qio_file.c:689`) both assume a type the C
+  layer never checks, while `path` and `callback` are checked at their entry
+  points. R validates today; the asymmetry is what fails later.
+- [x] Reject `batch_size < 1` in C. At `src/qio_file.c:992` a non-positive
+  batch size never terminates, and `NA_INTEGER` grows `remaining` while
+  allocating a batch per iteration.
+- [x] Assert `k == nrow` in the writer's non-nullable branches. With
+  `nullable[c] == 0` any `NA` is skipped while `n = nrow` is still passed to
+  `carquet_writer_write_batch`, so the tail would be uninitialized. R blocks
+  this today; the comment at `src/qio.c:102` already claims C re-validates
+  before creating output, but it re-checks storage types only.
+
+Performance and diagnostics
+
+- [x] Stop the submit stall in parallel collect. `src/qio_file.c:897` submits
+  every task before the main thread starts its string pass, but the pool queue
+  holds 512 tasks and `carquet_worker_pool_submit` blocks when full despite its
+  header comment. Past 512 (row group x numeric column) pairs the string decode
+  starts late. Interleave submission with string work, and correct the overlap
+  comment at `src/qio_file.c:911`.
+- [x] Make a long parallel collect interruptible around
+  `carquet_worker_pool_wait` (`src/qio_file.c:964`).
+- [x] Replace `qio_leaf_node` (`src/qio_file.c:199`) with one pass that
+  collects leaf nodes. It rescans every schema element per leaf, so `schema()`
+  is quadratic in schema size.
+- [x] Give the embedded-NUL failure a qio message naming the column path
+  instead of `Rf_mkCharLenCE`'s generic error (`src/qio_file.c:366` and
+  `src/qio_file.c:500`). Full UTF-8 validation stays in phase 3.2.
+
+Cleanup
+
+- [x] Remove write-only state: `handle->use_mmap` and
+  `handle->verify_checksums` (`src/qio_file.c:1107`), which the mmap decision
+  bypasses in favor of `carquet_reader_is_mmap`, and `context->walk`
+  (`src/qio_file.c:54`).
+- [x] Wire up or delete `QIO_CHUNK` (`src/qio.c:41`). It is unused, and its
+  presence implies a chunked writer that does not exist.
+- [x] Bind the callback arguments in an environment instead of splicing the
+  batch data frame into the call as a literal (`src/qio_file.c:792`). Results
+  are correct today, but an error inside a user callback deparses the whole
+  batch into the traceback.
+- [x] Remove the stale "not yet validated on Windows" note in
+  `src/Makevars.win`; `R-CMD-check` has covered `windows-latest` for some time.
+- [x] Record the Windows non-ASCII path limitation. Both `Rf_translateChar`
+  call sites (`src/qio.c:72`, `src/qio_file.c:1089`) convert to the native
+  encoding, which is the ANSI code page on Windows. The real fix needs
+  wide-character support in carquet, so this is an upstream item plus a
+  documented limitation, not a code change here.
+
+### Exit gate
+
+- [x] A third-party fixture containing INT32 `-2147483648` reads back per the
+  mapping recorded in `TYPES.md`, and never as a silent `NA`.
+- [x] A forced translation failure inside the write loop leaves no leaked writer
+  or schema and no file at all. Covered by `test-qio.R`; before the fix the same
+  input left an empty orphan file.
+- [x] Every native entry point validates the type of every argument it
+  dereferences, and the range of `threads` and `batch_size`.
+- [ ] Sanitizer, Valgrind, and gctorture workflows pass on the corrected glue.
+  Requires dispatching `native-checks`; not runnable locally.
+- [ ] Allocation failure inside the write loop is covered. No R-reachable
+  trigger remains, so this needs fault injection or the sanitizer run above.
+- [x] No write-only struct fields, unused constants, or stale build comments
+  remain in package-owned C.
+
+## Phase 0: lock scope and establish baselines
+
+Status: not started
+
+### Work
+
+- [ ] Confirm the v0.1.0 type boundary: complete shared planning, scalar,
+  binary/text, decimal, temporal, and integer-width work. Nested and extension
+  types remain deferred.
+- [ ] Record a clean baseline for the full test suite and R CMD check.
+- [ ] Establish reproducible read and write benchmark commands, fixtures,
+  environment details, and reported metrics. Name the reference workloads that
+  later phases must not regress, and set the regression threshold that fails a
+  performance gate.
+- [ ] Choose the independent Parquet cross-check tool used by the phase 5, 6,
+  and 7 gates. Record which tool and version, whether it runs in CI or only
+  when fixtures are regenerated, and how its results become checked-in
+  expectations. It must never become a test-time dependency of the package.
+- [ ] Turn any known baseline failure into an explicit roadmap item or fix it
+  before feature work begins.
+
+### Exit gate
+
+- [ ] `roadmap.md`, `TYPES.md`, and this plan agree on release scope.
+- [ ] Test, check, and benchmark baselines are reproducible from a clean tree,
+  with named reference workloads and a numeric regression threshold.
+- [ ] The independent cross-check tool is chosen and its output location is
+  recorded in `tests/testthat/parquet/SOURCE.md`.
+
+## Phase 1: make the vendored foundation reproducible
+
+Status: not started
+
+### Work
+
+- [ ] Generate one authoritative `.agents/carquet-changes.patch` against the
+  pinned upstream commit.
+- [ ] Add a CI check that reverse-applies the patch to the vendored tree and
+  fails on drift. Verify that `.Rbuildignore` still excludes `.agents/` from the
+  R source package.
+- [ ] Add vendored-header dependencies to `src/Makevars` and
+  `src/Makevars.win`; prove that touching a shared header rebuilds all affected
+  objects.
+- [ ] Add a Windows CI case that forces mmap with at least two threads and
+  compares its result with the serial path.
+- [ ] Make `walk_batches(threads = 1)` start no second worker, patching the
+  vendored batch pipeline locally if upstream has not fixed it.
+- [ ] Best effort: submit or update upstream changes for every local carquet
+  patch. If the required fixes are merged before release validation begins,
+  re-vendor from the new pin and update `VENDORED.md` and the patch record. If
+  they are not, ship on the current pin with the patches documented and open a
+  v0.2.0 re-vendor item in `roadmap.md`. Upstream cadence must not block the
+  release.
+
+### Exit gate
+
+- [ ] The patch drift check passes from a clean checkout.
+- [ ] A vendored-header change cannot reuse ABI-incompatible objects.
+- [ ] Serial and threaded mmap reads agree on Windows, Linux, and macOS.
+- [ ] A focused test in `test-parquet-file.R` shows that
+  `walk_batches(threads = 1)` creates no second worker.
+- [ ] Native sanitizer, Valgrind, LTO, gctorture, and rchk workflows pass.
+
+## Phase 2: finish column identity and shared planning
+
+Status: not started
+
+### Work
+
+- [ ] Resolve user selections to leaf indexes by complete schema path before
+  entering carquet. Cover duplicate leaf names and collisions between flat and
+  skipped nested leaves.
+- [ ] Settle the materializing-read option surface once, before phases 3.1 and
+  3.4 invent separate mechanisms: where `int64`, `time`, and `tz` are accepted,
+  how they reach the shared plan, how `read_plan()` reports them, and how
+  defaults are validated before any allocation.
+- [ ] Audit the schema-driven read plan so allocation, null handling, physical
+  fallback, logical conversion, and class assignment are selected once.
+- [ ] Keep `qio_type_registry()` authoritative and generate
+  `parquet_type_mapping()` from it.
+- [ ] Make unsupported-type diagnostics include the complete column path,
+  physical type, logical type, and relevant parameters.
+- [ ] Verify that eager reads, persistent collection, and batch walking apply
+  identical plans for projection, row-group selection, nulls, and zero-column
+  results.
+
+### Exit gate
+
+- [ ] Complete-path selection is unambiguous across every read API.
+- [ ] A test regenerates `parquet_type_mapping()` from `qio_type_registry()` and
+  fails on any difference, so documented mappings cannot drift from native
+  behavior.
+- [ ] The read-option surface is fixed and documented; `read_plan()` reports
+  every selected mode.
+- [ ] Focused plan, projection, row-group, nested-skip, and batch tests pass in
+  `test-parquet-plan.R` and `test-parquet-file.R`.
+
+## Phase 3: complete v0.1.0 type coverage
+
+Status: not started
+
+Implement the contracts in [`TYPES.md`](TYPES.md#conversion-contracts) in this
+order. All four groups depend on the phase 2 read-option surface.
+
+- [ ] Materialize the Parquet `NULL` logical type as all-`NA` logical while
+  preserving row count.
+
+### 3.1 64-bit integers
+
+- [ ] Add signed and unsigned `double` and optional `bit64::integer64` modes.
+- [ ] Preserve original bits until range checks are complete and aggregate
+  warnings once per operation.
+- [ ] Test `2^53`, signed `-2^63`, unsigned `2^63 - 1`, nulls, projection, row
+  groups, and batches.
+
+### 3.2 Text, binary, and exact identifiers
+
+- [ ] Restrict character conversion to text annotations.
+- [ ] Materialize variable and fixed binary as raw-vector list-columns.
+- [ ] Add UUID, JSON, BSON, ENUM, and FLOAT16 mappings, with symmetric writes
+  where the R representation is unambiguous.
+- [ ] Validate UTF-8, fixed widths, UUID bytes, and malformed annotations.
+
+### 3.3 Decimal
+
+- [ ] Decode `INT32`, `INT64`, `BYTE_ARRAY`, and `FIXED_LEN_BYTE_ARRAY`
+  decimals without passing through double.
+- [ ] Return exact fixed-point character and expose precision, scale, and
+  storage through schema and plan inspection.
+- [ ] Add explicit decimal writes with exact parsing and pre-write validation.
+
+### 3.4 Temporal and annotated integers
+
+- [ ] Finish UTC and non-UTC timestamp behavior with validated `tz`, documented
+  DST behavior, overflow checks, and operation-level timezone messages.
+- [ ] Add numeric and optional `hms` time-of-day modes.
+- [ ] Add remaining signed/unsigned integer-width annotations and interval
+  representation.
+- [ ] Add boundary fixtures for every timestamp unit and integer width.
+
+### Exit gate
+
+- [ ] Every supported mapping has round-trip, null, projected-column,
+  row-group, batch, boundary, and malformed-input coverage where applicable.
+- [ ] All three materializing read APIs return the same type and values.
+- [ ] Optional modes fail clearly when their suggested package is unavailable.
+- [ ] Nested, variant, and geospatial values remain outside v0.1.0 scope.
+
+## Phase 4: bound reader memory and optimize measured hot paths
+
+Status: not started
+
+### Work
+
+- [ ] Read strings in sub-batches so scratch memory is bounded by
+  `batch_size`, not the largest selected row group.
+- [ ] Give `collect(batch_size =)` observable, documented behavior.
+- [ ] Materialize dictionary text from indexes when safe and fall back for
+  plain or mixed encoding without changing the R result.
+- [ ] Add a statistics-driven no-null path only if benchmarks show a useful
+  improvement.
+- [ ] Decode suitable numeric columns into R-owned memory and expand nullable
+  values backward in place.
+- [ ] Benchmark buffered persistent reads. Either implement private-reader
+  parallelism with correct ownership or record why it is not justified for
+  v0.1.0.
+
+### Exit gate
+
+- [ ] Peak string scratch scales with `batch_size`, not with the largest
+  selected row group. State the measured bound and the instrument that produced
+  it, and assert it across a multi-row-group fixture.
+- [ ] Dictionary, plain, and mixed pages return identical character results.
+- [ ] Performance changes include reproducible evidence from the phase 0
+  reference workloads and stay within the phase 0 regression threshold.
+- [ ] Valgrind, sanitizers, and gctorture pass the new allocation paths.
+
+## Phase 5: harden and configure the writer
+
+Status: not started
+
+### Entry gate
+
+- [ ] The remaining writer-configuration choices in `roadmap.md` are resolved:
+  constructor and argument names, row-group sizing units, v0.1.0 fields,
+  defaults, and global and per-column dictionary controls. Configuration work
+  in this phase does not start until they are.
+
+### Work
+
+- [ ] Write bounded chunks, check user interrupts between chunks, and protect
+  cleanup with `R_UnwindProtect`.
+- [ ] Abort after write failures but never after `carquet_writer_close()` has
+  consumed the handle. Test interruption and every failure stage.
+- [ ] Validate schema and configuration before creating or truncating output.
+- [ ] Preserve contextual carquet write errors through the C and R boundaries.
+- [ ] Implement the resolved reusable configuration object with global and
+  complete-path per-column settings.
+- [ ] Keep `parquet_schema()` responsible for types and verify that the default
+  configuration preserves current `write_parquet()` output choices.
+- [ ] Add reproducible write benchmarks before attempting optimizations.
+
+### Exit gate
+
+- [ ] Interrupted and failed writes release native resources and do not leave a
+  file that appears successfully complete.
+- [ ] All configuration is validated before output mutation and is reusable
+  across writes.
+- [ ] Codec, null, row-group, page, and per-column configuration tests pass.
+- [ ] Writer round trips pass against qio and independent Parquet readers.
+
+## Phase 6: expose the remaining inspection and writer controls
+
+Status: not started
+
+This phase carries the most optional scope in the release. Each item is labelled
+Required or Deferrable; deferrable items ship only if they land complete and
+tested before phase 7 begins.
+
+### Work
+
+- [ ] Required: add column statistics and column-chunk metadata inspection.
+- [ ] Required: add file validation helpers with useful error context.
+- [ ] Required: add explicit row-group boundaries.
+- [ ] Required: add writer key/value metadata.
+- [ ] Required: document unsupported carquet capabilities instead of exposing
+  incomplete wrappers.
+- [ ] Deferrable: add column-index and offset-index inspection with explicit
+  ownership cleanup. Do not add predicate evaluation or pushdown.
+- [ ] Deferrable: add append mode with qio-side complete schema compatibility
+  checks.
+- [ ] Deferrable: add sorting declarations, documenting that they do not sort or
+  verify input.
+- [ ] Deferrable: add bloom-filter inspection with explicit ownership cleanup.
+
+### Descope order
+
+Under schedule pressure, cut deferrable items in this order and record each cut
+in `roadmap.md` before removing it here: bloom-filter inspection, sorting
+declarations, append mode, page indexes. The required items stay in v0.1.0.
+
+### Exit gate
+
+- [ ] Every shipped object has documented ownership, stable print behavior, and
+  malformed-file tests.
+- [ ] Any cut item is recorded as deferred in `roadmap.md` and absent from the
+  README feature matrix and reference index.
+- [ ] If append mode ships, it rejects incompatible logical parameters and
+  parent paths before writing.
+- [ ] Inspection results agree with the independent Parquet tool chosen in
+  phase 0.
+
+## Phase 7: complete interoperability and release documentation
+
+Status: not started
+
+### Work
+
+- [ ] Audit the fixture corpus across physical types, logical annotations,
+  encodings, data-page versions, null patterns, and row-group layouts.
+- [ ] Record generator, version, command, license, and expected behavior for
+  every fixture in `SOURCE.md`.
+- [ ] Add a README feature matrix that separates read, write, inspect, and
+  deferred support.
+- [ ] Publish reproducible read/write benchmark instructions and results without
+  presenting development measurements as guarantees.
+- [ ] Replace `url: ~` in `_pkgdown.yml`, validate the reference index, and
+  build the site without warnings.
+- [ ] Document every bundled license, copyright holder, pin, and local patch.
+- [ ] Regenerate roxygen output and complete the v0.1.0 `NEWS.md` section.
+
+### Exit gate
+
+- [ ] Documentation describes actual behavior, defaults, limitations, and
+  deliberate exclusions.
+- [ ] The built source package contains required licenses and excludes internal
+  plans, patch records, build products, fixtures not intended for distribution,
+  and local data.
+- [ ] `pkgdown::check_pkgdown()` passes.
+
+## Phase 8: release validation
+
+Status: not started
+
+### Work
+
+- [ ] Clean all native objects and build from a fresh checkout.
+- [ ] Run `devtools::document()`, the complete test suite, `devtools::check()`,
+  and `pkgdown::check_pkgdown()`.
+- [ ] Require green macOS, Windows, and Linux `R-CMD-check` runs. Dispatch
+  `native-checks` against the release commit itself and require green
+  sanitizer, Valgrind, LTO, gctorture, and rchk jobs; it does not run on every
+  commit.
+- [ ] Run win-builder and R-hub, including a sanitizer platform; resolve every
+  actionable ERROR, WARNING, and NOTE.
+- [ ] Inspect the source tarball for object files, build products, patch
+  records, and local artifacts; confirm that required vendored sources,
+  licenses, generated documentation, and tests are present.
+- [ ] Install and test from that source tarball, not only from the working tree.
+- [ ] Set `Version: 0.1.0`, finalize NEWS and release metadata, then rerun the
+  complete release matrix.
+- [ ] Tag and publish v0.1.0 only from the verified release commit.
+
+### Exit gate
+
+- [ ] Every earlier exit gate remains green on the release commit.
+- [ ] `Imports` remains empty; `bit64` and `hms` stay in `Suggests`, are reached
+  only through opt-in modes, and their tests skip cleanly when absent.
+- [ ] A clean user library can install qio from the source tarball and run the
+  documented smoke examples without undeclared dependencies.
+- [ ] The tag, source archive, documentation site, and package metadata identify
+  the same version and commit.
+
+## Maintenance
+
+Update checkboxes as work merges. If an item is removed, deferred, or added,
+record the scope change in `roadmap.md` and then update this plan. Keep detailed
+type contracts and vendored patch rationale in their owning documents rather
+than duplicating them here.

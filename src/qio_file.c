@@ -22,8 +22,6 @@
 typedef struct {
     carquet_reader_t *reader;
     int32_t threads;
-    int use_mmap;
-    int verify_checksums;
     int busy;
 } qio_parquet_handle_t;
 
@@ -51,7 +49,7 @@ typedef struct {
     carquet_worker_pool_t *pool;      /* in-flight parallel-collect pool */
     SEXP file;
     SEXP callback;
-    int walk;
+    int int32_sentinel;               /* an INT32 -2147483648 became NA */
 } qio_batch_context_t;
 
 static SEXP qio_file_tag(void) {
@@ -196,19 +194,23 @@ static int qio_logical_type_details(const carquet_logical_type_t *type,
     }
 }
 
-static const carquet_schema_node_t *qio_leaf_node(
-    const carquet_schema_t *schema, int32_t leaf_index) {
+/* Collect the leaf nodes in schema order, in one pass. Resolving each leaf
+ * independently would rescan every element per leaf, making schema inspection
+ * quadratic in schema size. Returns the number of leaves found, which the
+ * caller must check against the reader's column count. */
+static int32_t qio_leaf_nodes(const carquet_schema_t *schema,
+                              const carquet_schema_node_t **leaves,
+                              int32_t capacity) {
     int32_t seen = 0;
     int32_t elements = carquet_schema_num_elements(schema);
-    for (int32_t i = 0; i < elements; i++) {
+    for (int32_t i = 0; i < elements && seen < capacity; i++) {
         const carquet_schema_node_t *node =
             carquet_schema_get_element(schema, i);
         if (node && carquet_schema_node_is_leaf(node)) {
-            if (seen == leaf_index) return node;
-            seen++;
+            leaves[seen++] = node;
         }
     }
-    return NULL;
+    return seen;
 }
 
 static int32_t qio_column_path_parts(const carquet_schema_t *schema,
@@ -281,6 +283,21 @@ static double qio_int96_to_seconds(carquet_int96_t value) {
     return (double)days * 86400.0 + (double)nanos / 1e9;
 }
 
+/* Reject bytes R cannot hold in a CHARSXP before Rf_mkCharLenCE() raises its
+ * own message, which names neither the column nor the row. */
+static void qio_check_string_bytes(const carquet_byte_array_t *value,
+                                   const char *column, int64_t row) {
+    if (value->length < 0 || (value->length > 0 && value->data == NULL)) {
+        Rf_error("qio: column '%s' returned an invalid byte array", column);
+    }
+    if (value->length > 0 &&
+        memchr(value->data, '\0', (size_t)value->length) != NULL) {
+        Rf_error("qio: column '%s' contains an embedded nul at row %lld; R "
+                 "character vectors cannot represent it",
+                 column, (long long)row + 1);
+    }
+}
+
 static SEXP qio_allocate_column(carquet_physical_type_t type,
                                 R_xlen_t length) {
     switch (type) {
@@ -305,7 +322,8 @@ static SEXP qio_allocate_column(carquet_physical_type_t type,
 static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                                   carquet_physical_type_t type,
                                   const void *data, const uint8_t *bitmap,
-                                  int64_t length) {
+                                  int64_t length, const char *column,
+                                  int *sentinel) {
     for (int64_t i = 0; i < length; i++) {
         R_xlen_t out = offset + (R_xlen_t)i;
         if (!qio_value_present(bitmap, i)) {
@@ -337,9 +355,14 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                                             ? TRUE
                                             : FALSE;
             break;
-        case CARQUET_PHYSICAL_INT32:
-            INTEGER(destination)[out] = ((const int32_t *)data)[i];
+        case CARQUET_PHYSICAL_INT32: {
+            /* See qio_scatter_numeric_raw: NA_INTEGER is INT_MIN. Here the
+             * value is known present, so testing it directly is exact. */
+            int32_t value = ((const int32_t *)data)[i];
+            if (sentinel && value == NA_INTEGER) *sentinel = 1;
+            INTEGER(destination)[out] = value;
             break;
+        }
         case CARQUET_PHYSICAL_INT64:
             REAL(destination)[out] = (double)((const int64_t *)data)[i];
             break;
@@ -356,10 +379,7 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
         case CARQUET_PHYSICAL_BYTE_ARRAY: {
             const carquet_byte_array_t *value =
                 &((const carquet_byte_array_t *)data)[i];
-            if (value->length < 0 ||
-                (value->length > 0 && value->data == NULL)) {
-                Rf_error("qio: parquet batch returned an invalid byte array");
-            }
+            qio_check_string_bytes(value, column, i);
             const char *bytes = value->length > 0
                                     ? (const char *)value->data
                                     : "";
@@ -413,7 +433,8 @@ static void qio_scatter_numeric_raw(void *dst_base, R_xlen_t dst_offset,
                                     carquet_physical_type_t type,
                                     const void *values,
                                     const int16_t *def_levels,
-                                    int16_t max_def, int64_t length) {
+                                    int16_t max_def, int64_t length,
+                                    int *sentinel) {
     switch (type) {
     case CARQUET_PHYSICAL_BOOLEAN: {
         int *dst = (int *)dst_base + dst_offset;
@@ -422,10 +443,29 @@ static void qio_scatter_numeric_raw(void *dst_base, R_xlen_t dst_offset,
     }
     case CARQUET_PHYSICAL_INT32: {
         int *dst = (int *)dst_base + dst_offset;
+        int64_t dense = length;
         if (def_levels == NULL) {
             memcpy(dst, values, (size_t)length * sizeof(int32_t));
         } else {
-            QIO_SCATTER_LOOP(int32_t, dst, NA_INTEGER, QIO_CONVERT_IDENTITY);
+            const int32_t *src = (const int32_t *)values;
+            int64_t j = 0;
+            for (int64_t i = 0; i < length; i++) {
+                dst[i] = (def_levels[i] == max_def) ? src[j++] : NA_INTEGER;
+            }
+            dense = j;
+        }
+        /* R's NA_INTEGER is INT_MIN, so a stored -2147483648 becomes NA and is
+         * then indistinguishable from a real null. Scan the dense source (never
+         * the destination, where nulls also read as NA_INTEGER) and record the
+         * substitution for one warning per operation; see TYPES.md. */
+        if (sentinel && !*sentinel) {
+            const int32_t *src = (const int32_t *)values;
+            for (int64_t i = 0; i < dense; i++) {
+                if (src[i] == NA_INTEGER) {
+                    *sentinel = 1;
+                    break;
+                }
+            }
         }
         break;
     }
@@ -475,7 +515,8 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
                                      carquet_physical_type_t type,
                                      const void *values,
                                      const int16_t *def_levels,
-                                     int16_t max_def, int64_t length) {
+                                     int16_t max_def, int64_t length,
+                                     const char *column, int *sentinel) {
     switch (type) {
     case CARQUET_PHYSICAL_BYTE_ARRAY: {
         /* Strings must go through SET_STRING_ELT (write barrier) and
@@ -490,10 +531,7 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
                 continue;
             }
             const carquet_byte_array_t *value = &src[j++];
-            if (value->length < 0 ||
-                (value->length > 0 && value->data == NULL)) {
-                Rf_error("qio: parquet column returned an invalid byte array");
-            }
+            qio_check_string_bytes(value, column, i);
             const char *bytes = value->length > 0
                                     ? (const char *)value->data
                                     : "";
@@ -505,7 +543,7 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
     default:
         qio_scatter_numeric_raw(qio_column_data_pointer(destination, type),
                                 offset, type, values, def_levels, max_def,
-                                length);
+                                length, sentinel);
         break;
     }
 }
@@ -536,6 +574,7 @@ typedef struct {
     R_xlen_t dst_offset; /* first row of this row group in the result */
     int64_t rows;        /* rows in this row group */
     int status;          /* 0 = ok; set to 1 on failure */
+    int int32_sentinel;  /* task-local; merged on the main thread after wait */
     char message[256];
 } qio_column_task_t;
 
@@ -580,7 +619,8 @@ static void qio_column_task_run(void *arg) {
             goto done;
         }
         qio_scatter_numeric_raw(task->dst, task->dst_offset + read,
-                                task->type, values, defs, task->max_def, n);
+                                task->type, values, defs, task->max_def, n,
+                                &task->int32_sentinel);
         read += n;
     }
 
@@ -620,6 +660,16 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
         carquet_reader_schema(handle->reader);
     int32_t file_columns = carquet_reader_num_columns(handle->reader);
 
+    /* R validates these before calling, but every other entry point re-checks
+     * what it dereferences; INTEGER() on a REALSXP would silently reinterpret
+     * memory rather than fail. */
+    if (columns != R_NilValue && TYPEOF(columns) != STRSXP) {
+        Rf_error("qio: `columns` must be a character vector or NULL");
+    }
+    if (row_groups != R_NilValue && TYPEOF(row_groups) != INTSXP) {
+        Rf_error("qio: `row_groups` must be an integer vector or NULL");
+    }
+
     if (columns == R_NilValue) {
         selection->num_columns = file_columns;
         selection->columns = (int32_t *)R_alloc(
@@ -631,6 +681,9 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
             (size_t)(selection->num_columns > 0 ? selection->num_columns : 1),
             sizeof(int32_t));
         for (int32_t i = 0; i < selection->num_columns; i++) {
+            if (STRING_ELT(columns, i) == NA_STRING) {
+                Rf_error("qio: `columns` must not contain missing values");
+            }
             const char *name = Rf_translateCharUTF8(STRING_ELT(columns, i));
             int32_t index = carquet_schema_find_column(schema, name);
             if (index < 0) {
@@ -781,18 +834,40 @@ static void qio_copy_batch(qio_batch_context_t *context, SEXP result,
         }
         carquet_physical_type_t type = carquet_schema_column_type(
             schema, context->selection.columns[i]);
-        qio_copy_batch_column(VECTOR_ELT(result, i), offset, type, data,
-                              bitmap, rows);
+        qio_copy_batch_column(
+            VECTOR_ELT(result, i), offset, type, data, bitmap, rows,
+            carquet_schema_column_name(schema, context->selection.columns[i]),
+            &context->int32_sentinel);
     }
 }
 
+/* One warning per operation, never per value, column, row group, or batch.
+ * Emitted after the read completes so an in-flight error is not preceded by a
+ * warning about a partial result; see TYPES.md. */
+static void qio_warn_int32_sentinel(const qio_batch_context_t *context) {
+    if (!context->int32_sentinel) return;
+    Rf_warning("Some INT32 values were coerced to NA because R's integer type "
+               "reserves -2147483648 as its missing value.");
+}
+
+/* Call FUN(batch, index) with both arguments bound in a child of the base
+ * environment. Splicing the values straight into the call would leave the whole
+ * batch data frame as a literal, which any error inside the callback then
+ * deparses into its traceback. */
 static void qio_call_batch_callback(qio_batch_context_t *context,
                                     SEXP batch, int batch_index) {
-    SEXP index = PROTECT(Rf_ScalarInteger(batch_index));
-    SEXP call = PROTECT(Rf_lang3(context->callback, batch, index));
-    SEXP value = PROTECT(Rf_eval(call, R_GlobalEnv));
+    /* new.env() rather than R_NewEnv(), which would raise the package's R floor
+     * to 4.1 without DESCRIPTION saying so. */
+    SEXP new_env_call = PROTECT(Rf_lang1(Rf_install("new.env")));
+    SEXP env = PROTECT(Rf_eval(new_env_call, R_BaseEnv));
+    SEXP batch_sym = Rf_install("batch");
+    SEXP index_sym = Rf_install("index");
+    Rf_defineVar(batch_sym, batch, env);
+    Rf_defineVar(index_sym, Rf_ScalarInteger(batch_index), env);
+    SEXP call = PROTECT(Rf_lang3(context->callback, batch_sym, index_sym));
+    SEXP value = PROTECT(Rf_eval(call, env));
     (void)value;
-    UNPROTECT(3);
+    UNPROTECT(4);
 }
 
 static SEXP qio_collect_body(void *data) {
@@ -855,10 +930,12 @@ static SEXP qio_collect_body(void *data) {
     }
 
     /* One task per (row group x numeric column); BYTE_ARRAY columns are
-     * handled on the main thread below. */
+     * handled on the main thread below. Size the array in int64_t: the guard
+     * must not be evaluated in int, where the product can overflow and take
+     * the one-element branch while the loop below fills n_groups * ncol. */
+    int64_t max_tasks = (int64_t)n_groups * (int64_t)ncol;
     qio_column_task_t *tasks = (qio_column_task_t *)R_alloc(
-        (size_t)(n_groups * ncol > 0 ? (size_t)n_groups * (size_t)ncol : 1),
-        sizeof(qio_column_task_t));
+        (size_t)(max_tasks > 0 ? max_tasks : 1), sizeof(qio_column_task_t));
     int32_t n_tasks = 0;
     int has_strings = 0;
     for (int32_t s = 0; s < n_groups; s++) {
@@ -893,8 +970,16 @@ static SEXP qio_collect_body(void *data) {
         context->pool = carquet_worker_pool_create(threads);
         /* NULL just means no parallelism; fall through to the inline path. */
     }
+    int32_t submitted = 0;
     if (context->pool) {
-        for (int32_t t = 0; t < n_tasks; t++) {
+        /* carquet_worker_pool_submit() blocks once the queue is full, despite
+         * its header comment. Submitting every task up front would therefore
+         * stall the main thread before it reaches the string pass below, so
+         * only prime the queue here and submit the rest afterwards. */
+        submitted = n_tasks < CARQUET_POOL_QUEUE_CAPACITY
+                        ? n_tasks
+                        : CARQUET_POOL_QUEUE_CAPACITY;
+        for (int32_t t = 0; t < submitted; t++) {
             carquet_worker_pool_submit(context->pool, qio_column_task_run,
                                        &tasks[t]);
         }
@@ -906,6 +991,7 @@ static SEXP qio_collect_body(void *data) {
             }
             R_CheckUserInterrupt();
         }
+        submitted = n_tasks;
     }
 
     /* String columns on the main thread (interning and the write barrier are
@@ -948,12 +1034,25 @@ static SEXP qio_collect_body(void *data) {
                 }
                 /* Scatter before freeing: BYTE_ARRAY values point into the
                  * column reader's page buffers, released on free. */
-                qio_scatter_dense_column(VECTOR_ELT(result, i), rg_offset[s],
-                                         type, value_buf, def_ptr, max_def,
-                                         n);
+                qio_scatter_dense_column(
+                    VECTOR_ELT(result, i), rg_offset[s], type, value_buf,
+                    def_ptr, max_def, n,
+                    carquet_schema_column_name(schema, file_col),
+                    &context->int32_sentinel);
                 carquet_column_reader_free(col);
                 context->column = NULL;
             }
+            R_CheckUserInterrupt();
+        }
+    }
+
+    /* Submit whatever the initial wave left over. Interrupts are checked
+     * between submissions: carquet_worker_pool_wait() cannot be interrupted,
+     * so this bounds the uninterruptible window to the tasks still in flight. */
+    if (context->pool) {
+        for (int32_t t = submitted; t < n_tasks; t++) {
+            carquet_worker_pool_submit(context->pool, qio_column_task_run,
+                                       &tasks[t]);
             R_CheckUserInterrupt();
         }
     }
@@ -964,11 +1063,12 @@ static SEXP qio_collect_body(void *data) {
         carquet_worker_pool_wait(context->pool);
         carquet_worker_pool_destroy(context->pool);
         context->pool = NULL;
-        for (int32_t t = 0; t < n_tasks; t++) {
-            if (tasks[t].status) {
-                Rf_error("qio: %s", tasks[t].message);
-            }
+    }
+    for (int32_t t = 0; t < n_tasks; t++) {
+        if (tasks[t].status) {
+            Rf_error("qio: %s", tasks[t].message);
         }
+        if (tasks[t].int32_sentinel) context->int32_sentinel = 1;
     }
 
     UNPROTECT(1);
@@ -1073,6 +1173,16 @@ static void qio_batch_cleanup(void *data, Rboolean jump) {
     context->handle->busy = 0;
 }
 
+/* A non-positive batch size would make qio_walk_empty_columns() loop forever,
+ * and NA_INTEGER (INT_MIN) would grow `remaining` on every pass. */
+static int32_t qio_batch_size(SEXP batch_size) {
+    int value = Rf_asInteger(batch_size);
+    if (value == NA_INTEGER || value < 1) {
+        Rf_error("qio: `batch_size` must be a positive whole number");
+    }
+    return (int32_t)value;
+}
+
 SEXP qio_parquet_open(SEXP path, SEXP use_mmap, SEXP verify_checksums,
                       SEXP threads) {
     if (TYPEOF(path) != STRSXP || XLENGTH(path) != 1 ||
@@ -1080,11 +1190,16 @@ SEXP qio_parquet_open(SEXP path, SEXP use_mmap, SEXP verify_checksums,
         Rf_error("qio: `file` must be a single file path");
     }
 
+    int num_threads = Rf_asInteger(threads);
+    if (num_threads == NA_INTEGER || num_threads < 0) {
+        Rf_error("qio: `threads` must be a non-negative whole number");
+    }
+
     carquet_reader_options_t options;
     carquet_reader_options_init(&options);
     options.use_mmap = Rf_asLogical(use_mmap) == TRUE;
     options.verify_checksums = Rf_asLogical(verify_checksums) == TRUE;
-    options.num_threads = Rf_asInteger(threads);
+    options.num_threads = num_threads;
 
     const char *file_path = Rf_translateChar(STRING_ELT(path, 0));
     carquet_error_t native_error = CARQUET_ERROR_INIT;
@@ -1104,8 +1219,6 @@ SEXP qio_parquet_open(SEXP path, SEXP use_mmap, SEXP verify_checksums,
     }
     handle->reader = reader;
     handle->threads = options.num_threads;
-    handle->use_mmap = options.use_mmap;
-    handle->verify_checksums = options.verify_checksums;
 
     SEXP file = PROTECT(R_MakeExternalPtr(handle, qio_file_tag(), path));
     R_RegisterCFinalizerEx(file, qio_finalize_file, TRUE);
@@ -1176,9 +1289,15 @@ SEXP qio_parquet_schema(SEXP file) {
     for (int i = 0; i < 10; i++)
         SET_STRING_ELT(names, i, Rf_mkChar(column_names[i]));
 
+    const carquet_schema_node_t **leaves =
+        (const carquet_schema_node_t **)R_alloc(
+            (size_t)(rows > 0 ? rows : 1), sizeof(*leaves));
+    if (qio_leaf_nodes(schema, leaves, rows) != rows) {
+        Rf_error("qio: parquet schema does not describe all %d columns", rows);
+    }
+
     for (int32_t i = 0; i < rows; i++) {
-        const carquet_schema_node_t *node = qio_leaf_node(schema, i);
-        if (!node) Rf_error("qio: cannot inspect parquet schema column %d", i + 1);
+        const carquet_schema_node_t *node = leaves[i];
         const carquet_logical_type_t *logical =
             carquet_schema_node_logical_type(node);
         INTEGER(VECTOR_ELT(result, 0))[i] = i + 1;
@@ -1293,15 +1412,16 @@ SEXP qio_parquet_collect(SEXP file, SEXP columns, SEXP row_groups,
     memset(&context, 0, sizeof(context));
     context.handle = handle;
     context.file = file;
-    context.batch_size = Rf_asInteger(batch_size);
+    context.batch_size = qio_batch_size(batch_size);
     qio_prepare_selection(handle, columns, row_groups, &context.selection);
 
     handle->busy = 1;
     SEXP continuation = PROTECT(R_MakeUnwindCont());
-    SEXP result = R_UnwindProtect(qio_collect_body, &context,
-                                  qio_batch_cleanup, &context,
-                                  continuation);
-    UNPROTECT(1);
+    SEXP result = PROTECT(R_UnwindProtect(qio_collect_body, &context,
+                                          qio_batch_cleanup, &context,
+                                          continuation));
+    qio_warn_int32_sentinel(&context);
+    UNPROTECT(2);
     return result;
 }
 
@@ -1320,15 +1440,15 @@ SEXP qio_parquet_walk(SEXP file, SEXP columns, SEXP row_groups,
     context.handle = handle;
     context.file = file;
     context.callback = callback;
-    context.walk = 1;
-    context.batch_size = Rf_asInteger(batch_size);
+    context.batch_size = qio_batch_size(batch_size);
     qio_prepare_selection(handle, columns, row_groups, &context.selection);
 
     handle->busy = 1;
     SEXP continuation = PROTECT(R_MakeUnwindCont());
-    SEXP result = R_UnwindProtect(qio_walk_body, &context,
-                                  qio_batch_cleanup, &context,
-                                  continuation);
-    UNPROTECT(1);
+    SEXP result = PROTECT(R_UnwindProtect(qio_walk_body, &context,
+                                          qio_batch_cleanup, &context,
+                                          continuation));
+    qio_warn_int32_sentinel(&context);
+    UNPROTECT(2);
     return result;
 }

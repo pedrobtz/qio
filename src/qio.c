@@ -37,9 +37,6 @@
 
 #include <carquet/carquet.h>
 
-/* Logical rows moved per carquet read/write batch call. */
-#define QIO_CHUNK 65536
-
 /* ------------------------------------------------------------------------- */
 /* Helpers                                                                   */
 /* ------------------------------------------------------------------------- */
@@ -58,6 +55,272 @@ static int qio_codec_from_string(const char *s, carquet_compression_t *out) {
 /* ------------------------------------------------------------------------- */
 /* Write                                                                     */
 /* ------------------------------------------------------------------------- */
+
+/* Native resources that must be released if anything between
+ * carquet_writer_create() and carquet_writer_close() jumps. Two R calls inside
+ * that window can: Rf_translateCharUTF8() on a string it cannot translate, and
+ * R_alloc() on allocation failure. Without this, the writer and schema leak and
+ * a truncated file is left behind. */
+typedef struct {
+    carquet_schema_t *schema;
+    carquet_writer_t *writer;  /* NULL once close() has consumed it */
+    SEXP x;
+    SEXP path_sexp;
+    SEXP nms;
+    const char *path;
+    carquet_compression_t codec;
+    int ncol;
+    R_xlen_t nrow;
+    const int *ptype;
+    const int *ltype;
+    const int *time_unit;
+    const int *nullable;
+} qio_write_context_t;
+
+static void qio_write_cleanup(void *data, Rboolean jump) {
+    (void)jump;
+    qio_write_context_t *ctx = (qio_write_context_t *)data;
+    /* carquet_writer_close() invalidates the handle, so the success path clears
+     * `writer` first; anything still here failed or never finished. */
+    if (ctx->writer) {
+        carquet_writer_abort(ctx->writer);
+        ctx->writer = NULL;
+    }
+    if (ctx->schema) {
+        carquet_schema_free(ctx->schema);
+        ctx->schema = NULL;
+    }
+}
+
+static SEXP qio_write_body(void *data) {
+    qio_write_context_t *ctx = (qio_write_context_t *)data;
+    const int *ptype = ctx->ptype;
+    const int *ltype = ctx->ltype;
+    const int *time_unit = ctx->time_unit;
+    const int *nullable = ctx->nullable;
+    R_xlen_t nrow = ctx->nrow;
+    int ncol = ctx->ncol;
+
+    carquet_error_t err = CARQUET_ERROR_INIT;
+    ctx->schema = carquet_schema_create(&err);
+    if (!ctx->schema) {
+        Rf_error("qio: failed to create schema: %s", err.message);
+    }
+
+    carquet_logical_type_t string_lt;
+    memset(&string_lt, 0, sizeof(string_lt));
+    string_lt.id = CARQUET_LOGICAL_STRING;
+
+    carquet_logical_type_t date_lt;
+    memset(&date_lt, 0, sizeof(date_lt));
+    date_lt.id = CARQUET_LOGICAL_DATE;
+
+    for (int c = 0; c < ncol; c++) {
+        char namebuf[64];
+        const char *nm;
+        if (ctx->nms != R_NilValue &&
+            STRING_ELT(ctx->nms, c) != NA_STRING &&
+            CHAR(STRING_ELT(ctx->nms, c))[0] != '\0') {
+            nm = Rf_translateCharUTF8(STRING_ELT(ctx->nms, c));
+        } else {
+            snprintf(namebuf, sizeof(namebuf), "V%d", c + 1);
+            nm = namebuf;
+        }
+        carquet_logical_type_t timestamp_lt;
+        memset(&timestamp_lt, 0, sizeof(timestamp_lt));
+        timestamp_lt.id = CARQUET_LOGICAL_TIMESTAMP;
+        timestamp_lt.params.timestamp.unit =
+            (carquet_time_unit_t)(time_unit[c] - 1);
+        timestamp_lt.params.timestamp.is_adjusted_to_utc = 1;
+
+        const carquet_logical_type_t *lt = NULL;
+        if (ltype[c] == 1) lt = &date_lt;
+        else if (ltype[c] == 2) lt = &timestamp_lt;
+        else if (ltype[c] == 3) lt = &string_lt;
+        carquet_field_repetition_t rep =
+            nullable[c] ? CARQUET_REPETITION_OPTIONAL
+                        : CARQUET_REPETITION_REQUIRED;
+
+        if (carquet_schema_add_column(ctx->schema, nm,
+                                      (carquet_physical_type_t)ptype[c],
+                                      lt, rep, 0, 0) != CARQUET_OK) {
+            Rf_error("qio: failed to add column '%s' to schema", nm);
+        }
+    }
+
+    carquet_writer_options_t wopts;
+    carquet_writer_options_init(&wopts);
+    wopts.compression = ctx->codec;
+
+    ctx->writer = carquet_writer_create(ctx->path, ctx->schema, &wopts, &err);
+    if (!ctx->writer) {
+        Rf_error("qio: cannot create '%s': %s", ctx->path, err.message);
+    }
+
+    int64_t n = (int64_t)nrow;
+
+    for (int c = 0; c < ncol; c++) {
+        void *vmax = vmaxget();
+        SEXP v = VECTOR_ELT(ctx->x, c);
+        int16_t *def =
+            nullable[c] ? (int16_t *)R_alloc(nrow, sizeof(int16_t)) : NULL;
+        R_xlen_t i, k = 0;
+        const void *out = NULL;
+
+        if (ltype[c] == 1) {
+            /* Date stores days since 1970-01-01; write them as INT32. */
+            int32_t *buf = (int32_t *)R_alloc(nrow, sizeof(int32_t));
+            double *p = REAL(v);
+            for (i = 0; i < nrow; i++) {
+                if (!R_IsNA(p[i])) {
+                    buf[k++] = (int32_t)round(p[i]);
+                    if (def) def[i] = 1;
+                } else if (def) {
+                    def[i] = 0;
+                }
+            }
+            out = buf;
+        } else if (ltype[c] == 2) {
+            /* POSIXct stores UTC seconds; rescale to the requested unit. */
+            int64_t *buf = (int64_t *)R_alloc(nrow, sizeof(int64_t));
+            double *p = REAL(v);
+            double scale = time_unit[c] == 1 ? 1e3 :
+                           time_unit[c] == 2 ? 1e6 : 1e9;
+            for (i = 0; i < nrow; i++) {
+                if (!R_IsNA(p[i])) {
+                    buf[k++] = (int64_t)llround(p[i] * scale);
+                    if (def) def[i] = 1;
+                } else if (def) {
+                    def[i] = 0;
+                }
+            }
+            out = buf;
+        } else switch (ptype[c]) {
+        case CARQUET_PHYSICAL_BOOLEAN: {
+            uint8_t *buf = (uint8_t *)R_alloc(nrow, 1);
+            int *p = LOGICAL(v);
+            for (i = 0; i < nrow; i++) {
+                if (p[i] != NA_LOGICAL) {
+                    buf[k++] = p[i] ? 1 : 0;
+                    if (def) def[i] = 1;
+                } else if (def) {
+                    def[i] = 0;
+                }
+            }
+            out = buf;
+            break;
+        }
+        case CARQUET_PHYSICAL_INT32: {
+            int32_t *buf = (int32_t *)R_alloc(nrow, sizeof(int32_t));
+            int *p = INTEGER(v);
+            for (i = 0; i < nrow; i++) {
+                if (p[i] != NA_INTEGER) {
+                    buf[k++] = p[i];
+                    if (def) def[i] = 1;
+                } else if (def) {
+                    def[i] = 0;
+                }
+            }
+            out = buf;
+            break;
+        }
+        case CARQUET_PHYSICAL_INT64: {
+            int64_t *buf = (int64_t *)R_alloc(nrow, sizeof(int64_t));
+            double *p = REAL(v);
+            for (i = 0; i < nrow; i++) {
+                if (!R_IsNA(p[i])) {
+                    buf[k++] = (int64_t)llround(p[i]);
+                    if (def) def[i] = 1;
+                } else if (def) {
+                    def[i] = 0;
+                }
+            }
+            out = buf;
+            break;
+        }
+        case CARQUET_PHYSICAL_FLOAT: {
+            float *buf = (float *)R_alloc(nrow, sizeof(float));
+            double *p = REAL(v);
+            for (i = 0; i < nrow; i++) {
+                if (!R_IsNA(p[i])) {
+                    buf[k++] = (float)p[i];
+                    if (def) def[i] = 1;
+                } else if (def) {
+                    def[i] = 0;
+                }
+            }
+            out = buf;
+            break;
+        }
+        case CARQUET_PHYSICAL_DOUBLE: {
+            double *buf = (double *)R_alloc(nrow, sizeof(double));
+            double *p = REAL(v);
+            for (i = 0; i < nrow; i++) {
+                if (!R_IsNA(p[i])) {
+                    buf[k++] = p[i];
+                    if (def) def[i] = 1;
+                } else if (def) {
+                    def[i] = 0;
+                }
+            }
+            out = buf;
+            break;
+        }
+        case CARQUET_PHYSICAL_BYTE_ARRAY: {
+            carquet_byte_array_t *buf = (carquet_byte_array_t *)R_alloc(
+                nrow, sizeof(carquet_byte_array_t));
+            /* R_alloc does not zero. Present values are packed densely into
+             * [0, k); the null tail [k, nrow) is never filled, but carquet's
+             * batch-size estimate scans all nrow entries and reads
+             * arrays[i].length. Zero the buffer so those reads are defined
+             * (length 0) instead of garbage — uninitialized bytes are benign
+             * on some allocators but corrupt the estimate on others (x86). */
+            memset(buf, 0, (size_t)nrow * sizeof(carquet_byte_array_t));
+            for (i = 0; i < nrow; i++) {
+                SEXP e = STRING_ELT(v, i);
+                if (e != NA_STRING) {
+                    const char *s = Rf_translateCharUTF8(e);
+                    buf[k].data = (uint8_t *)s;
+                    buf[k].length = (int32_t)strlen(s);
+                    k++;
+                    if (def) def[i] = 1;
+                } else if (def) {
+                    def[i] = 0;
+                }
+            }
+            out = buf;
+            break;
+        }
+        default:
+            Rf_error("qio: invalid physical type for column %d", c + 1);
+        }
+
+        /* A REQUIRED column carries no definition levels, so carquet reads all
+         * `n` values from the dense buffer. Any skipped NA would leave that
+         * tail uninitialized. R rejects this combination before we get here;
+         * this is the C-side backstop the validation comment above promises. */
+        if (!def && k != nrow) {
+            Rf_error("qio: column %d is REQUIRED but contains missing values",
+                     c + 1);
+        }
+
+        if (carquet_writer_write_batch(ctx->writer, c, out, n, def, NULL) !=
+            CARQUET_OK) {
+            Rf_error("qio: failed to write column %d", c + 1);
+        }
+        vmaxset(vmax);
+    }
+
+    carquet_writer_t *writer = ctx->writer;
+    ctx->writer = NULL;  /* close consumes the handle; never abort it after */
+    if (carquet_writer_close(writer) != CARQUET_OK) {
+        Rf_error("qio: failed to finalize '%s'", ctx->path);
+    }
+
+    carquet_schema_free(ctx->schema);
+    ctx->schema = NULL;
+    return ctx->path_sexp;
+}
 
 SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp) {
     if (TYPEOF(x) != VECSXP)
@@ -100,9 +363,9 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp) 
     int *nullable = LOGICAL(nullable_sexp);
 
     /* R has already validated and converted each column according to the
-     * schema. Check storage types again before any output file is created. */
-    SEXP cols = x;
-
+     * schema. Check storage types again before any output file is created; the
+     * REQUIRED/NA invariant is re-checked per column in qio_write_body(), where
+     * the null count is known. */
     for (int c = 0; c < ncol; c++) {
         SEXP v = VECTOR_ELT(x, c);
         if (XLENGTH(v) != nrow) {
@@ -132,197 +395,26 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp) 
             Rf_error("qio: column %d does not match its writer schema", c + 1);
     }
 
-    carquet_error_t err = CARQUET_ERROR_INIT;
-    carquet_schema_t *schema = carquet_schema_create(&err);
-    if (!schema) {
-        Rf_error("qio: failed to create schema: %s", err.message);
-    }
+    qio_write_context_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.x = x;
+    ctx.path_sexp = path_sexp;
+    ctx.nms = nms;
+    ctx.path = path;
+    ctx.codec = codec;
+    ctx.ncol = ncol;
+    ctx.nrow = nrow;
+    ctx.ptype = ptype;
+    ctx.ltype = ltype;
+    ctx.time_unit = time_unit;
+    ctx.nullable = nullable;
 
-    carquet_logical_type_t string_lt;
-    memset(&string_lt, 0, sizeof(string_lt));
-    string_lt.id = CARQUET_LOGICAL_STRING;
-
-    carquet_logical_type_t date_lt;
-    memset(&date_lt, 0, sizeof(date_lt));
-    date_lt.id = CARQUET_LOGICAL_DATE;
-
-    for (int c = 0; c < ncol; c++) {
-        char namebuf[64];
-        const char *nm;
-        if (nms != R_NilValue && STRING_ELT(nms, c) != NA_STRING &&
-            CHAR(STRING_ELT(nms, c))[0] != '\0') {
-            nm = Rf_translateCharUTF8(STRING_ELT(nms, c));
-        } else {
-            snprintf(namebuf, sizeof(namebuf), "V%d", c + 1);
-            nm = namebuf;
-        }
-        carquet_logical_type_t timestamp_lt;
-        memset(&timestamp_lt, 0, sizeof(timestamp_lt));
-        timestamp_lt.id = CARQUET_LOGICAL_TIMESTAMP;
-        timestamp_lt.params.timestamp.unit = (carquet_time_unit_t)(time_unit[c] - 1);
-        timestamp_lt.params.timestamp.is_adjusted_to_utc = 1;
-
-        const carquet_logical_type_t *lt = NULL;
-        if (ltype[c] == 1) lt = &date_lt;
-        else if (ltype[c] == 2) lt = &timestamp_lt;
-        else if (ltype[c] == 3) lt = &string_lt;
-        carquet_field_repetition_t rep =
-            nullable[c] ? CARQUET_REPETITION_OPTIONAL : CARQUET_REPETITION_REQUIRED;
-
-        if (carquet_schema_add_column(schema, nm, (carquet_physical_type_t)ptype[c],
-                                      lt, rep, 0, 0) != CARQUET_OK) {
-            carquet_schema_free(schema);
-            Rf_error("qio: failed to add column '%s' to schema", nm);
-        }
-    }
-
-    carquet_writer_options_t wopts;
-    carquet_writer_options_init(&wopts);
-    wopts.compression = codec;
-
-    carquet_writer_t *writer = carquet_writer_create(path, schema, &wopts, &err);
-    if (!writer) {
-        carquet_schema_free(schema);
-        Rf_error("qio: cannot create '%s': %s", path, err.message);
-    }
-
-    int64_t n = (int64_t)nrow;
-    char errmsg[128];
-    errmsg[0] = '\0';
-
-    for (int c = 0; c < ncol && errmsg[0] == '\0'; c++) {
-        void *vmax = vmaxget();
-        SEXP v = VECTOR_ELT(cols, c);
-        int16_t *def = nullable[c] ? (int16_t *)R_alloc(nrow, sizeof(int16_t)) : NULL;
-        R_xlen_t i, k = 0;
-        carquet_status_t st = CARQUET_OK;
-
-        if (ltype[c] == 1) {
-            /* Date stores days since 1970-01-01; write them as INT32. */
-            int32_t *buf = (int32_t *)R_alloc(nrow, sizeof(int32_t));
-            double *p = REAL(v);
-            for (i = 0; i < nrow; i++) {
-                if (!R_IsNA(p[i])) {
-                    buf[k++] = (int32_t)round(p[i]);
-                    if (def) def[i] = 1;
-                } else if (def) {
-                    def[i] = 0;
-                }
-            }
-            st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
-        } else if (ltype[c] == 2) {
-            /* POSIXct stores UTC seconds; rescale to the requested unit. */
-            int64_t *buf = (int64_t *)R_alloc(nrow, sizeof(int64_t));
-            double *p = REAL(v);
-            double scale = time_unit[c] == 1 ? 1e3 :
-                           time_unit[c] == 2 ? 1e6 : 1e9;
-            for (i = 0; i < nrow; i++) {
-                if (!R_IsNA(p[i])) {
-                    buf[k++] = (int64_t)llround(p[i] * scale);
-                    if (def) def[i] = 1;
-                } else if (def) {
-                    def[i] = 0;
-                }
-            }
-            st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
-        } else switch (ptype[c]) {
-        case CARQUET_PHYSICAL_BOOLEAN: {
-            uint8_t *buf = (uint8_t *)R_alloc(nrow, 1);
-            int *p = LOGICAL(v);
-            for (i = 0; i < nrow; i++) {
-                if (p[i] != NA_LOGICAL) { buf[k++] = p[i] ? 1 : 0; if (def) def[i] = 1; }
-                else if (def) def[i] = 0;
-            }
-            st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
-            break;
-        }
-        case CARQUET_PHYSICAL_INT32: {
-            int32_t *buf = (int32_t *)R_alloc(nrow, sizeof(int32_t));
-            int *p = INTEGER(v);
-            for (i = 0; i < nrow; i++) {
-                if (p[i] != NA_INTEGER) { buf[k++] = p[i]; if (def) def[i] = 1; }
-                else if (def) def[i] = 0;
-            }
-            st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
-            break;
-        }
-        case CARQUET_PHYSICAL_INT64: {
-            int64_t *buf = (int64_t *)R_alloc(nrow, sizeof(int64_t));
-            double *p = REAL(v);
-            for (i = 0; i < nrow; i++) {
-                if (!R_IsNA(p[i])) { buf[k++] = (int64_t)llround(p[i]); if (def) def[i] = 1; }
-                else if (def) def[i] = 0;
-            }
-            st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
-            break;
-        }
-        case CARQUET_PHYSICAL_FLOAT: {
-            float *buf = (float *)R_alloc(nrow, sizeof(float));
-            double *p = REAL(v);
-            for (i = 0; i < nrow; i++) {
-                if (!R_IsNA(p[i])) { buf[k++] = (float)p[i]; if (def) def[i] = 1; }
-                else if (def) def[i] = 0;
-            }
-            st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
-            break;
-        }
-        case CARQUET_PHYSICAL_DOUBLE: {
-            double *buf = (double *)R_alloc(nrow, sizeof(double));
-            double *p = REAL(v);
-            for (i = 0; i < nrow; i++) {
-                if (!R_IsNA(p[i])) { buf[k++] = p[i]; if (def) def[i] = 1; }
-                else if (def) def[i] = 0;
-            }
-            st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
-            break;
-        }
-        case CARQUET_PHYSICAL_BYTE_ARRAY: {
-            carquet_byte_array_t *buf =
-                (carquet_byte_array_t *)R_alloc(nrow, sizeof(carquet_byte_array_t));
-            /* R_alloc does not zero. Present values are packed densely into
-             * [0, k); the null tail [k, nrow) is never filled, but carquet's
-             * batch-size estimate scans all nrow entries and reads
-             * arrays[i].length. Zero the buffer so those reads are defined
-             * (length 0) instead of garbage — uninitialized bytes are benign
-             * on some allocators but corrupt the estimate on others (x86). */
-            memset(buf, 0, (size_t)nrow * sizeof(carquet_byte_array_t));
-            for (i = 0; i < nrow; i++) {
-                SEXP e = STRING_ELT(v, i);
-                if (e != NA_STRING) {
-                    const char *s = Rf_translateCharUTF8(e);
-                    buf[k].data = (uint8_t *)s;
-                    buf[k].length = (int32_t)strlen(s);
-                    k++;
-                    if (def) def[i] = 1;
-                } else if (def) {
-                    def[i] = 0;
-                }
-            }
-            st = carquet_writer_write_batch(writer, c, buf, n, def, NULL);
-            break;
-        }
-        default:
-            break;
-        }
-
-        if (st != CARQUET_OK)
-            snprintf(errmsg, sizeof(errmsg), "failed to write column %d", c + 1);
-        vmaxset(vmax);
-    }
-
-    if (errmsg[0] != '\0') {
-        carquet_writer_abort(writer);
-        carquet_schema_free(schema);
-        Rf_error("qio: %s", errmsg);
-    }
-
-    if (carquet_writer_close(writer) != CARQUET_OK) {
-        carquet_schema_free(schema);
-        Rf_error("qio: failed to finalize '%s'", path);
-    }
-    carquet_schema_free(schema);
-
-    return path_sexp;
+    SEXP continuation = PROTECT(R_MakeUnwindCont());
+    SEXP result = R_UnwindProtect(qio_write_body, &ctx,
+                                  qio_write_cleanup, &ctx,
+                                  continuation);
+    UNPROTECT(1);
+    return result;
 }
 
 /* ------------------------------------------------------------------------- */

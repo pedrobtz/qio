@@ -32,3 +32,20 @@ tests pin the present behavior and should be promoted as those features land.
 `tools/generate-lazy-fixture.c` using the vendored carquet library. It contains
 four three-row row groups, all physical types currently supported by qio,
 nulls, and duplicate footer metadata keys.
+
+## Third-party boundary fixture
+
+`int32_min.parquet` was written by the Apache Arrow R package, an independent
+Parquet implementation, so that the INT32 sentinel contract is verified against
+bytes qio did not produce.
+
+- Generator: R `arrow` 24.0.0, `arrow::write_parquet()`
+- Command: `compression = "snappy"`, `version = "2.6"`
+- License: Apache License 2.0
+- Contents: a nullable bare `INT32` column holding `-2147483648`, `-1`, `0`,
+  `2147483647`, and one null, plus a `STRING` label column.
+
+Expected behavior: reading it warns once that `-2147483648` was coerced to `NA`
+because R's `integer` reserves that value, and returns the other values exactly.
+See `.agents/TYPES.md`. `arrow` is only used to regenerate this file; it is not
+a qio dependency and no test loads it.

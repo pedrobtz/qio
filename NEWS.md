@@ -1,5 +1,18 @@
 # qio 0.0.0.9000
 
+* Reading an `INT32` column containing `-2147483648` now warns once per read
+  instead of returning `NA` silently. R's `integer` reserves that value as
+  `NA_integer_`, so it cannot be represented; the column keeps its `integer`
+  type so all three read APIs continue to agree.
+* A failed `write_parquet()` no longer leaves an empty file behind or leaks the
+  native writer. Errors raised while encoding a column now abort the writer and
+  release the schema.
+* `collect()` and `walk_batches()` now reject a non-positive `batch_size`, and
+  validate the types of `columns` and `row_groups` in C as well as in R.
+* A Parquet string containing an embedded nul now reports the column and row
+  instead of raising R's generic message.
+* Errors raised inside a `walk_batches()` callback no longer deparse the whole
+  batch into the traceback.
 * `collect()`, `read_parquet()`, and `walk_batches()` now skip selected nested
   or repeated columns with one message per operation. Nested reading is deferred
   to qio 0.2.0.

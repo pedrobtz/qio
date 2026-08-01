@@ -4,8 +4,8 @@
 # zstd and lz4 are compiled from bundled source; only zlib is external and is
 # supplied by Rtools. carquet's worker_pool.c uses Win32 threads (no pthread).
 #
-# NOTE: not yet validated on Windows. carquet has a _WIN32 path, but some
-# Unix-leaning units (e.g. mmap_reader.c) may still need attention.
+# R CMD check covers windows-latest in .github/workflows/R-CMD-check.yaml.
+# Threaded mmap reads are not yet exercised there; see .agents/plan.md phase 1.
 
 PKG_SOURCES     = $(wildcard *.c)
 CARQUET_SOURCES = $(wildcard carquet/*/*.c) $(wildcard carquet/simd/*/*.c)

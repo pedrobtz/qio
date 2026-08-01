@@ -1,371 +1,281 @@
-# Parquet Type Support
+# Parquet-to-R type contracts
 
-This document describes how `qio` currently maps Parquet values to R, the
-limitations of those mappings, and the intended path toward broader type
-support.
+This file owns qio's current and target type behavior. Package scope belongs in
+[`roadmap.md`](roadmap.md); physical decoding constraints belong in
+[`carquet.md`](carquet.md).
 
-Parquet has two related type systems:
+Parquet physical types describe storage (`INT64`, `BYTE_ARRAY`); logical types
+describe meaning (`TIMESTAMP`, `STRING`). Logical types therefore take
+precedence over physical fallbacks.
 
-- A **physical type** describes the bytes stored in a column, such as `INT64`
-  or `BYTE_ARRAY`.
-- A **logical type** gives those bytes meaning, such as `TIMESTAMP`, `STRING`,
-  `DECIMAL`, or `UUID`.
+## Rules
 
-Supporting a physical type is therefore not sufficient by itself. For example,
-an `INT64` column may be an integer, a timestamp, a time of day, or the backing
-storage for a decimal value. `qio` currently handles a useful subset of the
-physical types but does not yet interpret most logical annotations.
+1. `read_parquet()`, `collect()`, and `walk_batches()` use the same read plan.
+2. Physical decoding stays in C; logical conversion and R classes stay in the
+   shared R plan unless fidelity requires a different C output mode.
+3. Exact data is never silently converted to a lossy or textual form.
+4. Returned R values own their memory; they never borrow a carquet batch.
+5. Unsupported mappings fail with the column path and relevant type details.
+6. Ordinary R types get unambiguous defaults. Ambiguous writes require
+   `parquet_schema()`.
+7. Read and write mappings are symmetric when one R type identifies one
+   Parquet type.
+8. `qio_type_registry()` is authoritative for physical fallbacks;
+   `parquet_type_mapping()` must be generated from it.
 
 ## Current behavior
 
-`read_parquet()`, `collect()`, and `walk_batches()` use the following read
-mappings. Null values become the corresponding R `NA` value.
+Nulls become the corresponding R `NA`.
 
-| Parquet physical type | Current R type | Status and limitations |
+### Reads
+
+| Parquet storage | Current R result | Limitation |
 |---|---|---|
-| `BOOLEAN` | logical | Supported |
-| `INT32` | integer or `Date` | `DATE` is interpreted; other annotations use the physical fallback |
-| `INT64` | numeric | Supported; precision is not guaranteed beyond `2^53` |
-| `INT96` | `POSIXct` | Read-only legacy timestamp, decoded to a UTC instant |
-| `FLOAT` | numeric | Supported; widened from 32-bit to R's 64-bit double |
-| `DOUBLE` | numeric | Supported |
-| `BYTE_ARRAY` | character | Supported but currently assumed to contain UTF-8 text |
-| `FIXED_LEN_BYTE_ARRAY` | — | Unsupported |
+| `BOOLEAN` | logical | — |
+| `INT32` | integer or `Date` | Only `DATE` is interpreted; stored `-2147483648` becomes `NA` with a warning (see [INT32 sentinel values](#int32-sentinel-values)) |
+| `INT64` | numeric or `POSIXct` | Only UTC `TIMESTAMP` is interpreted; numeric integers may round beyond `2^53` |
+| `INT96` | UTC `POSIXct` | Read-only legacy timestamp |
+| `FLOAT`, `DOUBLE` | numeric | `FLOAT` is widened to double |
+| `BYTE_ARRAY` | character | All payloads are currently assumed to be UTF-8 |
+| `FIXED_LEN_BYTE_ARRAY` | unsupported | — |
 
-The current writer infers a Parquet type from each R column:
+Only flat, non-repeated leaves are materialized. Selected nested leaves are
+omitted with one operation-level message. If all selected leaves are nested,
+the result has zero columns and preserves its row count.
 
-| R input | Parquet output | Notes |
+`DATE` and UTC-adjusted `TIMESTAMP` conversions are applied by the shared R read
+plan. Other logical annotations are visible through `schema()` but currently
+use their physical fallback when one exists.
+
+### Writes
+
+| R input | Inferred Parquet output | Notes |
 |---|---|---|
-| logical | `BOOLEAN` | Required unless the column contains `NA` |
-| integer | `INT32` | Required unless the column contains `NA` |
-| numeric | `DOUBLE` | `NA` is null; `NaN` remains a value |
-| character | `BYTE_ARRAY` + `STRING` | Encoded as UTF-8 |
-| factor | `BYTE_ARRAY` + `STRING` | Converted to character; levels are not preserved |
+| logical | `BOOLEAN` | Optional when any value is `NA` |
+| integer | `INT32` | Optional when any value is `NA` |
+| numeric | `DOUBLE` | `NA` is null; `NaN` is a value |
+| character, factor | `BYTE_ARRAY` + `STRING` | Factors lose their levels |
+| `Date` | `INT32` + `DATE` | Days since 1970-01-01 |
+| `POSIXct` | `INT64` + UTC `TIMESTAMP` | Microseconds by default |
 
-`infer_parquet_schema()` displays these choices before writing.
-`parquet_schema()` creates a reusable partial schema, and
-`write_parquet(schema =)` applies it while leaving unspecified columns on the
-automatic mapping. Explicit schemas currently support `BOOLEAN`, `INT32`,
-`INT64`, `FLOAT`, `DOUBLE`, `STRING`, `DATE`, and UTC-adjusted `TIMESTAMP` with
-millisecond, microsecond, or nanosecond units. `INT64` inputs must be finite
-whole numbers within R's exact double-integer range (`-2^53` through `2^53`).
+`parquet_schema()` supplies reusable partial overrides. Explicit schemas
+currently support `BOOLEAN`, `INT32`, `INT64`, `FLOAT`, `DOUBLE`, `STRING`,
+`DATE`, and UTC `TIMESTAMP` in millisecond, microsecond, or nanosecond units.
+Explicit `INT64` input must be finite, whole, and within `[-2^53, 2^53]`.
 
-Only flat, non-repeated columns can currently be materialized. The schema can
-be inspected for nested files, but attempting to collect nested leaves produces
-an error.
-
-### Logical annotations
-
-`DATE` and UTC-adjusted `TIMESTAMP` are interpreted. An `INT32` column annotated
-`DATE` is read as `Date` and an R `Date` is written as `INT32` + `DATE`. A
-UTC-adjusted `INT64` `TIMESTAMP` is read as `POSIXct` in UTC (millisecond,
-microsecond, and nanosecond units are rescaled to seconds), and an R `POSIXct`
-is written as `INT64` microseconds + a UTC-adjusted `TIMESTAMP`. These
-conversions are resolved in R from the read plan (see [`read_plan()`] and
-`qio_apply_plan()`), so eager reads, `collect()`, and `walk_batches()` all apply
-them. The remaining annotations are reported through `schema()` but not yet
-applied; their value conversion is still selected from the physical type.
-Consequently:
-
-- non-UTC `TIMESTAMP` values (local civil times) are not applied;
-- `DECIMAL` scale and precision are not applied;
-- `UUID` and other binary annotations are not interpreted; and
-- unannotated binary data is incorrectly treated as UTF-8 text rather than raw
-  bytes.
-
-Objects using a double-backed 64-bit integer representation are written as
-`DOUBLE`.
-
-### Current implementation and resolved `INT64` policy
-
-The current implementation reads physical `INT64` values as ordinary R numeric
-vectors and may round outside the exactly representable range. Every integer
-from `-2^53` through `2^53` can be represented exactly by an R double.
-
-The resolved target behavior is:
-
-- expose `int64 = c("double", "integer64")` on materializing read entry points,
-  with `"double"` as the default;
-- in double mode, replace values outside `[-2^53, 2^53]` with `NA_real_` and
-  emit one warning per top-level read operation;
-- in integer64 mode, require the suggested `bit64` package and preserve the
-  original bits rather than converting through double;
-- continue writing ordinary numeric vectors as `DOUBLE`; and
-- use `parquet_schema(column = "INT64")` to explicitly write a numeric vector
-  as `INT64`.
-
-`bit64` reserves the `-2^63` bit pattern for `NA_integer64_`, so a real Parquet
-value of `-2^63` also becomes missing in integer64 mode. The complete warning
-and dependency contract is recorded in [`design.md`](design.md).
-
-Unsigned `INTEGER(64)` uses the same read option. Double mode is exact through
-`2^53` and replaces larger values with `NA`; integer64 mode is exact through
-`2^63 - 1` and replaces larger unsigned values with `NA` rather than exposing
-their bit patterns as negative signed integers. Warnings are aggregated once
-per top-level read operation.
-
-## Design principles for new mappings
-
-New type support should follow these rules:
-
-1. Logical annotations take precedence over physical fallback mappings.
-2. Eager reads, lazy collection, and batch walking use the same conversion
-   implementation.
-3. Exact types such as decimal and binary are not silently converted to a
-   lossy or textual representation.
-4. Ordinary R types keep unsurprising defaults. Ambiguous writer choices, such
-   as `FLOAT` versus `DOUBLE`, require an explicit schema or type declaration.
-5. Unsupported combinations fail with the column path, physical type, logical
-   type, and relevant parameters in the error.
-6. Values returned to R own their memory and never retain pointers into a
-   carquet batch.
-7. Read and write mappings should be symmetric whenever the R representation
-   identifies a unique Parquet type.
-
-Internally, qio should build one conversion plan for each selected leaf. A plan
-would contain the physical type, logical annotation and parameters, fixed byte
-length, maximum definition and repetition levels, target R representation, and
-conversion functions. This would replace the duplicated physical-type switches
-in the current eager writer and lazy reader.
-
-`parquet_type_mapping()` should eventually be generated from the same mapping
-registry so its output cannot drift from the native implementation.
+Double-backed 64-bit integer objects currently infer `DOUBLE`.
 
 ## Target mappings
 
-The tables below describe the preferred direction. Some representations remain
-design choices and are marked accordingly.
+### Numeric and temporal
 
-### Core scalar types
-
-| Parquet type | Proposed R representation | Notes |
+| Parquet type | R result | Contract |
 |---|---|---|
-| `BOOLEAN` | logical | Already supported |
-| signed `INTEGER(8/16/32)` | integer | Validate the annotation against the physical type |
-| signed `INTEGER(64)` | double by default; optional `bit64::integer64` | Double mode replaces values outside plus or minus 2^53 with `NA` |
-| unsigned `INTEGER(8/16)` | integer | Values fit in an R integer |
-| unsigned `INTEGER(32)` | numeric | Values do not all fit in an R integer |
-| unsigned `INTEGER(64)` | double by default; optional `bit64::integer64` | Double is exact through 2^53; integer64 through 2^63 - 1; larger values become `NA` |
-| unannotated `INT32` | integer | Already supported |
-| unannotated `INT64` | double by default; optional `bit64::integer64` | Same signed `INT64` policy |
-| `FLOAT` | numeric | Already supported for reads |
-| `DOUBLE` | numeric | Already supported |
-| `FLOAT16` | numeric | Decode the 16-bit IEEE value and widen to double |
-| `NULL` | logical containing only `NA` | Preserve row count without inventing values |
+| `BOOLEAN` | logical | Existing mapping |
+| signed `INTEGER(8/16/32)` | integer | Validate annotation against storage |
+| signed `INTEGER(64)` or bare `INT64` | numeric or `bit64::integer64` | Selected by `int64`; see below |
+| unsigned `INTEGER(8/16)` | integer | Exact |
+| unsigned `INTEGER(32)` | numeric | Exact |
+| unsigned `INTEGER(64)` | numeric or `bit64::integer64` | Selected by `int64`; see below |
+| `FLOAT`, `DOUBLE`, `FLOAT16` | numeric | Widen smaller IEEE formats to double |
+| `NULL` | all-`NA` logical | Preserve row count |
+| `DATE` | `Date` | Days since Unix epoch |
+| UTC `TIMESTAMP` | `POSIXct` | Instant displayed in `tz` |
+| non-UTC `TIMESTAMP` | `POSIXct` | Wall clock interpreted in `tz` |
+| `TIME` | numeric or `hms` | Seconds since midnight, selected by `time` |
+| `INTERVAL` | dedicated class | Preserve months, days, and milliseconds separately |
 
-Ordinary R numeric vectors should continue to write as `DOUBLE`. Writing
-`FLOAT`, `FLOAT16`, or `INT64` requires an explicit type because R numeric
-storage alone cannot distinguish the intended Parquet representation.
+Ordinary numeric input continues to infer `DOUBLE`. `FLOAT`, `FLOAT16`, and
+`INT64` writes require an explicit schema.
 
-### Dates and times
+R's `integer` reserves `INT_MIN` as `NA_INTEGER`, so no R integer vector can
+carry a stored INT32 `-2147483648`. See
+[INT32 sentinel values](#int32-sentinel-values) for the contract.
 
-| Parquet logical type | Proposed R representation | Important details |
-|---|---|---|
-| `DATE` | `Date` | Physical `INT32`, measured in days since 1970-01-01 |
-| `TIMESTAMP`, UTC-adjusted | `POSIXct` with `tz = "UTC"` | Rescale millis, micros, or nanos to seconds |
-| `TIMESTAMP`, not UTC-adjusted | `POSIXct` interpreted in `tz` | `tz = "UTC"` by default; a timezone is chosen because base R has no naive datetime class |
-| `TIME` | Numeric seconds-of-day by default; optional `hms` | Selected with `time`; both preserve unit and UTC-adjusted metadata |
-| legacy timestamp converted types | Same as modern timestamp | Normalize legacy annotations during planning |
+`POSIXct` is double seconds. Microsecond and nanosecond values may lose
+subsecond precision far from the epoch; conversions must check overflow and
+define rounding. New `INT96` output will not be added.
 
-`POSIXct` is stored as a double number of seconds. Millisecond timestamps are
-usually representable, while microsecond or nanosecond precision may be lost,
-especially far from the Unix epoch. The implementation should check overflow,
-define its rounding behavior, and preserve the original Parquet unit as an
-attribute when useful.
+### Text, binary, and exact values
 
-The resolved timestamp API uses `tz = "UTC"` by default for reading and writing.
-For UTC-adjusted timestamps, `tz` changes display but not the instant. For
-non-UTC timestamps, it interprets stored wall-clock fields on read and selects
-the wall-clock fields encoded on write. A non-UTC write with a non-UTC `tz`
-emits one message because Parquet does not retain that timezone. See
-[`design.md`](design.md) for the full conversion and DST contract.
-
-The resolved `TIME` API uses `time = c("numeric", "hms")`, with `"numeric"` as
-the dependency-free default. Both modes contain double seconds since midnight.
-The optional mode returns a genuine `hms` vector and requires the suggested
-`hms` package; it fails clearly if the package is unavailable. See
-[`design.md`](design.md) for the complete contract.
-
-Writing `Date` can be inferred safely. Writing `POSIXct` should use an explicit
-or documented default unit, likely microseconds, with a clear policy for
-fractional values that cannot be represented in that unit.
-
-### Strings, binary values, and UUIDs
-
-| Parquet type | Proposed R representation | Notes |
-|---|---|---|
-| `BYTE_ARRAY` + `STRING` | character | Validate and create UTF-8 R strings |
-| `BYTE_ARRAY` without a text annotation | list-column of raw vectors | Must not pass arbitrary bytes to R's string API |
-| `FIXED_LEN_BYTE_ARRAY` | list-column of raw vectors | Validate every value against `type_length` |
-| `UUID` | canonical character UUID | Physical value must be exactly 16 bytes |
-| `ENUM` | character initially | Parquet does not carry a complete R factor-level definition |
-| `JSON` | character | Preserve JSON text; parsing remains the caller's choice |
-| `BSON` | list-column of raw vectors | Preserve BSON bytes without an additional dependency |
-
-A future writer schema should distinguish string, variable binary, fixed
-binary, and UUID columns. Inferring all four from an ordinary character vector
-would be ambiguous.
-
-Parquet dictionary encoding does not itself make text categorical: it is a
-per-column-chunk storage choice, dictionaries can differ across row groups, and
-writers can fall back to plain encoding. The resolved result is always an
-ordinary character vector, including for mixed-encoded columns. qio may use
-dictionary values and indexes internally, but it does not expose factors or
-dictionary ordering. See [`design.md`](design.md).
-
-### Decimal values
-
-Parquet decimal values are signed unscaled integers plus a declared precision
-and scale. Their physical storage may be `INT32`, `INT64`, `BYTE_ARRAY`, or
-`FIXED_LEN_BYTE_ARRAY`. Binary decimal integers use big-endian two's-complement
-encoding.
-
-The resolved representation is an ordinary character vector in exact
-fixed-point notation, with trailing zeroes determined by the declared scale.
-For example, unscaled `1230` with scale two becomes `"12.30"`. Nulls become
-`NA_character_`. Conversion must never pass through R double, so large values
-are not rounded and no arbitrary-precision dependency is required. Precision,
-scale, and physical storage remain visible in `schema()` and `read_plan()`.
-
-Writing decimal values must know both precision and scale. A character column
-therefore writes as `DECIMAL` only under an explicit `parquet_schema()`
-declaration; otherwise it retains the ordinary `STRING` inference. Decimal
-strings are parsed exactly and values that exceed the declared precision or
-scale are rejected.
-
-### Nested types
-
-Nested support is a separate materialization project rather than another scalar
-conversion case. The v0.1.0 writer is explicitly flat-only and does not produce
-Parquet `LIST`, `MAP`, struct/group, or repeated fields. Nested writing is
-deferred until the read representations and null semantics below are stable.
-A list-column used to hold one scalar raw value per row may still map to flat
-`BYTE_ARRAY`; that is binary scalar storage rather than a Parquet nested type.
-
-| Parquet structure | Proposed R representation |
+| Parquet type | R result |
 |---|---|
-| `LIST` | list-column whose elements are vectors or nested objects |
+| `STRING`, `ENUM`, `JSON` | character |
+| unannotated `BYTE_ARRAY`, `BSON` | list-column of raw vectors |
+| `FIXED_LEN_BYTE_ARRAY` | list-column of fixed-length raw vectors |
+| `UUID` | canonical character UUID |
+| `DECIMAL` | exact fixed-point character |
+
+Variable binary, fixed binary, UUID, and decimal writes require explicit
+schemas. Ordinary character input continues to infer `STRING`.
+
+Initial extension mappings remain dependency-light:
+
+- `VARIANT`: preserve metadata and value bytes.
+- `GEOMETRY` and `GEOGRAPHY`: raw WKB list-columns plus metadata.
+
+Richer interpretation belongs in downstream packages.
+
+### Nested values
+
+| Parquet structure | Target R result |
+|---|---|
+| `LIST` | list-column of vectors or nested objects |
 | `MAP` | list-column of key/value data frames |
 | group/struct | nested data-frame or named-list column |
 
-Maps should not become ordinary named lists because Parquet keys need not be
-strings and their representation should not rely on R names being unique.
+Maps are not named lists: keys need not be strings or unique. Nested
+reconstruction must distinguish null and empty lists, null elements, and
+missing structs; coordinate all leaves; preserve logical rows across batches;
+and define parent-path projection.
 
-Carquet exposes leaf streams and definition and repetition levels, along with
-helpers for counting rows and finding list boundaries. qio must still:
+See [`carquet.md`](carquet.md#nested-streams) for the underlying leaf model and
+`research_arrow_nested/` for non-normative background.
 
-- build and validate the schema tree;
-- coordinate all leaves belonging to one nested field;
-- distinguish null lists, empty lists, null elements, and missing structs;
-- avoid splitting a repeated logical row across R batches;
-- reconstruct parent objects after projected reads; and
-- define whether selecting a parent path selects all descendant leaves.
+## Conversion contracts
 
-This work should use carquet's low-level column readers because reconstruction
-needs the original definition and repetition streams.
+These decisions are settled even where implementation remains open.
 
-### Specialized and extension types
+### INT32 sentinel values
 
-Carquet recognizes additional logical annotations that can be exposed after the
-core mappings are stable:
+R's `integer` reserves `INT_MIN` (`-2147483648`) as `NA_INTEGER`, so a stored
+INT32 of that value cannot be represented. qio keeps the `integer` mapping and
+reports the substitution rather than changing the column's type.
 
-| Parquet type | Initial direction |
-|---|---|
-| `INTERVAL` | A class preserving months, days, and milliseconds separately |
-| `VARIANT` | Preserve metadata and value bytes before attempting structured decoding |
-| `GEOMETRY` | Raw WKB list-column plus CRS metadata; optional conversion by spatial packages |
-| `GEOGRAPHY` | Raw WKB list-column plus CRS and edge-algorithm metadata |
+- A stored `-2147483648` becomes `NA_integer_`.
+- Emit at most one warning per top-level read, not per value, column, row
+  group, or batch:
+  `Some INT32 values were coerced to NA because R's integer type reserves
+  -2147483648 as its missing value.`
+- The rule applies wherever an INT32 leaf reaches R as `integer`, including
+  through the `DATE` converter, and to any future signed `INTEGER(8/16/32)`
+  annotation that resolves to R `integer`.
 
-Keeping the initial representation dependency-light allows downstream packages
-to perform richer conversions without making qio depend on large type-specific
-ecosystems.
+Promoting the column to `double` was rejected. `read_plan()` is a pure function
+of the schema, so a data-dependent type would break the guarantee that all
+three materializing reads agree, and would let `walk_batches()` yield different
+types for different batches of one column.
 
-### Legacy `INT96`
+qio's writer cannot produce a bare INT32 sentinel from an R `integer` vector,
+but it can through an explicit `DATE` column, whose validated range includes
+`INT_MIN`. That round trip is the reproducible in-package case; third-party
+fixtures still cover bare INT32.
 
-`INT96` is deprecated but is now read (read-only) as a UTC `POSIXct`. It has no
-standard logical annotation and historical writers differ in their timezone
-assumptions, so qio interprets every `INT96` value as a UTC instant. The 12-byte
-value stores nanoseconds since midnight in the first two little-endian words and
-a Julian day number in the third; qio decodes it in C to seconds since the epoch
-(`julian_day - 2440588` days plus `nanos / 1e9`) and adds the `POSIXct` class in
-R. The decode is endian-safe because carquet reads the three words as
-little-endian `uint32_t`. qio does not write `INT96`.
+### 64-bit integers
 
-Test more legacy writers (Impala, Hive) beyond the current Spark fixture.
-`INT96` remains interpreted as a UTC instant and is not reclassified as a
-non-UTC Parquet logical timestamp.
+Materializing reads will accept `int64 = c("double", "integer64")`; the default
+is `"double"`.
 
-## Roadmap
+| Input | `double` mode | `integer64` mode |
+|---|---|---|
+| signed `INT64` | Exact in `[-2^53, 2^53]`; otherwise `NA_real_` | Preserve bits as `bit64::integer64`; `-2^63` becomes its reserved `NA` sentinel |
+| unsigned `INTEGER(64)` | Exact in `[0, 2^53]`; otherwise `NA_real_` | Exact through `2^63 - 1`; larger values become `NA_integer64_` |
 
-### 1. Unify scalar conversion
+Requirements:
 
-- Add a schema-driven conversion-plan structure shared by `collect()` and
-  `walk_batches()`.
-- Move allocation, null handling, and batch copying behind the plan.
-- Normalize modern and legacy logical annotations before choosing an R type.
-- Make `parquet_type_mapping()` report the authoritative registry.
-- Add cross-writer fixtures for every supported mapping and boundary value.
+- Detect limits from the original 64-bit payload, before conversion.
+- Never expose the upper unsigned half as negative signed values.
+- `"integer64"` requires `bit64`; fail clearly if it is unavailable.
+- Aggregate replacements across signed and unsigned columns. Emit at most one
+  relevant warning per top-level read, not per value, column, row group, or
+  batch.
+- In double mode, warn:
+  `Some INT64 or UINT64 values were coerced to NA because they cannot be
+  represented exactly as R doubles; use int64 = "integer64" to preserve the
+  supported 64-bit range.`
+- In integer64 mode, warn:
+  `Some INT64 or UINT64 values were coerced to NA because they cannot be
+  represented by bit64::integer64.`
+- `read_plan()` records the mode, and every materializing read applies it.
 
-### 2. Add the most useful logical scalars
+### Timestamps and time of day
 
-- Read and write `DATE` as `Date`. **Done.**
-- Read UTC-adjusted `TIMESTAMP` as `POSIXct` and define unit/rounding behavior.
-  **Done** (read rescales the stored unit; write uses microseconds).
-- Implement the resolved signed and unsigned
-  `int64 = c("double", "integer64")` read modes and test the `2^53`, signed
-  `-2^63`, and unsigned `2^63 - 1` boundaries.
-- Add an explicit writer schema so numeric data can be requested as `INT64` or
-  `FLOAT`; validate integer-valued and range constraints before writing
-  `INT64`.
+Reads and writes will accept `tz = "UTC"`; validate it before allocating output
+or creating a file.
 
-### 3. Correct binary handling
+- A UTC-adjusted `TIMESTAMP` is an instant. `tz` changes its display, not its
+  value.
+- A non-UTC `TIMESTAMP` is a wall clock. Read it in `tz`; write it by rendering
+  the input in `tz`, then discard the zone. Never use the machine's local zone
+  implicitly.
+- Base R decides ambiguous or nonexistent civil times at DST boundaries.
+- A non-UTC write with `tz != "UTC"` emits one operation-level message:
+  `Converting POSIXct values to local time in "<tz>" before writing a non-UTC
+  Parquet TIMESTAMP; the timezone is not stored in the file.`
+- Do not emit that message for UTC-adjusted timestamps or `tz = "UTC"`.
+- Plans and schemas report the unit, timezone, and UTC-adjusted flag.
 
-- Restrict character conversion to text annotations.
-- Materialize variable and fixed binary as raw-vector list-columns.
-- Add UUID parsing, formatting, validation, and symmetric writing.
-- Add JSON, BSON, enum, and float16 scalar mappings.
+Materializing reads will accept `time = c("numeric", "hms")`; the default is
+`"numeric"`.
 
-### 4. Add exact decimals
+- Both modes contain double seconds since midnight; neither returns `POSIXct`.
+- `"hms"` requires the suggested `hms` package and fails clearly when absent.
+- Rescale milliseconds, microseconds, or nanoseconds to seconds while retaining
+  the original unit and UTC-adjusted annotation in the plan or metadata.
+- Reject non-null values outside the valid time-of-day range.
 
-- Decode all four permitted decimal physical representations.
-- Materialize exact fixed-point strings while reporting precision and scale in
-  the schema and read plan.
-- Add explicit decimal writer declarations and boundary validation.
-- Test negative values, leading and trailing zeroes, maximum precision, and
-  malformed annotations.
+### Text and binary
 
-### 5. Add remaining temporal and integer annotations
+- Only text annotations become character. Arbitrary bytes become raw vectors.
+- Text remains character across dictionary, `PLAIN`, and mixed encoding.
+  Dictionary order and row-group differences never affect the result.
+- qio may use dictionary indexes internally, but it must copy strings into
+  R-owned memory before the carquet reader advances.
+- `FIXED_LEN_BYTE_ARRAY` validates every value against `type_length`.
+- UUID input and output use canonical text and exactly 16 physical bytes.
 
-- Implement the resolved `POSIXct` and `tz = "UTC"` contract for UTC-adjusted
-  and non-UTC timestamps.
-- Implement the resolved numeric and optional `hms` time-of-day read modes and
-  add an interval class.
-- Apply the resolved signed and unsigned 64-bit policy and add the remaining
-  integer-width annotations.
+### Decimal
 
-### 6. Reconstruct nested values
+- Read all valid physical representations as exact fixed-point character.
+  Preserve declared trailing zeroes: unscaled `1230`, scale 2 becomes
+  `"12.30"`.
+- Never convert the unscaled integer through double.
+- Keep precision, scale, and storage visible in `schema()` and `read_plan()`.
+- Decimal writes require character input plus explicit precision and scale.
+  Parse exactly and reject malformed, inexact, or out-of-range values before
+  creating the output file.
 
-- Start with one-level lists of required primitive elements.
-- Add nullable lists and nullable elements.
-- Add structs, nested lists, and maps.
-- Integrate parent-path projection and batch boundaries.
-- After v0.1.0, add writer support only when the corresponding read
-  representation is stable.
+### Nested release boundary
 
-### 7. Add specialized types and legacy timestamps
+v0.1.0 reads and writes flat schemas only.
 
-- Preserve variant and geospatial payloads with their metadata.
-- Offer optional integrations in other packages rather than mandatory heavy
-  dependencies.
-- Read-only `INT96` timestamp support is **done**; qio never writes `INT96`.
+- Reads omit selected nested physical leaves and emit one operation-level
+  message: `Skipping <n> nested Parquet column(s); nested reading is deferred
+  to qio 0.2.0.` The count is physical leaves; use grammatical singular/plural.
+- If all selected leaves are nested, preserve rows in zero-column results and
+  batches.
+- `read_plan()` marks these leaves `nested = TRUE`, `collectible = FALSE`, with
+  the v0.2.0 reason.
+- Reject nested input and nested writer schemas before creating or truncating
+  output.
+- A list-column containing one raw scalar per row may still represent flat
+  `BYTE_ARRAY`; it is not a Parquet nested type.
 
-## Compatibility policy
+After v0.1.0, define complete-path projection and R null semantics before
+exposing canonical list, map, and struct reconstruction. Reject unsupported
+legacy or recursive shapes instead of flattening their meaning.
 
-Adding logical interpretation can change the R class returned for a file that
-qio already reads physically. For example, an `INT32` column annotated as
-`DATE` will change from integer to `Date`. Such changes should be called out in
-`NEWS.md`, covered by explicit fixtures, and released deliberately.
+## Implementation sequence
 
-Where a better mapping would be lossy or ambiguous, qio should retain an exact
-fallback or report an unsupported type rather than silently manufacture a
-plausible but incorrect value.
+1. **Shared planning:** keep allocation, null handling, copying, and logical
+   conversion behind one schema-driven plan; generate mapping documentation
+   from the registry.
+2. **Core scalars:** `DATE`, UTC `TIMESTAMP`, explicit `INT64`/`FLOAT` writes,
+   and read-only `INT96` are done. Add 64-bit read modes and boundary fixtures.
+3. **Binary and text:** separate bytes from text; add fixed binary, UUID, JSON,
+   BSON, enum, and float16.
+4. **Exact decimal:** support every physical storage form and explicit writes.
+5. **Remaining temporal/integer types:** finish timezone, `TIME`, interval, and
+   integer-width annotations.
+6. **Nested values:** lists first, then null variants, structs, maps,
+   parent-path projection, and finally writes.
+7. **Extensions:** preserve variant and geospatial payloads with metadata.
+
+The roadmap tracks scheduling; this order records type dependencies.
+
+## Compatibility
+
+New logical interpretation can change the class of a file qio already decodes
+physically. Record such changes in `NEWS.md`, cover them with cross-writer
+fixtures, and release them deliberately. When a better mapping would be lossy
+or ambiguous, keep an exact fallback or reject it explicitly.

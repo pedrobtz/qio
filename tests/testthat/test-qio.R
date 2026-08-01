@@ -137,3 +137,47 @@ test_that("parquet_type_mapping() describes read and write support", {
     )
   )
 })
+
+# --- Phase P: native glue preflight ----------------------------------------
+
+test_that("an error inside the write loop leaves no partial file", {
+  # A "bytes"-encoded string makes Rf_translateCharUTF8() fail after the writer
+  # has been created and the first column written. Without unwind protection
+  # the writer leaked and an empty file was left behind.
+  path <- withr::local_tempfile(fileext = ".parquet")
+  value <- rawToChar(as.raw(c(0xff, 0xfe)))
+  Encoding(value) <- "bytes"
+  x <- data.frame(a = 1:2, s = c("ok", "ok"), stringsAsFactors = FALSE)
+  x$s[2] <- value
+
+  expect_error(write_parquet(x, path), "bytes")
+  expect_false(file.exists(path))
+
+  # The failure released everything, so the same path is still usable.
+  write_parquet(data.frame(z = 1:3), path)
+  expect_equal(nrow(read_parquet(path)), 3L)
+})
+
+test_that("a write failure leaves no file the reader would accept", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  value <- rawToChar(as.raw(c(0xff, 0xfe)))
+  Encoding(value) <- "bytes"
+  x <- data.frame(s = c("ok", "ok"), stringsAsFactors = FALSE)
+  x$s[2] <- value
+
+  expect_error(write_parquet(x, path), "bytes")
+  expect_error(read_parquet(path))
+})
+
+test_that("a REQUIRED column rejects missing values before writing", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  schema <- parquet_schema(
+    a = list(type = "INT32", repetition_type = "REQUIRED")
+  )
+
+  expect_error(
+    write_parquet(data.frame(a = c(1L, NA)), path, schema = schema),
+    "missing values"
+  )
+  expect_false(file.exists(path))
+})
