@@ -19,6 +19,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <limits.h>
+#include <inttypes.h>
 
 #if defined(CARQUET_ARCH_ARM) && defined(CARQUET_ENABLE_NEON) && \
     (defined(__ARM_NEON) || defined(__ARM_NEON__))
@@ -980,9 +981,12 @@ static carquet_status_t decode_phase3_values(
             {
                 uint32_t rle_bytes = carquet_read_u32_le(ptr);
                 if ((size_t)rle_bytes > remaining - 4) {
+                    /* %zu is not supported by MinGW's C runtime; see the
+                     * portable-format patch in .agents/VENDORED.md. */
                     CARQUET_SET_ERROR(error, CARQUET_ERROR_DECODE,
-                        "RLE boolean length %u exceeds the %zu byte payload",
-                        rle_bytes, remaining - 4);
+                        "RLE boolean length %u exceeds the %" PRIuMAX
+                        " byte payload",
+                        rle_bytes, (uintmax_t)(remaining - 4));
                     return CARQUET_ERROR_DECODE;
                 }
 
