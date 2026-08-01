@@ -236,18 +236,37 @@ Beware the obvious proxy for the second one: timing `y[] <- x` in R gives
 0.0050 s, eight times the real `memcpy`, and would have made a 3% idea look
 like a 26% one.
 
-## Accepted trade-off: PLAIN encoding for floats
+## Float encoding, resolved
 
-`write-numeric` is 50% slower and its output 38% larger than before phase 5:
-0.236s at 31.66MB against 0.354s at 43.61MB. This is deliberate. carquet's
-BYTE_STREAM_SPLIT encoder corrupts any page assembled from more than one call,
-so qio forces PLAIN for `FLOAT` and `DOUBLE`; see
-`../.agents/VENDORED.md`. Correct and slower beats fast and wrong.
+Phase 5 briefly forced PLAIN encoding for `FLOAT` and `DOUBLE` to avoid a
+corrupting BYTE_STREAM_SPLIT encoder, which cost `write-numeric` 50% in time
+and 38% in size. The encoder is now fixed instead, so that trade-off is gone:
 
-The cost is recoverable by fixing the encoder rather than avoiding it, which is
-the recorded follow-up. Note that measuring this on *random* doubles shows
-almost no difference -- byte-splitting only pays on structured data -- so an
-A/B on the wrong workload will suggest the trade-off is free. It is not.
+| | time | size |
+|---|---|---|
+| broken encoder (corrupt output) | 0.236 s | 31.66 MB |
+| PLAIN workaround | 0.354 s | 43.61 MB |
+| fixed encoder | **0.295 s** | **31.66 MB** |
+
+Size is fully recovered and time is 17% better than the workaround. It remains
+above the broken encoder because a correct BYTE_STREAM_SPLIT has to transpose
+the page once, which that version skipped by producing garbage; there is no
+valid baseline below 0.295 s here.
+
+Restoring the encoding changes every workload with a float column, not just
+`numeric`, and the direction depends on the data:
+
+| Workload | time | size |
+|---|---|---|
+| `write-numeric` (structured doubles) | -14.9% | 43.61 -> 31.66 MB |
+| `write-mixed` (random doubles) | +5.9% | 23.51 -> 22.96 MB |
+| `write-string_low_cardinality` (random doubles) | +9.2% | 13.50 -> 12.95 MB |
+
+Byte-splitting only pays for its transpose when the values share structure, so
+random doubles get the cost and little of the benefit. Files are smaller in
+every case. Accepted: this is what the format's own encoding selection does,
+and what Apache Arrow writes by default. Choosing encodings per column is part
+of the writer configuration deferred to v0.2.0.
 
 ## Not measured yet
 - **Compression codecs.** Everything here is Snappy, qio's default. Codec

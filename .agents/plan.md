@@ -582,15 +582,16 @@ Both are recorded in
 
 ### Work
 
-- [ ] Write bounded chunks and check user interrupts between chunks.
-  **Blocked upstream.** Both need a column written in pieces, and carquet
-  corrupts `BOOLEAN` and BYTE_STREAM_SPLIT columns when a column is written in
-  more than one batch. `INT32`, `INT64`, and `BYTE_ARRAY` were verified to
-  survive it, so a type-conditional chunking is possible but would put a
-  correctness cliff behind an encoding choice; not worth it before the upstream
-  fix. Cleanup is already protected with `R_UnwindProtect` from phase P.
-- [x] Stop writing corrupt `FLOAT` and `DOUBLE` columns, by forcing `PLAIN`
-  encoding for them. Measured cost in file size: none worth reporting.
+- [ ] Write bounded chunks and check user interrupts between chunks. Still
+  blocked, but by one type rather than two: fixing the BYTE_STREAM_SPLIT
+  encoder cleared `FLOAT`/`DOUBLE`, leaving `BOOLEAN`, whose bit packing
+  restarts instead of resuming across batches. `INT32`, `INT64`, and
+  `BYTE_ARRAY` were verified to survive multiple batches. Cleanup is already
+  protected with `R_UnwindProtect` from phase P.
+- [x] Stop writing corrupt `FLOAT` and `DOUBLE` columns. First worked around by
+  forcing `PLAIN`, which cost 50% write time and 38% file size; then fixed
+  properly by patching carquet to transpose each page once at finalize, which
+  recovers the size entirely and is 17% faster than the workaround.
 - [x] Abort after write failures but never after `carquet_writer_close()` has
   consumed the handle, and test every failure stage. Covered in `test-qio.R`:
   a validation failure leaves an existing file byte-identical, a failure during

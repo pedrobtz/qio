@@ -84,6 +84,17 @@ them.
   is left alone; qio does not call it. Covered by a thread-count test in
   `tests/testthat/test-parquet-file.R`.
 
+- **Byte-split a page once, at finalize** (`writer/page_writer.c`).
+  BYTE_STREAM_SPLIT transposes a whole page into byte planes, so it cannot be
+  applied incrementally. The encoder split each call's subrange and appended,
+  producing independently transposed regions that the decoder de-split as one
+  stride: every value in any page built from more than one call came back
+  wrong. carquet selects this encoding for `FLOAT` and `DOUBLE` whenever a
+  codec is set, so it silently corrupted the default write path. Raw values now
+  accumulate and `apply_byte_stream_split()` transposes the page once at
+  finalize, byte-wise so it does not depend on buffer alignment. Verified
+  against Apache Arrow at sizes that previously corrupted everything; covered
+  by `test-qio.R`.
 - **Allow an empty BOOLEAN page** (`encoding/plain.c`). A page with no present
   values needs no bytes, but `carquet_buffer_advance()` returns `NULL` for a
   zero-size request and `carquet_encode_plain_boolean()` reported that as
@@ -120,55 +131,15 @@ required after a header change.
 These are carquet bugs qio avoids rather than patches. Each one should be
 reported upstream and rechecked on every re-vendor.
 
-### BYTE_STREAM_SPLIT corrupts any page written in more than one call
+### BOOLEAN bit packing does not resume across write batches
 
-`writer/page_writer.c`, `encode_double_values()` and `encode_float_values()`.
+Calling `carquet_writer_write_batch()` several times for one `BOOLEAN` column
+corrupts it: the bit packing restarts rather than continuing from the previous
+partial byte. `INT32`, `INT64`, `BYTE_ARRAY`, and now `FLOAT`/`DOUBLE` all
+round-trip correctly across multiple batches.
 
-BYTE_STREAM_SPLIT transposes a whole page into byte planes: every value's first
-byte, then every value's second byte, and so on. The encoder instead splits
-each call's subrange on its own and appends the result, so a page assembled
-from two calls holds two independently transposed regions. The decoder
-de-splits the concatenation as a single stride, and every value in the page
-comes back wrong.
-
-carquet selects this encoding automatically for `FLOAT` and `DOUBLE` whenever a
-compression codec is set, which is qio's default. The effect was silent
-corruption of the written file, not a read error: Apache Arrow reads the same
-wrong values back.
-
-Reproduced with a nullable double column past roughly a megabyte of present
-values -- 171,428 of 200,000 values wrong, every non-null one. Non-nullable
-columns of the same size were unaffected, so the trigger is how many separate
-encode calls a page receives, not size alone.
-
-**Workaround:** `src/qio.c` calls `carquet_writer_set_column_encoding()` to
-force `CARQUET_ENCODING_PLAIN` for `FLOAT` and `DOUBLE`.
-
-**The workaround is not free**, and an earlier note here understated it. On
-random doubles it costs nothing measurable, which is what that note was based
-on: a 200,000-row column is 1.53MB with PLAIN plus Snappy against 1.79MB from
-Arrow's default. On *structured* doubles, which byte-splitting is designed for,
-it costs a great deal. The `numeric` benchmark workload writes in 0.354s at
-43.61MB with PLAIN, against 0.236s at 31.66MB with BYTE_STREAM_SPLIT: 50%
-slower and 38% larger.
-
-That is the price of not writing corrupt files, and worth paying, but it is
-also a strong argument for fixing the encoder rather than avoiding it. The fix
-is to buffer a page's values and split them once when the page is flushed,
-instead of splitting each call's subrange and appending. Doing so would recover
-both the time and the size. Covered by `test-qio.R`.
-
-### Multiple write batches per column corrupt some encodings
-
-Related, and the reason writes are not yet chunked. Calling
-`carquet_writer_write_batch()` several times for one column corrupts
-`BOOLEAN` columns, whose bit packing does not resume correctly across calls,
-and corrupted `FLOAT`/`DOUBLE` through the encoder above. `INT32`, `INT64`, and
-`BYTE_ARRAY` round-tripped correctly in the same test.
-
-This blocks bounding the writer's scratch memory and adding interrupt checks,
-since both need a column to be written in pieces. Re-verify every physical type
-before attempting it again.
+This is the remaining blocker on bounding the writer's scratch memory and
+adding interrupt checks, since both need a column written in pieces.
 
 ## Patch record
 

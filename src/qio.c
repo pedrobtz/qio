@@ -157,31 +157,6 @@ static SEXP qio_write_body(void *data) {
         Rf_error("qio: cannot create '%s': %s", ctx->path, err.message);
     }
 
-    /* Force PLAIN for FLOAT and DOUBLE.
-     *
-     * With a compression codec set, carquet picks BYTE_STREAM_SPLIT for these
-     * types, and its encoder is wrong for any page whose values arrive in more
-     * than one call: BYTE_STREAM_SPLIT transposes a whole page into byte
-     * planes, but encode_double_values() splits each call's subrange on its own
-     * and appends, so the decoder de-splits the concatenation as one stride and
-     * every value comes back wrong. It silently corrupted nullable double
-     * columns past about a megabyte of present values -- the default write
-     * path. See .agents/VENDORED.md.
-     *
-     * PLAIN costs compression ratio on float columns and nothing else. Revert
-     * this once the encoder is fixed upstream. */
-    for (int c = 0; c < ncol; c++) {
-        if (ptype[c] != CARQUET_PHYSICAL_FLOAT &&
-            ptype[c] != CARQUET_PHYSICAL_DOUBLE) {
-            continue;
-        }
-        if (carquet_writer_set_column_encoding(ctx->writer, c,
-                                               CARQUET_ENCODING_PLAIN) !=
-            CARQUET_OK) {
-            Rf_error("qio: cannot set PLAIN encoding for column %d", c + 1);
-        }
-    }
-
     int64_t n = (int64_t)nrow;
 
     for (int c = 0; c < ncol; c++) {
