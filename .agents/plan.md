@@ -454,8 +454,8 @@ order. All four groups depend on the phase 2 read-option surface.
 
 ## Phase 4: bound reader memory and optimize measured hot paths
 
-Status: memory items complete. The buffered-parallelism decision is measured
-but not implemented; the remaining optimizations are unstarted.
+Status: memory and parallelism items complete. Dictionary text, the no-null
+fast path, and backward expansion are unstarted.
 
 ### What the measurements show
 
@@ -512,7 +512,16 @@ but not implemented; the remaining optimizations are unstarted.
   (`Rscript bench/benchmark.R --compare <tag>` exits non-zero otherwise).
   Changes to the parallel path also report `collect-mmap-serial` and
   `collect-buffered`, whose tolerances are tight enough to be meaningful.
-- [ ] Valgrind, sanitizers, and gctorture pass the new allocation paths.
+- [x] Valgrind, sanitizers, and gctorture pass the new allocation paths.
+  `native-checks` run 30703576368 on `785cb99`, all five jobs green, covering
+  the private-reader threading and the chunked scratch.
+
+  What that does and does not establish: ASan, UBSan, and Valgrind memcheck
+  find memory errors, not data races -- race detection is thread sanitizer or
+  Helgrind, neither of which is in the matrix. Race freedom rests instead on
+  the value-comparison tests across thread counts, which is what caught the
+  double-execution bug. A thread-sanitizer job would be worth adding before
+  more threading work.
 
 ## Phase 5: harden and configure the writer
 
