@@ -147,12 +147,17 @@ without trouble:
 | `DELTA_BINARY_PACKED` | works, including in DATA_PAGE_V2 |
 | `BYTE_STREAM_SPLIT` | works |
 | Dictionary page declared only via `data_page_offset` | fixed locally, see `VENDORED.md` |
-| `RLE` as a data encoding, used for `BOOLEAN` | fails: "Unsupported encoding: 3" |
+| `RLE` as a data encoding, used for `BOOLEAN` | fixed locally, see `VENDORED.md` |
 
-`RLE` for `BOOLEAN` is genuinely unimplemented, though carquet's own error hint
-claims RLE is supported. The dictionary case was a bug and is patched: a
-dictionary page emitted as the chunk's first page but not declared in
-`dictionary_page_offset` was read as a data page.
+Both were fixed in the vendored tree. A dictionary page emitted as the chunk's
+first page but not declared in `dictionary_page_offset` was read as a data
+page. `RLE` for `BOOLEAN` was genuinely unimplemented, despite carquet's own
+error hint claiming RLE is supported; it matters because Apache Arrow selects
+that encoding for every `BOOLEAN` column it writes into DATA_PAGE_V2, so any
+V2 file from Arrow, pyarrow, or Spark was unreadable at its boolean columns.
+
+With both patches the reader handles every encoding in the Apache reference
+corpus.
 
 `carquet_column_read_batch()` returns a bare negative on failure, discarding
 both the status and the hint its internals produced, so qio cannot report why a

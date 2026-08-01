@@ -58,7 +58,8 @@ test_that("alltypes files read their INT96 timestamp_col", {
 # are undeclared: the writer emitted one as the first page of a chunk but set
 # only data_page_offset, leaving dictionary_page_offset unset, which carquet
 # read as a data page. Fixed in the vendored tree; see .agents/VENDORED.md.
-# What remains unsupported is RLE used as a data encoding for BOOLEAN.
+# Its BOOLEAN column additionally uses RLE as a data encoding, which carquet
+# did not implement at all; also fixed in the vendored tree.
 
 test_that("DATA_PAGE_V2 columns with undeclared dictionaries read", {
   # The expected values are Apache Arrow's reading of the same file, checked by
@@ -91,22 +92,84 @@ test_that("a memory-mapped read of the same file agrees", {
   )
 })
 
-test_that("RLE as a BOOLEAN data encoding fails naming the encoding", {
-  # Genuinely unimplemented in carquet, though its own hint text claims RLE is
-  # supported. The failure used to read "yielded 0 of 5 rows", which looks like
-  # corruption rather than a limitation.
+test_that("RLE as a BOOLEAN data encoding reads", {
+  # Column "d" is the only RLE-encoded value stream in the Apache corpus. Five
+  # values in one run, so it proves the format is accepted but nothing about
+  # the decoder's arithmetic; rle_boolean.parquet below carries that load.
   path <- ext("datapage_v2.snappy.parquet")
   file <- parquet_open(path)
   withr::defer(parquet_close(file))
 
-  expect_error(
-    collect(file, columns = "d"),
-    "cannot decode column 'd'.*RLE.*not supported"
+  expect_identical(
+    collect(file, columns = "d")$d,
+    c(TRUE, TRUE, TRUE, FALSE, TRUE)
   )
-  expect_error(
-    suppressMessages(read_parquet(path)),
-    "cannot decode column"
+})
+
+# --- RLE BOOLEAN at a size that exercises the hybrid decoder -----------------
+# Apache Arrow chooses Encoding::RLE for BOOLEAN exactly when the data page
+# version is V2, which is how the reference file above acquired one. This
+# fixture is built the same way but shaped to reach long RLE runs, bit-packed
+# runs, nulls, and several pages per column. Written by pyarrow; see
+# parquet/SOURCE.md and tools/generate-rle-boolean-fixture.py.
+
+# The generator's patterns, restated so the expectation is computed here rather
+# than copied from the implementation being tested.
+rle_expected <- function(n = 30000L) {
+  runs <- logical(0)
+  value <- TRUE
+  run <- 1L
+  while (length(runs) < n) {
+    runs <- c(runs, rep(value, run))
+    value <- !value
+    run <- if (run < 512L) run * 2L else 1L
+  }
+  i <- seq_len(n) - 1L
+  list(
+    runs = runs[seq_len(n)],
+    packed = (i * 7L + 3L) %% 5L == 0L,
+    nullable = ifelse(i %% 7L == 3L, NA, i %% 3L == 0L),
+    allsame = rep(TRUE, n)
   )
+}
+
+test_that("RLE BOOLEAN decodes runs, bit-packed groups, and nulls", {
+  result <- read_parquet(ext("rle_boolean.parquet"))
+  expected <- rle_expected()
+
+  expect_identical(names(result), names(expected))
+  expect_identical(result$runs, expected$runs)
+  expect_identical(result$packed, expected$packed)
+  expect_identical(result$nullable, expected$nullable)
+  expect_identical(result$allsame, expected$allsame)
+})
+
+test_that("every read path agrees on RLE BOOLEAN", {
+  # The batch reader has its own page loop that falls back to the column reader
+  # for encodings it does not handle, so it has to be checked separately.
+  path <- ext("rle_boolean.parquet")
+  eager <- read_parquet(path)
+
+  buffered <- parquet_open(path, mmap = FALSE)
+  mapped <- parquet_open(path, mmap = TRUE)
+  walker <- parquet_open(path)
+  withr::defer({
+    parquet_close(buffered)
+    parquet_close(mapped)
+    parquet_close(walker)
+  })
+
+  expect_identical(collect(buffered), eager)
+  expect_identical(collect(mapped), eager)
+
+  batches <- list()
+  walk_batches(
+    walker,
+    function(batch, index) batches[[index]] <<- batch,
+    batch_size = 777L
+  )
+  expect_gt(length(batches), 1L)
+  expect_identical(do.call(rbind, batches), eager)
 })
 
 # --- Nested map/list columns: skipped until 0.2.0 ---------------------------

@@ -193,3 +193,32 @@ and non-UTC timestamps.
   encoding, at any batch size and through any read API. The reader caches
   interned strings by the address of the bytes they came from, which is a large
   win on dictionary pages and must be invisible on the others.
+
+## RLE BOOLEAN fixture
+
+`rle_boolean.parquet` was written by **pyarrow**, not the R `arrow` package.
+Apache Arrow selects `Encoding::RLE` for `BOOLEAN` exactly when the data page
+version is V2, and R's `write_parquet()` exposes no `data_page_version`
+argument, so this is the one fixture the R package cannot produce. pyarrow is a
+binding to the same independently written C++ implementation, so it serves the
+same oracle role and is likewise not a qio dependency.
+
+- Generator: `tools/generate-rle-boolean-fixture.py`, `pyarrow` 25.0.0
+- Command: `version = "2.6"`, `data_page_version = "2.0"`,
+  `compression = "snappy"`, `data_page_size = 1024`, `use_dictionary = False`
+- License: Apache License 2.0
+- Contents: four `BOOLEAN` columns over 30000 rows. `runs` holds repeated
+  stretches that double in length, so the encoder emits long RLE runs;
+  `packed` alternates on a period that never repeats, so it emits bit-packed
+  groups; `nullable` has nulls, so the dense value count is below the page's
+  value count; `allsame` is a single run spanning every page. Two of the four
+  columns exceed the page size target and therefore span several pages.
+
+Expected behavior: all four decode exactly, through `read_parquet()`,
+`collect()` on mapped and buffered handles, and `walk_batches()`. The generator
+aborts if the writer did not in fact choose RLE, or if no column spans more
+than one page, either of which would make the test vacuous.
+
+The Apache reference file `datapage_v2.snappy.parquet` also has an RLE
+`BOOLEAN` column, but it is five values in one run: enough to show the encoding
+is accepted, not enough to exercise the hybrid decoder.

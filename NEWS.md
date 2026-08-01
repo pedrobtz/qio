@@ -1,5 +1,10 @@
 # qio 0.0.0.9000
 
+* `logical` columns written with run-length encoding now read. Apache Arrow
+  uses that encoding for every boolean column it writes into a version 2 data
+  page, so boolean columns in files from Arrow, pyarrow, and Spark previously
+  failed to decode.
+
 * Files whose dictionary page is not declared in the column metadata now read.
   Some writers emit a dictionary page as a chunk's first page while setting only
   `data_page_offset`; qio read that page as data and failed. Two files from the

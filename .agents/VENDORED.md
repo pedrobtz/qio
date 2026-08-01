@@ -95,6 +95,20 @@ them.
   Both the mapped and buffered paths needed it. This made two Apache reference
   fixtures readable that were not: `datapage_v2.snappy.parquet` and the flat
   columns of `nested_maps.snappy.parquet`. Covered by `test-external.R`.
+- **Decode RLE as a BOOLEAN data encoding** (`reader/page_reader.c`). Parquet
+  allows `RLE` for `BOOLEAN` values, and Apache Arrow selects it for every
+  `BOOLEAN` column it writes into DATA_PAGE_V2. carquet implemented `RLE` only
+  for levels and dictionary indexes, so such a column failed with "Unsupported
+  encoding: 3" even though the library's own error hint claims RLE is
+  supported. `decode_phase3_values()` now handles it for both page versions:
+  the payload is a 4-byte little-endian length followed by the hybrid run
+  stream at bit width 1, decoded in fixed slices so a page needs no allocation.
+  Unlike the level sections, the length prefix is present in V2 as well. The
+  case is rejected for non-`BOOLEAN` types and in dictionary-preserving mode,
+  where the destination is sized for `uint32_t`. Verified against pyarrow;
+  covered by `test-external.R` and `parquet/rle_boolean.parquet`. Only the V2
+  path has a fixture: no mainstream writer emits RLE booleans into a V1 page,
+  so there is nothing independent to test the V1 branch against.
 - **Byte-split a page once, at finalize** (`writer/page_writer.c`).
   BYTE_STREAM_SPLIT transposes a whole page into byte planes, so it cannot be
   applied incrementally. The encoder split each call's subrange and appended,
