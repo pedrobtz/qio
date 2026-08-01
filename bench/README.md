@@ -236,6 +236,19 @@ Beware the obvious proxy for the second one: timing `y[] <- x` in R gives
 0.0050 s, eight times the real `memcpy`, and would have made a 3% idea look
 like a 26% one.
 
+## Accepted trade-off: PLAIN encoding for floats
+
+`write-numeric` is 50% slower and its output 38% larger than before phase 5:
+0.236s at 31.66MB against 0.354s at 43.61MB. This is deliberate. carquet's
+BYTE_STREAM_SPLIT encoder corrupts any page assembled from more than one call,
+so qio forces PLAIN for `FLOAT` and `DOUBLE`; see
+`../.agents/VENDORED.md`. Correct and slower beats fast and wrong.
+
+The cost is recoverable by fixing the encoder rather than avoiding it, which is
+the recorded follow-up. Note that measuring this on *random* doubles shows
+almost no difference -- byte-splitting only pays on structured data -- so an
+A/B on the wrong workload will suggest the trade-off is free. It is not.
+
 ## Not measured yet
 - **Compression codecs.** Everything here is Snappy, qio's default. Codec
   comparisons belong with the phase 5 writer configuration work.

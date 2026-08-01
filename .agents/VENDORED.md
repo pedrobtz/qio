@@ -142,9 +142,21 @@ columns of the same size were unaffected, so the trigger is how many separate
 encode calls a page receives, not size alone.
 
 **Workaround:** `src/qio.c` calls `carquet_writer_set_column_encoding()` to
-force `CARQUET_ENCODING_PLAIN` for `FLOAT` and `DOUBLE`. Measured cost: none
-worth reporting; a 200,000-row random double column is 1.53MB with PLAIN plus
-Snappy against 1.79MB from Arrow's own default. Covered by `test-qio.R`.
+force `CARQUET_ENCODING_PLAIN` for `FLOAT` and `DOUBLE`.
+
+**The workaround is not free**, and an earlier note here understated it. On
+random doubles it costs nothing measurable, which is what that note was based
+on: a 200,000-row column is 1.53MB with PLAIN plus Snappy against 1.79MB from
+Arrow's default. On *structured* doubles, which byte-splitting is designed for,
+it costs a great deal. The `numeric` benchmark workload writes in 0.354s at
+43.61MB with PLAIN, against 0.236s at 31.66MB with BYTE_STREAM_SPLIT: 50%
+slower and 38% larger.
+
+That is the price of not writing corrupt files, and worth paying, but it is
+also a strong argument for fixing the encoder rather than avoiding it. The fix
+is to buffer a page's values and split them once when the page is flushed,
+instead of splitting each call's subrange and appending. Doing so would recover
+both the time and the size. Covered by `test-qio.R`.
 
 ### Multiple write batches per column corrupt some encodings
 

@@ -58,7 +58,11 @@ check <- function(label, data, schema = NULL, codec = "snappy", tol = 1e-9) {
       other <- as.Date(other)
     }
     arrow_ok <- isTRUE(all.equal(as.vector(other), expected, tolerance = tol))
-    qio_ok <- isTRUE(all.equal(as.vector(ours[[column]]), expected, tolerance = tol))
+    qio_ok <- isTRUE(all.equal(
+      as.vector(ours[[column]]),
+      expected,
+      tolerance = tol
+    ))
     if (!arrow_ok) {
       bad <- c(bad, paste0(column, " WRITER"))
     } else if (!qio_ok) {
