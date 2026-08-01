@@ -1,5 +1,11 @@
 # qio 0.0.0.9000
 
+* Reading a Zstandard-compressed file with more than one column now works on
+  Windows. The bundled decompressor kept one context for the whole process
+  there, rather than one per thread, so a parallel read drove it from two
+  threads at once: the read either failed to decode or ended the R session.
+  Other platforms were never affected, and `threads = 1` avoided it.
+
 * `logical` columns written with run-length encoding now read. Apache Arrow
   uses that encoding for every boolean column it writes into a version 2 data
   page, so boolean columns in files from Arrow, pyarrow, and Spark previously

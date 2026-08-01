@@ -95,6 +95,23 @@ them.
   Both the mapped and buffered paths needed it. This made two Apache reference
   fixtures readable that were not: `datapage_v2.snappy.parquet` and the flat
   columns of `nested_maps.snappy.parquet`. Covered by `test-external.R`.
+- **Give every thread its own zstd context on Windows**
+  (`compression/zstd.c`, `reader/worker_pool.c`). zstd contexts are cached per
+  thread because they cost about 650KB to create. Upstream used a
+  `pthread_key` on POSIX, `__declspec(thread)` on Windows with OpenMP, and a
+  pair of **process-global** `ZSTD_DCtx`/`ZSTD_CCtx` on Windows without it --
+  on the assumption that no OpenMP means no threads. carquet's own worker pool
+  disproves that: it creates threads on Windows whether or not OpenMP is
+  configured. qio's mapped `collect()` decodes numeric columns on that pool
+  while decoding strings on the main thread, so two threads drove one shared
+  decompression context at once. Reading any multi-column zstd file on Windows
+  therefore failed to decode or killed the R process outright, and it is
+  Windows-only: the POSIX branch was always correct. Windows now uses
+  thread-local storage regardless of OpenMP. Because that storage has no
+  destructor and qio creates a pool per read, each worker frees its own
+  contexts as it exits, which also removes a leak the OpenMP branch always
+  had. Covered by the writer round-trip tests in `tests/testthat/test-qio.R`,
+  which read zstd files with several columns.
 - **Decode RLE as a BOOLEAN data encoding** (`reader/page_reader.c`). Parquet
   allows `RLE` for `BOOLEAN` values, and Apache Arrow selects it for every
   `BOOLEAN` column it writes into DATA_PAGE_V2. carquet implemented `RLE` only

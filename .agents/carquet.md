@@ -97,6 +97,10 @@ Concurrency rules:
 - A single column reader, batch reader, or writer requires external
   synchronization.
 - Allocator and codec registration are process-wide setup operations.
+- Codec scratch must be per thread. zstd caches its contexts thread-locally on
+  POSIX but kept process-global ones on Windows without OpenMP, which qio
+  patches; see [`VENDORED.md`](VENDORED.md#local-carquet-patches). Recheck this
+  on every update, because nothing about the API surface reveals it.
 
 Mapped `collect()` schedules numeric row-group/column tasks on carquet's private
 worker pool; strings remain on R's main thread. Buffered `collect()` is serial.
@@ -243,6 +247,7 @@ metadata files are modeled but not implemented.
 | `num_threads = 1` disables parallelism | Public `carquet_thread_pool_create()` still forces two; the batch pipeline is patched locally to honor one |
 | `carquet_worker_pool_submit()` "Non-blocking" | Blocks once the 512-slot queue is full |
 | `carquet_worker_pool_wait()` | No timeout, so it cannot be interrupted |
+| Independent column readers decode concurrently | True except through zstd on Windows, where the decompression context was process-global; patched locally |
 | BYTE_STREAM_SPLIT encodes a page | Each call's subrange is split separately and appended, corrupting any multi-call page |
 | `write_batch()` may be called repeatedly per column | `BOOLEAN` bit packing and BYTE_STREAM_SPLIT do not resume across calls |
 | `get_buffer()` bytes use `free()` | Bytes use the configured allocator |
