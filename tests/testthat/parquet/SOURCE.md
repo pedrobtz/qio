@@ -153,3 +153,20 @@ possible.
 - `invalid_utf8.parquet`: a `STRING`-annotated `BYTE_ARRAY` column whose second
   row is a truncated two-byte sequence. Expected to fail the read naming the
   column, row, and byte offset.
+
+## Temporal and integer-width fixture
+
+`temporal_types.parquet` was written by the Apache Arrow R package, which can
+express annotations qio's writer cannot: unsigned and narrow integers, `TIME`,
+and non-UTC timestamps.
+
+- Generator: `tools/generate-temporal-fixture.R`, R `arrow` 24.0.0
+- Contents: boundary values for `uint8/16/32` and `int8/16/32`; UTC-adjusted
+  `TIMESTAMP` in milliseconds, microseconds, and nanoseconds; non-UTC
+  `TIMESTAMP` in milliseconds and microseconds; and `TIME` in all three units
+  at midnight and one microsecond before the end of the day. Every column has a
+  null.
+- Expected behavior: unsigned 32-bit reads as `double` and never negative;
+  UTC-adjusted timestamps keep their instant while `tz` changes display;
+  non-UTC timestamps keep their civil components while the instant moves;
+  `TIME` reads as seconds since midnight. See `.agents/TYPES.md`.

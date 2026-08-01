@@ -61,7 +61,11 @@ qio_type_registry <- function() {
 # Every entry point that can materialize values calls this first, before any
 # allocation or native call, so `read_parquet()`, `collect()`, `walk_batches()`,
 # and `read_plan()` cannot diverge. See .agents/roadmap.md, "Read options".
-qio_read_options <- function(int64 = c("double", "integer64")) {
+qio_read_options <- function(
+  int64 = c("double", "integer64"),
+  time = c("numeric", "hms"),
+  tz = "UTC"
+) {
   int64 <- match.arg(int64)
   if (int64 == "integer64" && !requireNamespace("bit64", quietly = TRUE)) {
     stop(
@@ -70,7 +74,24 @@ qio_read_options <- function(int64 = c("double", "integer64")) {
       call. = FALSE
     )
   }
-  list(int64 = int64)
+  time <- match.arg(time)
+  if (time == "hms" && !requireNamespace("hms", quietly = TRUE)) {
+    stop(
+      "`time = \"hms\"` needs the hms package. ",
+      "Install it, or use `time = \"numeric\"`.",
+      call. = FALSE
+    )
+  }
+  if (!is.character(tz) || length(tz) != 1L || is.na(tz) || !nzchar(tz)) {
+    stop("`tz` must be a single time zone name.", call. = FALSE)
+  }
+  # Validate before any allocation or native call, so an unknown zone fails
+  # before a partial read. "" would mean the machine's local zone, which the
+  # contract forbids using implicitly.
+  if (!tz %in% c("UTC", "GMT") && !tz %in% OlsonNames()) {
+    stop("`tz` is not a known time zone: \"", tz, "\".", call. = FALSE)
+  }
+  list(int64 = int64, time = time, tz = tz)
 }
 
 # The native layer takes the mode as a small integer code; keep the mapping in
@@ -123,19 +144,63 @@ qio_resolve_logical <- function(schema, options = qio_read_options()) {
   r_type[hit] <- reg$r_type[idx[hit]]
   converter[hit] <- reg$converter[idx[hit]]
 
-  # Parameterized: a UTC-adjusted INT64 TIMESTAMP becomes POSIXct, with the unit
-  # selecting the rescaling converter. A non-UTC timestamp is a local civil
-  # time, not an instant, so it is left unapplied.
+  # TIMESTAMP is physically INT64 in one of three units. A UTC-adjusted column
+  # is an instant: `tz` changes only how it prints. A non-UTC column is a wall
+  # clock with no zone, so its civil components are interpreted in `tz`. The
+  # machine's local zone is never used implicitly. TYPES.md, "Timestamps".
   is_ts <- !hit &
     !is.na(schema$logical_type) &
     schema$logical_type == "TIMESTAMP" &
     schema$physical_type == "INT64"
   if (any(is_ts)) {
-    time <- qio_parse_time_details(schema$logical_details[is_ts])
-    ok <- time$adjusted_to_utc & time$unit %in% c("MILLIS", "MICROS", "NANOS")
-    rows <- which(is_ts)[ok]
+    stamp <- qio_parse_time_details(schema$logical_details[is_ts])
+    known <- stamp$unit %in% c("MILLIS", "MICROS", "NANOS")
+    rows <- which(is_ts)[known]
     r_type[rows] <- "POSIXct"
-    converter[rows] <- paste0("timestamp_utc_", tolower(time$unit[ok]))
+    converter[rows] <- paste0(
+      ifelse(
+        stamp$adjusted_to_utc[known],
+        "timestamp_utc_",
+        "timestamp_local_"
+      ),
+      tolower(stamp$unit[known]),
+      "_",
+      options$tz
+    )
+  }
+
+  # TIME is seconds since midnight: MILLIS in INT32, MICROS and NANOS in INT64.
+  # Neither mode returns POSIXct, because a time of day is not an instant.
+  is_time <- !is.na(schema$logical_type) & schema$logical_type == "TIME"
+  if (any(is_time)) {
+    clock <- qio_parse_time_details(schema$logical_details[is_time])
+    known <- clock$unit %in% c("MILLIS", "MICROS", "NANOS")
+    rows <- which(is_time)[known]
+    r_type[rows] <- if (options$time == "hms") "hms" else "double"
+    converter[rows] <- paste0(
+      "time_",
+      options$time,
+      "_",
+      tolower(clock$unit[known])
+    )
+  }
+
+  # An INTEGER annotation narrows or widens the physical storage. R's integer
+  # is signed and 32-bit, so an unsigned 32-bit column needs a double to keep
+  # its upper half positive; the narrower widths all fit. 64-bit widths are
+  # handled by the `int64` rules below.
+  is_int_ann <- is.na(r_type) &
+    !is.na(schema$logical_type) &
+    schema$logical_type == "INTEGER"
+  if (any(is_int_ann)) {
+    ann <- qio_parse_integer_details(schema$logical_details[is_int_ann])
+    rows <- which(is_int_ann)
+    unsigned32 <- !ann$is_signed & ann$bit_width == 32L
+    narrow <- ann$bit_width %in% c(8L, 16L, 32L) & !unsigned32
+    r_type[rows[unsigned32]] <- "double"
+    converter[rows[unsigned32]] <- "uint32"
+    r_type[rows[narrow]] <- "integer"
+    converter[rows[narrow]] <- "int32"
   }
 
   # DECIMAL reads as double with its scale applied. Exact fixed-point character
@@ -256,6 +321,20 @@ qio_decimal_from_binary <- function(x, scale) {
   qio_apply_decimal_scale(values, scale)
 }
 
+# Parse an INTEGER `logical_details` string of the form
+# "bit_width=32, signed=false".
+qio_parse_integer_details <- function(details) {
+  details[is.na(details)] <- ""
+  width <- suppressWarnings(as.integer(
+    sub("^.*bit_width=([0-9]+).*$", "\\1", details)
+  ))
+  width[!grepl("bit_width=", details, fixed = TRUE)] <- NA_integer_
+  list(
+    bit_width = width,
+    is_signed = !grepl("signed=false", details, fixed = TRUE)
+  )
+}
+
 qio_parse_time_details <- function(details) {
   details[is.na(details)] <- ""
   unit <- sub("^.*unit=([A-Za-z]+).*$", "\\1", details)
@@ -285,6 +364,8 @@ qio_parse_time_details <- function(details) {
 #' @param int64 How 64-bit integer columns reach R; see [collect()]. The plan
 #'   reports the resulting `r_type` and `converter`, so it can be inspected for
 #'   exactly the read that will follow.
+#' @param time How `TIME` columns reach R; see [collect()].
+#' @param tz Time zone for `TIMESTAMP` columns; see [collect()].
 #'
 #' @return A `qio_read_plan` data frame with one row per physical leaf column
 #'   and the columns:
@@ -321,29 +402,43 @@ read_plan <- function(x, ...) {
 read_plan.qio_parquet_file <- function(
   x,
   ...,
-  int64 = c("double", "integer64")
+  int64 = c("double", "integer64"),
+  time = c("numeric", "hms"),
+  tz = "UTC"
 ) {
   qio_empty_dots(...)
-  read_plan(schema(x), int64 = int64)
+  read_plan(schema(x), int64 = int64, time = time, tz = tz)
 }
 
 #' @rdname read_plan
 #' @export
-read_plan.character <- function(x, ..., int64 = c("double", "integer64")) {
+read_plan.character <- function(
+  x,
+  ...,
+  int64 = c("double", "integer64"),
+  time = c("numeric", "hms"),
+  tz = "UTC"
+) {
   qio_empty_dots(...)
   if (length(x) != 1L || is.na(x)) {
     stop("`x` must be a single Parquet file path.", call. = FALSE)
   }
   pf <- parquet_open(x)
   on.exit(parquet_close(pf), add = TRUE)
-  read_plan(pf, int64 = int64)
+  read_plan(pf, int64 = int64, time = time, tz = tz)
 }
 
 #' @rdname read_plan
 #' @export
-read_plan.data.frame <- function(x, ..., int64 = c("double", "integer64")) {
+read_plan.data.frame <- function(
+  x,
+  ...,
+  int64 = c("double", "integer64"),
+  time = c("numeric", "hms"),
+  tz = "UTC"
+) {
   qio_empty_dots(...)
-  qio_build_plan(x, qio_read_options(int64 = int64))
+  qio_build_plan(x, qio_read_options(int64 = int64, time = time, tz = tz))
 }
 
 #' @export
@@ -475,6 +570,19 @@ qio_apply_converter <- function(x, converter) {
       as.integer(sub("^decimal_binary_", "", converter))
     ))
   }
+  # Timestamp converters carry unit and zone, time converters mode and unit.
+  if (startsWith(converter, "timestamp_")) {
+    parts <- strsplit(sub("^timestamp_", "", converter), "_", fixed = TRUE)[[1]]
+    adjusted <- parts[[1]] == "utc"
+    per_second <- c(millis = 1e3, micros = 1e6, nanos = 1e9)[[parts[[2]]]]
+    tz <- paste(parts[-c(1, 2)], collapse = "_")
+    return(qio_as_posixct(x, per_second, tz, adjusted))
+  }
+  if (startsWith(converter, "time_")) {
+    parts <- strsplit(sub("^time_", "", converter), "_", fixed = TRUE)[[1]]
+    per_second <- c(millis = 1e3, micros = 1e6, nanos = 1e9)[[parts[[2]]]]
+    return(qio_as_time_of_day(x, per_second, parts[[1]]))
+  }
   switch(
     converter,
     # INT32 days since 1970-01-01; R's Date is a double count of the same days.
@@ -493,6 +601,8 @@ qio_apply_converter <- function(x, converter) {
     int64_bit64 = structure(x, class = "integer64"),
     # A NULL-annotated column has no values; preserve only its length.
     null_logical = rep(NA, length(x)),
+    # An unsigned 32-bit column already arrives as double from C.
+    uint32 = x,
     # C already produced a character vector or a list of raw vectors.
     text = x,
     binary = x,
@@ -579,6 +689,37 @@ qio_as_posixct_utc <- function(x, per_second) {
     class = c("POSIXct", "POSIXt"),
     tzone = "UTC"
   )
+}
+
+# A UTC-adjusted TIMESTAMP is an instant: the stored count is seconds since the
+# epoch and `tz` only changes how it prints. A non-UTC TIMESTAMP is a wall
+# clock with no zone attached, so the same count describes civil components
+# that must be re-anchored in `tz`. Base R decides what an ambiguous or
+# nonexistent civil time means at a DST boundary. TYPES.md, "Timestamps".
+qio_as_posixct <- function(x, per_second, tz, adjusted) {
+  seconds <- as.double(x) / per_second
+  if (adjusted) {
+    return(structure(seconds, class = c("POSIXct", "POSIXt"), tzone = tz))
+  }
+  civil <- structure(seconds, class = c("POSIXct", "POSIXt"), tzone = "UTC")
+  as.POSIXct(format(civil, "%Y-%m-%d %H:%M:%OS6"), tz = tz)
+}
+
+# TIME is a count since midnight, not an instant, so neither mode returns
+# POSIXct. Values outside a single day mean a malformed file.
+qio_as_time_of_day <- function(x, per_second, mode) {
+  seconds <- as.double(x) / per_second
+  present <- !is.na(seconds)
+  if (any(seconds[present] < 0 | seconds[present] >= 86400)) {
+    stop(
+      "A TIME column contains a value outside the range of one day.",
+      call. = FALSE
+    )
+  }
+  if (mode == "hms") {
+    return(hms::as_hms(seconds))
+  }
+  seconds
 }
 
 #' @export

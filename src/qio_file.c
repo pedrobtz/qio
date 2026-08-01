@@ -37,6 +37,7 @@ typedef struct {
 #define QIO_KIND_INT64 1   /* INT64 under the `int64` range rules */
 #define QIO_KIND_TEXT 2    /* BYTE_ARRAY with a text annotation -> character */
 #define QIO_KIND_BINARY 3  /* BYTE_ARRAY or FIXED_LEN_BYTE_ARRAY -> raw list */
+#define QIO_KIND_UINT32 4  /* INT32 bits read as unsigned -> double */
 
 /* R's exact integer range in a double. Both bounds are representable. */
 #define QIO_DOUBLE_EXACT_MAX 9007199254740992LL /* 2^53 */
@@ -453,6 +454,11 @@ static SEXP qio_allocate_column(carquet_physical_type_t type,
     if (kind == QIO_KIND_BINARY) {
         return Rf_allocVector(VECSXP, length);
     }
+    /* R's integer is signed, so the top half of an unsigned 32-bit column
+     * needs a double to stay positive. */
+    if (kind == QIO_KIND_UINT32) {
+        return Rf_allocVector(REALSXP, length);
+    }
     switch (type) {
     case CARQUET_PHYSICAL_BOOLEAN:
         return Rf_allocVector(LGLSXP, length);
@@ -610,7 +616,11 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                 LOGICAL(destination)[out] = NA_LOGICAL;
                 break;
             case CARQUET_PHYSICAL_INT32:
-                INTEGER(destination)[out] = NA_INTEGER;
+                if (kind == QIO_KIND_UINT32) {
+                    REAL(destination)[out] = NA_REAL;
+                } else {
+                    INTEGER(destination)[out] = NA_INTEGER;
+                }
                 break;
             case CARQUET_PHYSICAL_INT64:
                 /* bit64 spells NA as INT64_MIN, not NaN. */
@@ -641,9 +651,13 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                                             : FALSE;
             break;
         case CARQUET_PHYSICAL_INT32: {
+            int32_t value = ((const int32_t *)data)[i];
+            if (kind == QIO_KIND_UINT32) {
+                REAL(destination)[out] = (double)(uint32_t)value;
+                break;
+            }
             /* See qio_scatter_numeric_raw: NA_INTEGER is INT_MIN. Here the
              * value is known present, so testing it directly is exact. */
-            int32_t value = ((const int32_t *)data)[i];
             if (sentinel && value == NA_INTEGER) *sentinel = 1;
             INTEGER(destination)[out] = value;
             break;
@@ -727,7 +741,8 @@ static void qio_scatter_numeric_raw(void *dst_base, R_xlen_t dst_offset,
                                     const int16_t *def_levels,
                                     int16_t max_def, int64_t length,
                                     int *sentinel, int int64_mode,
-                                    int is_unsigned64, int *int64_coerced) {
+                                    int is_unsigned64, int *int64_coerced,
+                                    int kind) {
     switch (type) {
     case CARQUET_PHYSICAL_BOOLEAN: {
         int *dst = (int *)dst_base + dst_offset;
@@ -735,6 +750,25 @@ static void qio_scatter_numeric_raw(void *dst_base, R_xlen_t dst_offset,
         break;
     }
     case CARQUET_PHYSICAL_INT32: {
+        if (kind == QIO_KIND_UINT32) {
+            /* Reinterpret the same bits as unsigned; the upper half must never
+             * surface as a negative number. */
+            double *out = (double *)dst_base + dst_offset;
+            const int32_t *src = (const int32_t *)values;
+            if (def_levels == NULL) {
+                for (int64_t i = 0; i < length; i++) {
+                    out[i] = (double)(uint32_t)src[i];
+                }
+            } else {
+                int64_t j = 0;
+                for (int64_t i = 0; i < length; i++) {
+                    out[i] = (def_levels[i] == max_def)
+                                 ? (double)(uint32_t)src[j++]
+                                 : NA_REAL;
+                }
+            }
+            break;
+        }
         int *dst = (int *)dst_base + dst_offset;
         int64_t dense = length;
         if (def_levels == NULL) {
@@ -800,7 +834,8 @@ static void qio_scatter_numeric_raw(void *dst_base, R_xlen_t dst_offset,
 
 /* Raw data pointer for a numeric destination vector (main thread only). */
 static void *qio_column_data_pointer(SEXP destination,
-                                     carquet_physical_type_t type) {
+                                     carquet_physical_type_t type, int kind) {
+    if (kind == QIO_KIND_UINT32) return REAL(destination);
     switch (type) {
     case CARQUET_PHYSICAL_BOOLEAN:
         return LOGICAL(destination);
@@ -874,10 +909,10 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
         break;
     }
     default:
-        qio_scatter_numeric_raw(qio_column_data_pointer(destination, type),
+        qio_scatter_numeric_raw(qio_column_data_pointer(destination, type, kind),
                                 offset, type, values, def_levels, max_def,
                                 length, sentinel, int64_mode, is_unsigned64,
-                                int64_coerced);
+                                int64_coerced, kind);
         break;
     }
 }
@@ -912,6 +947,7 @@ typedef struct {
     int int64_mode;
     int is_unsigned64;
     int int64_coerced;   /* task-local; merged with int32_sentinel */
+    int kind;
     char message[256];
 } qio_column_task_t;
 
@@ -958,7 +994,8 @@ static void qio_column_task_run(void *arg) {
         qio_scatter_numeric_raw(task->dst, task->dst_offset + read,
                                 task->type, values, defs, task->max_def, n,
                                 &task->int32_sentinel, task->int64_mode,
-                                task->is_unsigned64, &task->int64_coerced);
+                                task->is_unsigned64, &task->int64_coerced,
+                                task->kind);
         read += n;
     }
 
@@ -1050,7 +1087,7 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
     }
     for (int32_t i = 0; i < selection->num_columns; i++) {
         int kind = INTEGER(column_kinds)[i];
-        if (kind < QIO_KIND_DEFAULT || kind > QIO_KIND_BINARY) {
+        if (kind < QIO_KIND_DEFAULT || kind > QIO_KIND_UINT32) {
             Rf_error("qio: invalid column kind %d", kind);
         }
         selection->kind[i] = (uint8_t)kind;
@@ -1372,13 +1409,15 @@ static SEXP qio_collect_body(void *data) {
             task->file_column = file_col;
             task->type = type;
             task->max_def = carquet_schema_max_def_level(schema, file_col);
-            task->dst = qio_column_data_pointer(VECTOR_ELT(result, i), type);
+            task->dst = qio_column_data_pointer(VECTOR_ELT(result, i), type,
+                                               context->selection.kind[i]);
             task->dst_offset = rg_offset[s];
             task->rows = rg_rows[s];
             task->int64_mode = context->selection.kind[i] == QIO_KIND_INT64
                                    ? context->int64_mode
                                    : -1;
             task->is_unsigned64 = context->selection.unsigned64[i];
+            task->kind = context->selection.kind[i];
         }
     }
 

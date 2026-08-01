@@ -4,12 +4,21 @@
 \alias{read_parquet}
 \title{Read a Parquet file}
 \usage{
-read_parquet(file, int64 = c("double", "integer64"))
+read_parquet(
+  file,
+  int64 = c("double", "integer64"),
+  time = c("numeric", "hms"),
+  tz = "UTC"
+)
 }
 \arguments{
 \item{file}{Path to a Parquet file.}
 
 \item{int64}{How 64-bit integer columns reach R; see \code{\link[=collect]{collect()}}.}
+
+\item{time}{How \code{TIME} columns reach R; see \code{\link[=collect]{collect()}}.}
+
+\item{tz}{Time zone for \code{TIMESTAMP} columns; see \code{\link[=collect]{collect()}}.}
 }
 \value{
 A data frame.

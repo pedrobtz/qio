@@ -197,6 +197,10 @@ For v0.1.0:
   scale 2 reads as `12.30`, and one message per read says the values may be
   inexact. Returning the unscaled integer or the raw bytes, as v0.0.x did, is
   worse than an approximate number: it is silently the wrong quantity.
+- Writing a non-UTC `TIMESTAMP` is v0.2.0, along with the operation-level
+  message that a zone is being discarded. `POSIXct` writes as a UTC-adjusted
+  `TIMESTAMP`, which is the correct default and loses nothing; choosing a wall
+  clock on write is the same class of decision as the other deferred writes.
 - `INTERVAL` ships as exact bytes, not as a class. It is a fixed 12-byte
   binary leaf, so the v0.1.0 binary mapping already returns it losslessly. A
   dedicated interval class needs print, format, subset, comparison, and `NA`

@@ -347,9 +347,9 @@ silently. Selections now resolve to leaf indexes in R before any native call.
 
 ## Phase 3: complete v0.1.0 type coverage
 
-Status: 3.1, 3.2, and 3.3 complete for reads. Writes of types with no
-unambiguous R representation, and exact fixed-point decimal, are deferred to
-v0.2.0 by a recorded scope decision. 3.4 not started.
+Status: complete for reads. Writes of types with no unambiguous R
+representation, and exact fixed-point decimal, are deferred to v0.2.0 by a
+recorded scope decision in `roadmap.md`.
 
 ### What 3.1 turned up
 
@@ -410,12 +410,22 @@ order. All four groups depend on the phase 2 read-option surface.
 
 ### 3.4 Temporal and annotated integers
 
-- [ ] Finish UTC and non-UTC timestamp behavior with validated `tz`, documented
-  DST behavior, overflow checks, and operation-level timezone messages.
-- [ ] Add numeric and optional `hms` time-of-day modes.
-- [ ] Add remaining signed/unsigned integer-width annotations. `INTERVAL` needs
-  no work here; 3.2 already returns its 12 bytes exactly.
-- [ ] Add boundary fixtures for every timestamp unit and integer width.
+- [x] Finish UTC and non-UTC timestamp reads with validated `tz` and documented
+  DST behavior. A UTC-adjusted column is an instant that `tz` only displays; a
+  non-UTC column is a wall clock re-anchored in `tz`, with base R deciding
+  ambiguous and nonexistent civil times. `tz` is validated before any
+  allocation, and the machine's local zone is never used implicitly.
+- [x] Add numeric and optional `hms` time-of-day modes.
+- [x] Add remaining signed/unsigned integer-width annotations. Unsigned 32-bit
+  reads as `double`, since a stored `4294967295` read as `-1` before.
+  `INTERVAL` needs no work here; 3.2 already returns its 12 bytes exactly.
+- [x] Add boundary fixtures for every timestamp unit and integer width:
+  `temporal_types.parquet`, written by Arrow because qio's writer has no
+  unsigned, narrow-integer, `TIME`, or non-UTC timestamp support.
+- [ ] Deferred to v0.2.0: writing a non-UTC `TIMESTAMP`, with the
+  operation-level message specified in `TYPES.md`. `POSIXct` still writes as a
+  UTC-adjusted `TIMESTAMP`, which is the correct default; choosing a zone on
+  write belongs with the other deferred write decisions.
 
 ### Exit gate
 

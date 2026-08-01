@@ -1,5 +1,17 @@
 # qio 0.0.0.9000
 
+* Non-UTC `TIMESTAMP` columns are now read as `POSIXct`. A UTC-adjusted column
+  is an instant, so the new `tz` argument changes only how it prints; a non-UTC
+  column is a wall clock with no zone stored, so its civil components are
+  interpreted in `tz`. The machine's local zone is never used implicitly.
+  Previously a non-UTC timestamp returned a raw count of sub-second units.
+* `TIME` columns are now read as seconds since midnight. The new `time`
+  argument selects `"numeric"` or `"hms"`; neither returns `POSIXct`, because a
+  time of day is not an instant.
+* `INTEGER` annotations are now applied. Unsigned 32-bit columns read as
+  `double` and are never negative: a stored `4294967295` previously read as
+  `-1`. The narrower widths continue to read as `integer`.
+
 * `DECIMAL` columns are now readable. They return `double` with the declared
   scale applied, so a price stored as unscaled `1230` with scale 2 reads as
   `12.30`, and one message per read notes that values may be inexact. All four

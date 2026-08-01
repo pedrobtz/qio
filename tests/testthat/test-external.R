@@ -544,3 +544,140 @@ test_that("decimal values agree across all three read APIs", {
   ))
   expect_equal(do.call(rbind, batches), eager)
 })
+
+# --- Temporal and annotated integers (phase 3.4) ---------------------------
+# temporal_types.parquet carries boundary values for every integer width and
+# every timestamp and time unit. Contracts: .agents/TYPES.md.
+
+temporal_fixture <- function() ext("temporal_types.parquet")
+
+test_that("integer-width annotations map to the right R type", {
+  plan <- read_plan(temporal_fixture())
+  widths <- plan[plan$name %in% c("u8", "u16", "u32", "i8", "i16", "i32"), ]
+
+  # Only unsigned 32-bit needs a double; the rest fit R's signed integer.
+  expect_identical(
+    widths$r_type,
+    c("integer", "integer", "double", "integer", "integer", "integer")
+  )
+
+  df <- read_parquet(temporal_fixture())
+  expect_identical(df$u8, c(0L, 255L, NA))
+  expect_identical(df$u16, c(0L, 65535L, NA))
+  expect_identical(df$i8, c(-128L, 127L, NA))
+  expect_identical(df$i16, c(-32768L, 32767L, NA))
+  expect_identical(df$i32, c(-2147483647L, 2147483647L, NA))
+})
+
+test_that("an unsigned 32-bit column is never negative", {
+  # The upper half of a uint32 read as signed would come back as -1.
+  df <- read_parquet(temporal_fixture())
+  expect_type(df$u32, "double")
+  expect_identical(df$u32, c(0, 4294967295, NA))
+  expect_false(any(df$u32 < 0, na.rm = TRUE))
+})
+
+test_that("a UTC-adjusted timestamp is an instant that tz only displays", {
+  utc <- read_parquet(temporal_fixture())
+  paris <- read_parquet(temporal_fixture(), tz = "Europe/Paris")
+
+  for (column in c("ts_utc_ms", "ts_utc_us", "ts_utc_ns")) {
+    expect_s3_class(utc[[column]], "POSIXct")
+    expect_identical(attr(utc[[column]], "tzone"), "UTC", info = column)
+    expect_identical(attr(paris[[column]], "tzone"), "Europe/Paris")
+    # Same instant, different display: the numeric value is unchanged.
+    expect_equal(
+      as.double(paris[[column]]),
+      as.double(utc[[column]]),
+      info = column
+    )
+  }
+  expect_equal(
+    as.double(utc$ts_utc_us),
+    as.double(as.POSIXct(c("2020-01-01", "2020-07-01", NA), tz = "UTC"))
+  )
+})
+
+test_that("a non-UTC timestamp is a wall clock re-anchored in tz", {
+  utc <- read_parquet(temporal_fixture())
+  paris <- read_parquet(temporal_fixture(), tz = "Europe/Paris")
+
+  for (column in c("ts_local_ms", "ts_local_us")) {
+    expect_s3_class(utc[[column]], "POSIXct")
+    # The civil components are what the file stores, so they do not move.
+    expect_identical(
+      format(paris[[column]], "%Y-%m-%d %H:%M:%S"),
+      format(utc[[column]], "%Y-%m-%d %H:%M:%S"),
+      info = column
+    )
+    # The instant does move, because the same wall clock in another zone is a
+    # different moment. Paris is ahead of UTC, so its instant is earlier.
+    expect_lt(as.double(paris[[column]][1]), as.double(utc[[column]][1]))
+  }
+})
+
+test_that("TIME reads as seconds since midnight in both modes", {
+  df <- read_parquet(temporal_fixture())
+  for (column in c("t_ms", "t_us", "t_ns")) {
+    expect_type(df[[column]], "double")
+    expect_false(inherits(df[[column]], "POSIXct"))
+    expect_equal(df[[column]][1], 0, info = column)
+    expect_equal(df[[column]][2], 86399.999999, tolerance = 1e-6, info = column)
+    expect_true(is.na(df[[column]][3]), info = column)
+  }
+
+  skip_if_not_installed("hms")
+  as_hms <- read_parquet(temporal_fixture(), time = "hms")
+  expect_s3_class(as_hms$t_ms, "hms")
+  expect_identical(format(as_hms$t_ms[1]), "00:00:00")
+})
+
+test_that("read_plan() reports the selected time and zone modes", {
+  is_time <- function(plan) which(plan$logical_type %in% "TIME")
+  numeric_plan <- read_plan(temporal_fixture())
+  expect_true(all(
+    startsWith(numeric_plan$converter[is_time(numeric_plan)], "time_numeric_")
+  ))
+  expect_true(any(grepl("_UTC$", numeric_plan$converter)))
+
+  paris <- read_plan(temporal_fixture(), tz = "Europe/Paris")
+  expect_true(any(grepl("Europe/Paris$", paris$converter)))
+
+  skip_if_not_installed("hms")
+  hms_plan <- read_plan(temporal_fixture(), time = "hms")
+  expect_identical(unique(hms_plan$r_type[is_time(hms_plan)]), "hms")
+})
+
+test_that("temporal values agree across all three read APIs", {
+  path <- temporal_fixture()
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+
+  eager <- read_parquet(path, tz = "Europe/Paris")
+  expect_identical(collect(file, tz = "Europe/Paris"), eager)
+
+  batches <- list()
+  walk_batches(
+    file,
+    function(batch, index) batches[[index]] <<- batch,
+    batch_size = 2L,
+    tz = "Europe/Paris"
+  )
+  expect_gt(length(batches), 1L)
+  expect_identical(do.call(rbind, batches), eager)
+})
+
+test_that("tz is validated before anything is read", {
+  expect_error(
+    read_parquet(temporal_fixture(), tz = "Mars/Olympus"),
+    "not a known time zone"
+  )
+  expect_error(
+    read_parquet(temporal_fixture(), tz = c("UTC", "GMT")),
+    "single time zone"
+  )
+  expect_error(read_parquet(temporal_fixture(), tz = NA), "single time zone")
+  # An empty zone would mean the machine's local zone, which the contract
+  # forbids using implicitly.
+  expect_error(read_parquet(temporal_fixture(), tz = ""), "single time zone")
+})

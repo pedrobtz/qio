@@ -9,11 +9,29 @@
 \usage{
 read_plan(x, ...)
 
-\method{read_plan}{qio_parquet_file}(x, ..., int64 = c("double", "integer64"))
+\method{read_plan}{qio_parquet_file}(
+  x,
+  ...,
+  int64 = c("double", "integer64"),
+  time = c("numeric", "hms"),
+  tz = "UTC"
+)
 
-\method{read_plan}{character}(x, ..., int64 = c("double", "integer64"))
+\method{read_plan}{character}(
+  x,
+  ...,
+  int64 = c("double", "integer64"),
+  time = c("numeric", "hms"),
+  tz = "UTC"
+)
 
-\method{read_plan}{data.frame}(x, ..., int64 = c("double", "integer64"))
+\method{read_plan}{data.frame}(
+  x,
+  ...,
+  int64 = c("double", "integer64"),
+  time = c("numeric", "hms"),
+  tz = "UTC"
+)
 }
 \arguments{
 \item{x}{A Parquet file path, a \code{qio_parquet_file} object, or the data frame
@@ -24,6 +42,10 @@ returned by \code{\link[=schema]{schema()}}.}
 \item{int64}{How 64-bit integer columns reach R; see \code{\link[=collect]{collect()}}. The plan
 reports the resulting \code{r_type} and \code{converter}, so it can be inspected for
 exactly the read that will follow.}
+
+\item{time}{How \code{TIME} columns reach R; see \code{\link[=collect]{collect()}}.}
+
+\item{tz}{Time zone for \code{TIMESTAMP} columns; see \code{\link[=collect]{collect()}}.}
 }
 \value{
 A \code{qio_read_plan} data frame with one row per physical leaf column

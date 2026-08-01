@@ -210,19 +210,30 @@ test_that("read_plan() applies UTC timestamps and rescales by unit", {
       ts_schema(sprintf("unit=%s, adjusted_to_utc=true", unit))
     )
     expect_equal(plan$r_type, "POSIXct")
-    expect_equal(plan$converter, paste0("timestamp_utc_", tolower(unit)))
+    # The converter carries the unit and the target zone.
+    expect_equal(
+      plan$converter,
+      paste0("timestamp_utc_", tolower(unit), "_UTC")
+    )
     expect_true(plan$collectible)
     expect_true(is.na(plan$note))
   }
 })
 
-test_that("read_plan() leaves non-UTC timestamps unapplied", {
+test_that("read_plan() reads a non-UTC timestamp as a wall clock in tz", {
   plan <- read_plan(ts_schema("unit=MICROS, adjusted_to_utc=false"))
 
-  expect_equal(plan$r_type, "double")
-  expect_equal(plan$converter, "int64")
+  expect_equal(plan$r_type, "POSIXct")
+  expect_equal(plan$converter, "timestamp_local_micros_UTC")
   expect_true(plan$collectible)
-  expect_match(plan$note, "TIMESTAMP is not yet applied")
+  expect_true(is.na(plan$note))
+
+  # The zone is part of the plan, so a different tz is a different converter.
+  in_paris <- read_plan(
+    ts_schema("unit=MICROS, adjusted_to_utc=false"),
+    tz = "Europe/Paris"
+  )
+  expect_equal(in_paris$converter, "timestamp_local_micros_Europe/Paris")
 })
 
 test_that("read_plan() rejects a data frame that is not a schema", {

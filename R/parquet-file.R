@@ -169,6 +169,15 @@ metadata.qio_parquet_file <- function(x, ...) {
 #'   64-bit range, and needs the suggested `bit64` package. Either way values
 #'   that cannot be represented become `NA` and one warning is emitted per
 #'   read. Unsigned 64-bit columns are never returned as negative numbers.
+#' @param time How `TIME` columns reach R: `"numeric"` (the default) returns
+#'   seconds since midnight, `"hms"` returns [hms::hms] and needs the suggested
+#'   `hms` package. Neither returns `POSIXct`, because a time of day is not an
+#'   instant.
+#' @param tz Time zone name, `"UTC"` by default. A UTC-adjusted `TIMESTAMP` is
+#'   an instant, so `tz` changes only how it prints. A non-UTC `TIMESTAMP` is a
+#'   wall clock with no zone stored, so its civil components are interpreted in
+#'   `tz`; base R decides ambiguous and nonexistent times at daylight-saving
+#'   boundaries. The machine's local zone is never used implicitly.
 #'
 #' @return A data frame.
 #' @export
@@ -190,11 +199,18 @@ collect.qio_parquet_file <- function(
   columns = NULL,
   row_groups = NULL,
   batch_size = 65536L,
-  int64 = c("double", "integer64")
+  int64 = c("double", "integer64"),
+  time = c("numeric", "hms"),
+  tz = "UTC"
 ) {
   qio_empty_dots(...)
-  options <- qio_read_options(int64 = int64)
-  plan <- read_plan(x, int64 = options$int64)
+  options <- qio_read_options(int64 = int64, time = time, tz = tz)
+  plan <- read_plan(
+    x,
+    int64 = options$int64,
+    time = options$time,
+    tz = options$tz
+  )
   columns <- qio_select_columns(plan, qio_columns(columns))
   qio_message_decimal(plan, columns)
   row_groups <- qio_row_groups(row_groups)
@@ -237,13 +253,20 @@ walk_batches <- function(
   columns = NULL,
   row_groups = NULL,
   batch_size = 65536L,
-  int64 = c("double", "integer64")
+  int64 = c("double", "integer64"),
+  time = c("numeric", "hms"),
+  tz = "UTC"
 ) {
   if (!is.function(FUN)) {
     stop("`FUN` must be a function.", call. = FALSE)
   }
-  options <- qio_read_options(int64 = int64)
-  plan <- read_plan(x, int64 = options$int64)
+  options <- qio_read_options(int64 = int64, time = time, tz = tz)
+  plan <- read_plan(
+    x,
+    int64 = options$int64,
+    time = options$time,
+    tz = options$tz
+  )
   columns <- qio_select_columns(plan, qio_columns(columns))
   qio_message_decimal(plan, columns)
   row_groups <- qio_row_groups(row_groups)
@@ -418,6 +441,7 @@ qio_column_kinds <- function(plan, columns) {
   # Byte-array decimals need their raw bytes; integer-backed ones decode as
   # ordinary numbers and are scaled by the plan.
   kind[startsWith(converter, "decimal_binary_")] <- 3L # BINARY
+  kind[converter == "uint32"] <- 4L # UINT32
   kind
 }
 

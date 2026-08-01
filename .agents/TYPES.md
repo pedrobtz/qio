@@ -26,9 +26,9 @@ precedence over physical fallbacks.
 ## Current behavior
 
 Nulls become the corresponding R `NA`. Materializing reads accept `int64`,
-which selects how 64-bit integer columns reach R; see
-[64-bit integers](#64-bit-integers). Unsigned 64-bit columns are never returned
-as negative values.
+`time`, and `tz`; see [64-bit integers](#64-bit-integers) and
+[Timestamps and time of day](#timestamps-and-time-of-day). Unsigned columns are
+never returned as negative values, at any width.
 
 ### Reads
 

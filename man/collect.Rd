@@ -13,7 +13,9 @@ collect(x, ...)
   columns = NULL,
   row_groups = NULL,
   batch_size = 65536L,
-  int64 = c("double", "integer64")
+  int64 = c("double", "integer64"),
+  time = c("numeric", "hms"),
+  tz = "UTC"
 )
 }
 \arguments{
@@ -40,6 +42,17 @@ is exact from \code{-2^53} through \code{2^53} and returns \code{NA} outside it.
 64-bit range, and needs the suggested \code{bit64} package. Either way values
 that cannot be represented become \code{NA} and one warning is emitted per
 read. Unsigned 64-bit columns are never returned as negative numbers.}
+
+\item{time}{How \code{TIME} columns reach R: \code{"numeric"} (the default) returns
+seconds since midnight, \code{"hms"} returns \link[hms:hms]{hms::hms} and needs the suggested
+\code{hms} package. Neither returns \code{POSIXct}, because a time of day is not an
+instant.}
+
+\item{tz}{Time zone name, \code{"UTC"} by default. A UTC-adjusted \code{TIMESTAMP} is
+an instant, so \code{tz} changes only how it prints. A non-UTC \code{TIMESTAMP} is a
+wall clock with no zone stored, so its civil components are interpreted in
+\code{tz}; base R decides ambiguous and nonexistent times at daylight-saving
+boundaries. The machine's local zone is never used implicitly.}
 }
 \value{
 A data frame.
