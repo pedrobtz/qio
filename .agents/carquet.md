@@ -136,6 +136,31 @@ selected chunks within one row group.
 The qio build enables NEON on ARM64. x86 objects lack the per-file flags needed
 to activate their SIMD paths and normally use scalar code.
 
+## Encodings the reader cannot handle
+
+Established against `datapage_v2.snappy.parquet`, which Apache Arrow reads
+without trouble:
+
+| Encoding | Status |
+|---|---|
+| `PLAIN`, `PLAIN_DICTIONARY`, `RLE_DICTIONARY` in DATA_PAGE (v1) | works |
+| `DELTA_BINARY_PACKED` | works, including in DATA_PAGE_V2 |
+| `BYTE_STREAM_SPLIT` | works |
+| Dictionary inside a DATA_PAGE_V2 page | fails: "Expected data page" |
+| `RLE` as a data encoding, used for `BOOLEAN` | fails: "Unsupported encoding: 3" |
+
+The second is genuinely unimplemented, though carquet's own error hint claims
+RLE is supported. The first looks like a bug rather than a gap: the V2 path
+handles `RLE_DICTIONARY`, but `load_next_page_*` recomputes the first data page
+offset as dictionary offset plus header plus compressed size, overriding the
+offset declared in the column chunk. That heuristic exists for writers that
+declare it wrongly, and it appears to misfire here.
+
+`carquet_column_read_batch()` returns a bare negative on failure, discarding
+both the status and the hint its internals produced, so qio cannot report why a
+column failed. It names the column's encodings from
+`carquet_reader_column_chunk_metadata()` instead.
+
 ## Dictionary reads
 
 Dictionary preservation is chosen from the first page. It works only while the

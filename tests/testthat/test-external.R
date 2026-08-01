@@ -53,11 +53,38 @@ test_that("alltypes files read their INT96 timestamp_col", {
   }
 })
 
-# --- DATA_PAGE_V2 with delta encodings: not yet readable --------------------
-test_that("DATA_PAGE_V2 delta-encoded file is not yet readable", {
+# --- DATA_PAGE_V2: which encodings are readable -----------------------------
+# Not a delta problem, despite the fixture's name. DELTA_BINARY_PACKED reads
+# fine; what fails is dictionary encoding inside a DATA_PAGE_V2 page, and RLE
+# used as a data encoding for BOOLEAN. Both are carquet limitations recorded in
+# .agents/carquet.md. Apache Arrow reads this file, so it is qio that is short.
+
+test_that("a DATA_PAGE_V2 delta-encoded column reads", {
+  file <- parquet_open(ext("datapage_v2.snappy.parquet"))
+  withr::defer(parquet_close(file))
+  expect_identical(collect(file, columns = "b")$b, 1:5)
+})
+
+test_that("unsupported encodings fail naming the column and its encodings", {
+  # The failure used to read "column 1 of row group 1 yielded 0 of 5 rows",
+  # which looks like corruption rather than a limitation: carquet reports a
+  # negative return for a decode error, and that was being treated as a short
+  # read.
+  file <- parquet_open(ext("datapage_v2.snappy.parquet"))
+  withr::defer(parquet_close(file))
+
+  expect_error(
+    collect(file, columns = "a"),
+    "cannot decode column 'a'.*RLE_DICTIONARY.*not supported"
+  )
+  expect_error(
+    collect(file, columns = "d"),
+    "cannot decode column 'd'.*RLE.*not supported"
+  )
+  # Whole-file reads surface the same message rather than a row-count mismatch.
   expect_error(
     suppressMessages(read_parquet(ext("datapage_v2.snappy.parquet"))),
-    "qio:"
+    "cannot decode column"
   )
 })
 

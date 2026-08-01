@@ -1069,6 +1069,7 @@ typedef struct {
     int int64_mode;
     int is_unsigned64;
     int int64_coerced;   /* task-local; merged with int32_sentinel */
+    int decode_failed;   /* carquet returned an error, not a short read */
     int kind;
     char message[256];
 } qio_column_task_t;
@@ -1104,12 +1105,19 @@ static void qio_column_task_run(void *arg) {
         if (want > batch) want = batch;
         int64_t n = carquet_column_read_batch(column, values, want, defs,
                                               NULL);
+        if (n < 0) {
+            /* A decode failure, not a short read. Workers cannot call the R
+             * API, so the main thread turns this into a message naming the
+             * column's encodings. */
+            task->decode_failed = 1;
+            task->status = 1;
+            goto done;
+        }
         if (n != want) {
             snprintf(task->message, sizeof(task->message),
                      "column %d of row group %d yielded %lld of %lld rows",
                      task->file_column + 1, task->row_group + 1,
-                     (long long)(read + (n > 0 ? n : 0)),
-                     (long long)task->rows);
+                     (long long)(read + n), (long long)task->rows);
             task->status = 1;
             goto done;
         }
@@ -1169,6 +1177,30 @@ static bool qio_row_group_filter(const carquet_reader_t *reader,
         (qio_row_group_filter_t *)user_data;
     return row_group_index >= 0 && row_group_index < filter->length &&
            filter->mask[row_group_index];
+}
+
+/* Describe a column's encodings for an error message. carquet's
+ * carquet_column_read_batch() returns a bare negative on failure, discarding
+ * the status and hint its internals produced, so a column whose encoding is
+ * not supported is indistinguishable from a short read. Naming the encodings
+ * is the most useful thing available through the public API. */
+static const char *qio_column_encodings(carquet_reader_t *reader,
+                                        int32_t row_group, int32_t column) {
+    carquet_column_chunk_metadata_t meta;
+    if (carquet_reader_column_chunk_metadata(reader, row_group, column,
+                                             &meta) != CARQUET_OK) {
+        return "unknown";
+    }
+    char *out = (char *)R_alloc(256, sizeof(char));
+    out[0] = '\0';
+    size_t at = 0;
+    for (int32_t i = 0; i < meta.num_encodings && at < 200; i++) {
+        int written = snprintf(out + at, 256 - at, "%s%s", at ? ", " : "",
+                               carquet_encoding_name(meta.encodings[i]));
+        if (written <= 0) break;
+        at += (size_t)written;
+    }
+    return out[0] ? out : "unknown";
 }
 
 static void qio_prepare_selection(qio_parquet_handle_t *handle,
@@ -1669,6 +1701,16 @@ static SEXP qio_collect_body(void *data) {
         for (int32_t t = 0; t < n_tasks; t++) {
             qio_column_task_run(&tasks[t]);
             if (tasks[t].status) {
+                if (tasks[t].decode_failed) {
+                    Rf_error("qio: cannot decode column '%s' of row group %d; "
+                             "its encodings are %s and one of them is not "
+                             "supported",
+                             carquet_schema_column_name(schema,
+                                                        tasks[t].file_column),
+                             tasks[t].row_group + 1,
+                             qio_column_encodings(reader, tasks[t].row_group,
+                                                  tasks[t].file_column));
+                }
                 Rf_error("qio: %s", tasks[t].message);
             }
             R_CheckUserInterrupt();
@@ -1729,11 +1771,20 @@ static SEXP qio_collect_body(void *data) {
                     if (want > chunk) want = chunk;
                     int64_t n = carquet_column_read_batch(col, value_buf, want,
                                                           def_ptr, NULL);
+                    if (n < 0) {
+                        Rf_error("qio: cannot decode column '%s' of row group "
+                                 "%d; its encodings are %s and one of them is "
+                                 "not supported",
+                                 carquet_schema_column_name(schema, file_col),
+                                 rg_index[s] + 1,
+                                 qio_column_encodings(reader, rg_index[s],
+                                                      file_col));
+                    }
                     if (n != want) {
-                        Rf_error("qio: column %d of row group %d yielded %lld "
+                        Rf_error("qio: column '%s' of row group %d yielded %lld "
                                  "of %lld rows",
-                                 file_col + 1, rg_index[s] + 1,
-                                 (long long)(read + (n > 0 ? n : 0)),
+                                 carquet_schema_column_name(schema, file_col),
+                                 rg_index[s] + 1, (long long)(read + n),
                                  (long long)rg_rows[s]);
                     }
                     /* Scatter before the next read: BYTE_ARRAY values point
@@ -1779,6 +1830,15 @@ static SEXP qio_collect_body(void *data) {
     }
     for (int32_t t = 0; t < n_tasks; t++) {
         if (tasks[t].status) {
+            if (tasks[t].decode_failed) {
+                Rf_error("qio: cannot decode column '%s' of row group %d; its "
+                         "encodings are %s and one of them is not supported",
+                         carquet_schema_column_name(schema,
+                                                    tasks[t].file_column),
+                         tasks[t].row_group + 1,
+                         qio_column_encodings(reader, tasks[t].row_group,
+                                              tasks[t].file_column));
+            }
             Rf_error("qio: %s", tasks[t].message);
         }
         if (tasks[t].int32_sentinel) context->int32_sentinel = 1;

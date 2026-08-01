@@ -1,5 +1,9 @@
 # qio 0.0.0.9000
 
+* A column whose encoding is not supported now fails with a message naming the
+  column and its encodings, instead of reporting a row-count mismatch that
+  looked like file corruption.
+
 * `write_parquet()` no longer allocates scratch proportional to the number of
   rows, and can be interrupted. Columns are encoded in fixed chunks; peak
   memory for a 4-million-row string column fell from 101MB to 40MB.
