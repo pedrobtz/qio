@@ -520,3 +520,77 @@ qio_empty_dots <- function(...) {
   }
   invisible(NULL)
 }
+
+#' Inspect Parquet column chunks
+#'
+#' Reports how each column is stored in each row group: its physical type,
+#' compression, sizes, encodings, and which optional structures are present.
+#' One row per column per row group.
+#'
+#' @param x A `qio_parquet_file` object.
+#' @param ... Reserved for future use.
+#'
+#' @return A data frame with one row per column chunk. `encodings` lists the
+#'   encodings the chunk declares, comma separated. `page_index` is `TRUE` when
+#'   either a column index or an offset index is present.
+#' @seealso [column_statistics()], [row_groups()]
+#' @export
+#' @examples
+#' path <- tempfile(fileext = ".parquet")
+#' write_parquet(mtcars, path, row_group_size = 16)
+#' pf <- parquet_open(path)
+#' column_chunks(pf)
+#' parquet_close(pf)
+column_chunks <- function(x, ...) {
+  UseMethod("column_chunks")
+}
+
+#' @rdname column_chunks
+#' @export
+column_chunks.qio_parquet_file <- function(x, ...) {
+  qio_empty_dots(...)
+  .Call(C_qio_parquet_column_chunks, x)
+}
+
+#' Inspect Parquet column statistics
+#'
+#' Reports the per-column, per-row-group statistics recorded in the file: value
+#' and null counts, and the minimum and maximum bounds.
+#'
+#' These are **claims made by whoever wrote the file**, not facts qio verifies.
+#' A reader that skips a row group on them is trusting that writer. qio does not
+#' use them to skip anything.
+#'
+#' `min` and `max` are list columns, because one file can hold columns of
+#' different types. Each element holds the bound decoded at the *physical*
+#' level: an `INT64` bound stays a number rather than becoming a `POSIXct`, and
+#' a decimal is not scaled, since a bound is a sort key rather than a value to
+#' compute with. Text columns are the exception and decode to character. An
+#' element is `NULL` when the bound is absent, or is present but the wrong width
+#' for its type.
+#'
+#' @param x A `qio_parquet_file` object.
+#' @param ... Reserved for future use.
+#'
+#' @return A data frame with one row per column chunk. `null_count` and
+#'   `distinct_count` are `NA` when the file does not record them.
+#' @seealso [column_chunks()], [row_groups()]
+#' @export
+#' @examples
+#' path <- tempfile(fileext = ".parquet")
+#' write_parquet(data.frame(n = 1:100), path, row_group_size = 25)
+#' pf <- parquet_open(path)
+#' stats <- column_statistics(pf)
+#' stats[c("row_group", "name", "null_count")]
+#' unlist(stats$min)
+#' parquet_close(pf)
+column_statistics <- function(x, ...) {
+  UseMethod("column_statistics")
+}
+
+#' @rdname column_statistics
+#' @export
+column_statistics.qio_parquet_file <- function(x, ...) {
+  qio_empty_dots(...)
+  .Call(C_qio_parquet_column_statistics, x)
+}

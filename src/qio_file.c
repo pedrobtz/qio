@@ -2226,6 +2226,255 @@ SEXP qio_parquet_row_groups(SEXP file) {
     return result;
 }
 
+/* Physical width of a statistics min/max payload, or 0 when the type is
+ * variable-length. Statistics are PLAIN-encoded, so a fixed-width type has one
+ * exact size and anything else is a malformed footer to be ignored rather than
+ * decoded. */
+static int32_t qio_statistic_width(carquet_physical_type_t type,
+                                   int32_t type_length) {
+    switch (type) {
+    case CARQUET_PHYSICAL_BOOLEAN: return 1;
+    case CARQUET_PHYSICAL_INT32:
+    case CARQUET_PHYSICAL_FLOAT: return 4;
+    case CARQUET_PHYSICAL_INT64:
+    case CARQUET_PHYSICAL_DOUBLE: return 8;
+    case CARQUET_PHYSICAL_INT96: return 12;
+    case CARQUET_PHYSICAL_FIXED_LEN_BYTE_ARRAY: return type_length;
+    default: return 0; /* BYTE_ARRAY */
+    }
+}
+
+/* One statistics bound as an R value.
+ *
+ * These are the writer's claims about its own data, decoded at the physical
+ * level only: no timestamp becomes a POSIXct and no decimal is scaled, because
+ * a bound is a sort key rather than a value to compute with, and silently
+ * reinterpreting it would invite arithmetic that the annotation does not
+ * license. Text is the exception, since a string bound is unreadable as bytes.
+ *
+ * Returns R_NilValue when the bound is absent or the wrong width, which the
+ * caller stores as NULL rather than guessing. */
+static SEXP qio_statistic_value(const void *bytes, int32_t size,
+                                carquet_physical_type_t type,
+                                int32_t type_length, int is_text) {
+    if (!bytes || size < 0) return R_NilValue;
+    int32_t width = qio_statistic_width(type, type_length);
+    if (width > 0 && size != width) return R_NilValue;
+
+    switch (type) {
+    case CARQUET_PHYSICAL_BOOLEAN:
+        return Rf_ScalarLogical(((const uint8_t *)bytes)[0] != 0);
+    case CARQUET_PHYSICAL_INT32: {
+        int32_t value;
+        memcpy(&value, bytes, sizeof(value));
+        /* R's integer reserves INT_MIN for NA, so a legal Parquet bound of
+         * -2147483648 would read as missing; widen it instead. */
+        if (value == NA_INTEGER) return Rf_ScalarReal((double)value);
+        return Rf_ScalarInteger(value);
+    }
+    case CARQUET_PHYSICAL_INT64: {
+        int64_t value;
+        memcpy(&value, bytes, sizeof(value));
+        return Rf_ScalarReal((double)value);
+    }
+    case CARQUET_PHYSICAL_FLOAT: {
+        float value;
+        memcpy(&value, bytes, sizeof(value));
+        return Rf_ScalarReal((double)value);
+    }
+    case CARQUET_PHYSICAL_DOUBLE: {
+        double value;
+        memcpy(&value, bytes, sizeof(value));
+        return Rf_ScalarReal(value);
+    }
+    default:
+        break;
+    }
+
+    if (type == CARQUET_PHYSICAL_BYTE_ARRAY && is_text) {
+        /* Positive is the 1-based offset of the first bad byte; 0 means the
+         * whole range is well formed. */
+        if (qio_utf8_invalid_at((const uint8_t *)bytes, size) > 0) {
+            return R_NilValue; /* annotated as text but not valid UTF-8 */
+        }
+        return Rf_ScalarString(
+            Rf_mkCharLenCE((const char *)bytes, (int)size, CE_UTF8));
+    }
+
+    SEXP raw = PROTECT(Rf_allocVector(RAWSXP, size));
+    if (size > 0) memcpy(RAW(raw), bytes, (size_t)size);
+    UNPROTECT(1);
+    return raw;
+}
+
+SEXP qio_parquet_column_chunks(SEXP file) {
+    qio_parquet_handle_t *handle = qio_get_handle(file, 0);
+    const carquet_schema_t *schema = carquet_reader_schema(handle->reader);
+    int32_t groups = carquet_reader_num_row_groups(handle->reader);
+    int32_t columns = carquet_reader_num_columns(handle->reader);
+    R_xlen_t rows = (R_xlen_t)groups * columns;
+
+    const int ncol = 12;
+    const char *column_names[] = {
+        "row_group",       "column",      "name",         "type",
+        "compression",     "num_values",  "compressed_bytes",
+        "uncompressed_bytes", "encodings", "dictionary_page",
+        "bloom_filter",    "page_index"};
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, ncol));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, ncol));
+    SET_VECTOR_ELT(result, 0, Rf_allocVector(INTSXP, rows));
+    SET_VECTOR_ELT(result, 1, Rf_allocVector(INTSXP, rows));
+    SET_VECTOR_ELT(result, 2, Rf_allocVector(STRSXP, rows));
+    SET_VECTOR_ELT(result, 3, Rf_allocVector(STRSXP, rows));
+    SET_VECTOR_ELT(result, 4, Rf_allocVector(STRSXP, rows));
+    SET_VECTOR_ELT(result, 5, Rf_allocVector(REALSXP, rows));
+    SET_VECTOR_ELT(result, 6, Rf_allocVector(REALSXP, rows));
+    SET_VECTOR_ELT(result, 7, Rf_allocVector(REALSXP, rows));
+    SET_VECTOR_ELT(result, 8, Rf_allocVector(STRSXP, rows));
+    SET_VECTOR_ELT(result, 9, Rf_allocVector(LGLSXP, rows));
+    SET_VECTOR_ELT(result, 10, Rf_allocVector(LGLSXP, rows));
+    SET_VECTOR_ELT(result, 11, Rf_allocVector(LGLSXP, rows));
+    for (int i = 0; i < ncol; i++)
+        SET_STRING_ELT(names, i, Rf_mkChar(column_names[i]));
+
+    R_xlen_t at = 0;
+    for (int32_t g = 0; g < groups; g++) {
+        for (int32_t c = 0; c < columns; c++, at++) {
+            carquet_column_chunk_metadata_t chunk;
+            carquet_status_t status = carquet_reader_column_chunk_metadata(
+                handle->reader, g, c, &chunk);
+            if (status != CARQUET_OK) {
+                Rf_error("qio: cannot inspect column %d of row group %d: %s",
+                         c + 1, g + 1, carquet_status_string(status));
+            }
+            INTEGER(VECTOR_ELT(result, 0))[at] = g + 1;
+            INTEGER(VECTOR_ELT(result, 1))[at] = c + 1;
+            SET_STRING_ELT(VECTOR_ELT(result, 2), at,
+                           qio_column_path_string(schema, c));
+            SET_STRING_ELT(VECTOR_ELT(result, 3), at,
+                           Rf_mkChar(carquet_physical_type_name(chunk.type)));
+            SET_STRING_ELT(VECTOR_ELT(result, 4), at,
+                           Rf_mkChar(carquet_compression_name(chunk.codec)));
+            REAL(VECTOR_ELT(result, 5))[at] = (double)chunk.num_values;
+            REAL(VECTOR_ELT(result, 6))[at] =
+                (double)chunk.total_compressed_size;
+            REAL(VECTOR_ELT(result, 7))[at] =
+                (double)chunk.total_uncompressed_size;
+
+            /* One comma-separated string rather than a list column: the set is
+             * tiny, bounded at four, and useful mostly for reading. */
+            char encodings[128];
+            size_t used = 0;
+            encodings[0] = '\0';
+            for (int32_t e = 0; e < chunk.num_encodings && e < 4; e++) {
+                const char *name = carquet_encoding_name(chunk.encodings[e]);
+                int wrote = snprintf(encodings + used, sizeof(encodings) - used,
+                                     "%s%s", used ? ", " : "", name);
+                if (wrote < 0 || (size_t)wrote >= sizeof(encodings) - used) break;
+                used += (size_t)wrote;
+            }
+            SET_STRING_ELT(VECTOR_ELT(result, 8), at, Rf_mkChar(encodings));
+
+            LOGICAL(VECTOR_ELT(result, 9))[at] = chunk.has_dictionary_page;
+            LOGICAL(VECTOR_ELT(result, 10))[at] = chunk.has_bloom_filter;
+            LOGICAL(VECTOR_ELT(result, 11))[at] =
+                chunk.has_column_index || chunk.has_offset_index;
+        }
+    }
+
+    qio_set_data_frame_attributes(result, names, (int32_t)rows);
+    UNPROTECT(2);
+    return result;
+}
+
+SEXP qio_parquet_column_statistics(SEXP file) {
+    qio_parquet_handle_t *handle = qio_get_handle(file, 0);
+    const carquet_schema_t *schema = carquet_reader_schema(handle->reader);
+    int32_t groups = carquet_reader_num_row_groups(handle->reader);
+    int32_t columns = carquet_reader_num_columns(handle->reader);
+    R_xlen_t rows = (R_xlen_t)groups * columns;
+
+    const int ncol = 8;
+    const char *column_names[] = {"row_group", "column",   "name",
+                                  "num_values", "null_count", "distinct_count",
+                                  "min",        "max"};
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, ncol));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, ncol));
+    SET_VECTOR_ELT(result, 0, Rf_allocVector(INTSXP, rows));
+    SET_VECTOR_ELT(result, 1, Rf_allocVector(INTSXP, rows));
+    SET_VECTOR_ELT(result, 2, Rf_allocVector(STRSXP, rows));
+    SET_VECTOR_ELT(result, 3, Rf_allocVector(REALSXP, rows));
+    SET_VECTOR_ELT(result, 4, Rf_allocVector(REALSXP, rows));
+    SET_VECTOR_ELT(result, 5, Rf_allocVector(REALSXP, rows));
+    /* Bounds are list columns: one row's type is its column's type, and the
+     * frame spans every column in the file. */
+    SET_VECTOR_ELT(result, 6, Rf_allocVector(VECSXP, rows));
+    SET_VECTOR_ELT(result, 7, Rf_allocVector(VECSXP, rows));
+    for (int i = 0; i < ncol; i++)
+        SET_STRING_ELT(names, i, Rf_mkChar(column_names[i]));
+
+    const carquet_schema_node_t **leaves =
+        (const carquet_schema_node_t **)R_alloc(
+            (size_t)(columns > 0 ? columns : 1), sizeof(*leaves));
+    if (qio_leaf_nodes(schema, leaves, columns) != columns) {
+        Rf_error("qio: parquet schema does not describe all %d columns",
+                 columns);
+    }
+
+    R_xlen_t at = 0;
+    for (int32_t g = 0; g < groups; g++) {
+        for (int32_t c = 0; c < columns; c++, at++) {
+            INTEGER(VECTOR_ELT(result, 0))[at] = g + 1;
+            INTEGER(VECTOR_ELT(result, 1))[at] = c + 1;
+            SET_STRING_ELT(VECTOR_ELT(result, 2), at,
+                           qio_column_path_string(schema, c));
+
+            carquet_column_statistics_t stats;
+            memset(&stats, 0, sizeof(stats));
+            carquet_status_t status = carquet_reader_column_statistics(
+                handle->reader, g, c, &stats);
+            if (status != CARQUET_OK) {
+                /* A column with no statistics is normal, not an error. */
+                REAL(VECTOR_ELT(result, 3))[at] = NA_REAL;
+                REAL(VECTOR_ELT(result, 4))[at] = NA_REAL;
+                REAL(VECTOR_ELT(result, 5))[at] = NA_REAL;
+                continue;
+            }
+
+            REAL(VECTOR_ELT(result, 3))[at] = (double)stats.num_values;
+            REAL(VECTOR_ELT(result, 4))[at] =
+                stats.has_null_count ? (double)stats.null_count : NA_REAL;
+            REAL(VECTOR_ELT(result, 5))[at] =
+                stats.has_distinct_count ? (double)stats.distinct_count
+                                         : NA_REAL;
+            if (!stats.has_min_max) continue;
+
+            carquet_physical_type_t type = carquet_schema_column_type(schema, c);
+            const carquet_logical_type_t *logical =
+                carquet_schema_node_logical_type(leaves[c]);
+            int is_text = logical && (logical->id == CARQUET_LOGICAL_STRING ||
+                                      logical->id == CARQUET_LOGICAL_ENUM ||
+                                      logical->id == CARQUET_LOGICAL_JSON);
+            int32_t type_length = carquet_schema_node_type_length(leaves[c]);
+
+            SEXP low = PROTECT(qio_statistic_value(stats.min_value,
+                                                   stats.min_value_size, type,
+                                                   type_length, is_text));
+            SEXP high = PROTECT(qio_statistic_value(stats.max_value,
+                                                    stats.max_value_size, type,
+                                                    type_length, is_text));
+            if (low != R_NilValue) SET_VECTOR_ELT(VECTOR_ELT(result, 6), at, low);
+            if (high != R_NilValue)
+                SET_VECTOR_ELT(VECTOR_ELT(result, 7), at, high);
+            UNPROTECT(2);
+        }
+    }
+
+    qio_set_data_frame_attributes(result, names, (int32_t)rows);
+    UNPROTECT(2);
+    return result;
+}
+
 SEXP qio_parquet_metadata(SEXP file) {
     qio_parquet_handle_t *handle = qio_get_handle(file, 0);
     int32_t rows = carquet_reader_num_metadata(handle->reader);

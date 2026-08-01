@@ -2,7 +2,8 @@
  * qio.c — R -> carquet glue for writing Parquet files.
  *
  * Exposes one .Call entry point:
- *   qio_write_parquet(x, path, codec, schema) -> invisible(path)
+ *   qio_write_parquet(x, path, codec, schema, row_group, metadata)
+ *       -> invisible(path)
  *
  * The read path lives in qio_file.c (the persistent handle and its collect /
  * walk / metadata entry points); read_parquet() is parquet_open() + collect().
@@ -73,10 +74,13 @@ typedef struct {
     SEXP x;
     SEXP path_sexp;
     SEXP nms;
+    SEXP meta_keys;   /* character, or R_NilValue */
+    SEXP meta_values; /* character, same length as meta_keys */
     qio_path_t path;
     carquet_compression_t codec;
     int ncol;
     R_xlen_t nrow;
+    R_xlen_t row_group_rows; /* 0 means one row group for the whole frame */
     const int *ptype;
     const int *ltype;
     const int *time_unit;
@@ -181,6 +185,28 @@ static SEXP qio_write_body(void *data) {
         Rf_error("qio: cannot create '%s': %s", ctx->path.display, err.message);
     }
 
+    /* Footer key/value metadata, added before any data so a failure costs
+     * nothing. Keys and values are written as UTF-8; carquet copies both. */
+    if (ctx->meta_keys != R_NilValue) {
+        R_xlen_t entries = XLENGTH(ctx->meta_keys);
+        for (R_xlen_t m = 0; m < entries; m++) {
+            void *vmax_entry = vmaxget();
+            const char *key = Rf_translateCharUTF8(STRING_ELT(ctx->meta_keys, m));
+            SEXP value_elt = STRING_ELT(ctx->meta_values, m);
+            /* NA is not a value; carquet accepts NULL and writes an empty one. */
+            const char *value = value_elt == NA_STRING
+                                    ? NULL
+                                    : Rf_translateCharUTF8(value_elt);
+            carquet_status_t added =
+                carquet_writer_add_metadata(ctx->writer, key, value);
+            if (added != CARQUET_OK) {
+                Rf_error("qio: failed to add metadata key '%s': %s", key,
+                         carquet_status_string(added));
+            }
+            vmaxset(vmax_entry);
+        }
+    }
+
     /* Rows moved per carquet_writer_write_batch() call. Bounds the scratch a
      * write allocates and gives interrupts somewhere to land: a column used to
      * be encoded in one pass, so a large frame allocated nrow-sized buffers per
@@ -191,6 +217,25 @@ static SEXP qio_write_body(void *data) {
      * each call separately, and BOOLEAN bit packing restarted at each call.
      * See .agents/VENDORED.md. */
 #define QIO_WRITE_CHUNK 65536
+
+    /* Row groups are the unit other readers prune on, so they are written
+     * row-group-major: every column advances through one group before the next
+     * begins. carquet requires all columns to sit at the same logical row
+     * before a group ends, and its own byte-target flush only fires when they
+     * do, which under qio's column-at-a-time ordering means never until the
+     * last column. An explicit boundary is the only way to get more than one.
+     *
+     * `row_group_rows` of 0 means one group for the whole frame, which is what
+     * qio always produced before. */
+    R_xlen_t group_rows = ctx->row_group_rows > 0 ? ctx->row_group_rows : nrow;
+    if (group_rows < 1) group_rows = 1;
+    R_xlen_t num_groups = (nrow + group_rows - 1) / group_rows;
+    if (num_groups < 1) num_groups = 1; /* a zero-row frame still declares its columns */
+
+    for (R_xlen_t group = 0; group < num_groups; group++) {
+        R_xlen_t group_start = group * group_rows;
+        R_xlen_t group_end = group_start + group_rows;
+        if (group_end > nrow) group_end = nrow;
 
     for (int c = 0; c < ncol; c++) {
         void *vmax_column = vmaxget();
@@ -207,8 +252,8 @@ static SEXP qio_write_body(void *data) {
         }
         void *buf = R_alloc(chunk, (int)width);
 
-        for (R_xlen_t row0 = 0; row0 < nrow; row0 += chunk) {
-            R_xlen_t len = nrow - row0;
+        for (R_xlen_t row0 = group_start; row0 < group_end; row0 += chunk) {
+            R_xlen_t len = group_end - row0;
             if (len > chunk) len = chunk;
             /* Translated strings live only for this chunk. */
             void *vmax_chunk = vmaxget();
@@ -354,6 +399,19 @@ static SEXP qio_write_body(void *data) {
         vmaxset(vmax_column);
     }
 
+        /* Closed only between groups: close() finalizes the last one, and an
+         * empty trailing group would otherwise appear in the footer. */
+        if (group + 1 < num_groups) {
+            carquet_status_t boundary =
+                carquet_writer_new_row_group(ctx->writer);
+            if (boundary != CARQUET_OK) {
+                Rf_error("qio: failed to close row group %lld: %s",
+                         (long long)group + 1,
+                         carquet_status_string(boundary));
+            }
+        }
+    }
+
     carquet_writer_t *writer = ctx->writer;
     ctx->writer = NULL;  /* close consumes the handle; never abort it after */
     if (carquet_writer_close(writer) != CARQUET_OK) {
@@ -375,7 +433,8 @@ static SEXP qio_write_body(void *data) {
     return ctx->path_sexp;
 }
 
-SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp) {
+SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
+                       SEXP row_group_sexp, SEXP meta_sexp) {
     if (TYPEOF(x) != VECSXP)
         Rf_error("qio: `x` must be a data.frame");
     if (TYPEOF(path_sexp) != STRSXP || LENGTH(path_sexp) < 1)
@@ -403,6 +462,28 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp) 
         Rf_error("qio: more than %d rows is not supported", INT_MAX);
 
     SEXP nms = Rf_getAttrib(x, R_NamesSymbol);
+
+    /* R has already validated and normalized both of these; the checks here
+     * guard the native contract, not the user. */
+    R_xlen_t row_group_rows = 0;
+    if (row_group_sexp != R_NilValue) {
+        double requested = Rf_asReal(row_group_sexp);
+        if (!R_FINITE(requested) || requested < 1)
+            Rf_error("qio: invalid `row_group_size`");
+        row_group_rows = (R_xlen_t)requested;
+    }
+
+    SEXP meta_keys = R_NilValue;
+    SEXP meta_values = R_NilValue;
+    if (meta_sexp != R_NilValue) {
+        if (TYPEOF(meta_sexp) != VECSXP || LENGTH(meta_sexp) != 2)
+            Rf_error("qio: invalid `metadata`");
+        meta_keys = VECTOR_ELT(meta_sexp, 0);
+        meta_values = VECTOR_ELT(meta_sexp, 1);
+        if (TYPEOF(meta_keys) != STRSXP || TYPEOF(meta_values) != STRSXP ||
+            XLENGTH(meta_keys) != XLENGTH(meta_values))
+            Rf_error("qio: invalid `metadata`");
+    }
 
     SEXP ptype_sexp = VECTOR_ELT(spec_sexp, 0);
     SEXP ltype_sexp = VECTOR_ELT(spec_sexp, 1);
@@ -457,10 +538,13 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp) 
     ctx.x = x;
     ctx.path_sexp = path_sexp;
     ctx.nms = nms;
+    ctx.meta_keys = meta_keys;
+    ctx.meta_values = meta_values;
     ctx.path = path;
     ctx.codec = codec;
     ctx.ncol = ncol;
     ctx.nrow = nrow;
+    ctx.row_group_rows = row_group_rows;
     ctx.ptype = ptype;
     ctx.ltype = ltype;
     ctx.time_unit = time_unit;
@@ -479,7 +563,7 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp) 
 /* ------------------------------------------------------------------------- */
 
 static const R_CallMethodDef CallEntries[] = {
-    {"qio_write_parquet", (DL_FUNC)&qio_write_parquet, 4},
+    {"qio_write_parquet", (DL_FUNC)&qio_write_parquet, 6},
     {"qio_parquet_open", (DL_FUNC)&qio_parquet_open, 4},
     {"qio_parquet_close", (DL_FUNC)&qio_parquet_close, 1},
     {"qio_parquet_is_open", (DL_FUNC)&qio_parquet_is_open, 1},
@@ -489,6 +573,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"qio_parquet_schema", (DL_FUNC)&qio_parquet_schema, 1},
     {"qio_parquet_row_groups", (DL_FUNC)&qio_parquet_row_groups, 1},
     {"qio_parquet_metadata", (DL_FUNC)&qio_parquet_metadata, 1},
+    {"qio_parquet_column_chunks", (DL_FUNC)&qio_parquet_column_chunks, 1},
+    {"qio_parquet_column_statistics", (DL_FUNC)&qio_parquet_column_statistics, 1},
     {"qio_parquet_collect", (DL_FUNC)&qio_parquet_collect, 6},
     {"qio_parquet_walk", (DL_FUNC)&qio_parquet_walk, 7},
     {NULL, NULL, 0}

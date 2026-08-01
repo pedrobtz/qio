@@ -20,8 +20,12 @@ reference:
     contents:
       - schema
       - row_groups
+      - column_chunks
+      - column_statistics
       - metadata
       - read_plan
+      - parquet_validate
   - title: Package
     contents:
       - qio-package
+      - qio-limitations

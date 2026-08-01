@@ -651,7 +651,9 @@ Both are recorded in
 
 ## Phase 6: expose the remaining inspection and writer controls
 
-Status: not started
+Status: the five required items are complete. The four deferrable ones are
+untouched and move to v0.2.0 unless they land before phase 7; append is now
+cut first, for the reason recorded under Descope order.
 
 This phase carries the most optional scope in the release. Each item is labelled
 Required or Deferrable; deferrable items ship only if they land complete and
@@ -659,12 +661,28 @@ tested before phase 7 begins.
 
 ### Work
 
-- [ ] Required: add column statistics and column-chunk metadata inspection.
-- [ ] Required: add file validation helpers with useful error context.
-- [ ] Required: add explicit row-group boundaries.
-- [ ] Required: add writer key/value metadata.
-- [ ] Required: document unsupported carquet capabilities instead of exposing
-  incomplete wrappers.
+- [x] Required: add column statistics and column-chunk metadata inspection.
+  `column_statistics()` and `column_chunks()`, one row per column per row
+  group. Bounds are list columns decoded at the physical level only, because
+  a bound is a sort key rather than a value to compute with; text is the
+  exception. Documented as writer claims that qio does not verify and does
+  not act on.
+- [x] Required: add file validation helpers with useful error context.
+  `parquet_validate()` reports the file's problem rather than the parser's:
+  too small, wrong or missing magic, truncated, encrypted footer, footer
+  that does not parse, or row groups that do not sum to the declared rows.
+  Deliberately does not read data pages, and says so.
+- [x] Required: add explicit row-group boundaries.
+  `write_parquet(row_group_size =)` counts rows. Required restructuring the
+  write loop to be row-group-major: carquet closes a group only when every
+  column has reached the same logical row, which column-at-a-time writing
+  never satisfied before the last column.
+- [x] Required: add writer key/value metadata.
+  `write_parquet(metadata =)` takes a named character vector; duplicate keys
+  keep their order and `NA` round-trips as a key with no value.
+- [x] Required: document unsupported carquet capabilities instead of exposing
+  incomplete wrappers. `?qio-limitations` lists each one with the reason, so an
+  absent function reads as a decision.
 - [ ] Deferrable: add column-index and offset-index inspection with explicit
   ownership cleanup. Do not add predicate evaluation or pushdown.
 - [ ] Deferrable: add append mode with qio-side complete schema compatibility
@@ -676,19 +694,39 @@ tested before phase 7 begins.
 ### Descope order
 
 Under schedule pressure, cut deferrable items in this order and record each cut
-in `roadmap.md` before removing it here: bloom-filter inspection, sorting
-declarations, append mode, page indexes. The required items stay in v0.1.0.
+in `roadmap.md` before removing it here: **append mode, bloom-filter
+inspection, sorting declarations, page indexes**. The required items stay in
+v0.1.0.
+
+Append moved from third cut to first. It is the only item in the release that
+can damage data the user already has. carquet's append compares leaf count,
+order, names, physical types, repetition, fixed widths, and logical type IDs,
+but not parent paths and not logical *parameters*: decimal scale, timestamp
+unit, integer signedness, CRS. Appending a MICROS timestamp column to a MILLIS
+file therefore passes its check and writes wrong values into a file that was
+correct before. qio would have to implement all of that validation itself.
+
+Every defect found so far in this project affected only newly written or newly
+read data; this would be the first to corrupt what was already on disk. That is
+the wrong risk for a first release, so append waits for v0.2.0 and the schema
+compatibility work it needs.
 
 ### Exit gate
 
-- [ ] Every shipped object has documented ownership, stable print behavior, and
-  malformed-file tests.
+- [x] Every shipped object has documented ownership, stable print behavior, and
+  malformed-file tests. All four new results are plain data frames, so ownership
+  and printing are R's. `test-inspect.R` covers a file that is too small, not
+  Parquet, truncated, encrypted, and structurally inconsistent.
 - [ ] Any cut item is recorded as deferred in `roadmap.md` and absent from the
-  README feature matrix and reference index.
-- [ ] If append mode ships, it rejects incompatible logical parameters and
-  parent paths before writing.
-- [ ] Inspection results agree with the independent Parquet tool chosen in
-  phase 0.
+  README feature matrix and reference index. The four deferrable items are
+  recorded; the README matrix is phase 7's.
+- [x] If append mode ships, it rejects incompatible logical parameters and
+  parent paths before writing. It does not ship; see Descope order.
+- [x] Inspection results agree with the independent Parquet tool chosen in
+  phase 0. `tools/check-inspection-against-arrow.R`: row-group count and sizes,
+  statistics bounds, null counts, and footer metadata all match Arrow's reading
+  of the same file, and Arrow reads back the values the writer was given, which
+  is what proves the row-group-major restructure did not corrupt anything.
 
 ## Phase 7: complete interoperability and release documentation
 

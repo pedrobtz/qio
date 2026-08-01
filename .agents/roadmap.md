@@ -107,10 +107,12 @@ sanitizers, Valgrind, LTO, gctorture, and rchk.
 - [ ] Required for v0.1.0: expose column statistics, column-chunk metadata,
   explicit row-group boundaries, writer key/value metadata, and file
   validation.
-- [ ] Deferrable within v0.1.0, in reverse cut order: page indexes, append
-  mode, sorting declarations, bloom filters. These ship only if they land
+- [ ] Deferrable within v0.1.0, in reverse cut order: page indexes, sorting
+  declarations, bloom filters, append mode. These ship only if they land
   complete and tested before release documentation begins; otherwise they move
-  to v0.2.0.
+  to v0.2.0. Append is cut first despite being the most useful, because it is
+  the only one that can corrupt a file the user already has; see
+  [`plan.md`](plan.md#descope-order).
 - [ ] Replace `url: ~` in `_pkgdown.yml`, validate the reference index, and
   publish pkgdown.
 - [ ] Add an honest README feature matrix and reproducible benchmarks.

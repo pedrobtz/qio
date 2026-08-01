@@ -217,8 +217,14 @@ Important defaults and controls:
   and timestamp coercion.
 - `writer_options.row_group_size` is a target in **bytes** (default 128MB), and
   carquet flushes a row group when it is exceeded. There is no row-count
-  target; an explicit boundary needs `carquet_writer_new_row_group()`. qio sets
-  neither today, so every qio-written file under 128MB is a single row group.
+  target; an explicit boundary needs `carquet_writer_new_row_group()`. qio
+  leaves the byte target alone and calls the explicit boundary, because
+  `write_parquet(row_group_size =)` counts rows, which is what a caller can
+  reason about.
+  The automatic flush fires only when every column sits at the same logical
+  row. qio writes a column at a time, so under its old column-major order that
+  never happened before the last column and every file was one row group.
+  Writing is now row-group-major for the same reason.
 - Requested legacy `LZ4` is written as `LZ4_RAW`.
 
 qio independently defaults to Snappy. Its planned configuration object is

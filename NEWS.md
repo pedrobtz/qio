@@ -1,5 +1,29 @@
 # qio 0.0.0.9000
 
+* `write_parquet()` gains `row_group_size`, which sets how many rows go in each
+  row group. Row groups are the unit other readers skip on, and qio previously
+  wrote every file as a single group, leaving nothing to skip. The default is
+  unchanged.
+
+* `write_parquet()` gains `metadata`, a named character vector written into the
+  footer and read back by `metadata()`.
+
+* New `column_chunks()` reports how each column is stored in each row group:
+  physical type, compression, sizes, encodings, and whether a dictionary page,
+  bloom filter, or page index is present.
+
+* New `column_statistics()` reports the per-column, per-row-group value and null
+  counts and the minimum and maximum bounds. These are claims made by whoever
+  wrote the file; qio does not verify them and does not use them to skip data.
+
+* New `parquet_validate()` checks that a file is structurally valid Parquet and
+  says what is wrong in terms of the file -- too small, missing or wrong magic
+  marker, truncated, encrypted footer, unparseable footer, or row groups that do
+  not add up -- rather than failing inside the footer parser.
+
+* New `?qio-limitations` records what the bundled Parquet library can do that
+  qio deliberately does not expose, and why.
+
 * File paths that the active Windows code page cannot represent now work, for
   both reading and writing. Previously such a file could not be opened at all,
   which affected anyone whose paths are not covered by their code page. Reading

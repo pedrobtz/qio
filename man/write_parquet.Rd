@@ -8,7 +8,9 @@ write_parquet(
   x,
   file,
   compression = c("snappy", "zstd", "gzip", "lz4", "uncompressed"),
-  schema = NULL
+  schema = NULL,
+  row_group_size = NULL,
+  metadata = NULL
 )
 }
 \arguments{
@@ -21,6 +23,14 @@ write_parquet(
 
 \item{schema}{An optional schema created by \code{\link[=parquet_schema]{parquet_schema()}}. Named entries
 override qio's inferred mapping; omitted columns retain automatic mapping.}
+
+\item{row_group_size}{Rows per row group, or \code{NULL} (default) to write a
+single row group. Smaller groups let other readers skip more but add
+per-group metadata and can compress worse.}
+
+\item{metadata}{A named character vector of footer key/value metadata, or
+\code{NULL}. Duplicate keys are written in the order given. An \code{NA} value is
+written as a key with no value, and reads back as \code{NA}.}
 }
 \value{
 The output path, invisibly.
@@ -38,11 +48,29 @@ of a second are rounded. Other classed columns are still written using their
 underlying storage type and lose their class. An explicit \code{\link[=parquet_schema]{parquet_schema()}}
 may instead select \code{INT64}, \code{FLOAT}, or a different timestamp unit, among the
 supported declarations.
+
+Row groups are the unit other readers skip on: a reader that can rule a group
+out from its statistics never touches its pages. \code{row_group_size} sets how
+many rows go in each. The default writes one row group, which keeps files
+compact but leaves nothing to skip, so a file meant to be filtered by other
+tools should set it.
+
+\code{metadata} writes application key/value pairs into the footer, where
+\code{\link[=metadata]{metadata()}} reads them back. Keys and values are stored as UTF-8 text;
+Parquet defines no meaning for them.
 }
 \examples{
 path <- tempfile(fileext = ".parquet")
 write_parquet(mtcars, path)
+
+# Several row groups, with provenance in the footer.
+write_parquet(
+  mtcars,
+  path,
+  row_group_size = 8,
+  metadata = c(source = "mtcars", written_by = "qio")
+)
 }
 \seealso{
-\code{\link[=read_parquet]{read_parquet()}}
+\code{\link[=read_parquet]{read_parquet()}}, \code{\link[=metadata]{metadata()}}, \code{\link[=row_groups]{row_groups()}}
 }

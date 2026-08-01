@@ -222,3 +222,24 @@ than one page, either of which would make the test vacuous.
 The Apache reference file `datapage_v2.snappy.parquet` also has an RLE
 `BOOLEAN` column, but it is five values in one run: enough to show the encoding
 is accepted, not enough to exercise the hybrid decoder.
+
+## Inspection cross-check
+
+`tools/check-inspection-against-arrow.R` covers phase 6's exit gate, which
+requires that inspection agrees with an independent Parquet implementation. It
+does two separate things:
+
+- Apache Arrow reads back the values the writer was given. That is what proves
+  the row-group-major write restructure did not corrupt anything, because it
+  compares an independent read against the *input*. Comparing qio's read with
+  Arrow's would prove nothing, for the reason recorded above.
+- Arrow and qio describe the same file's layout and must agree on the row-group
+  count and sizes. Statistics and null counts are checked against the known
+  input rather than against Arrow, which is stronger still.
+
+One quirk worth recording so it is not rediscovered as a bug: the `arrow` R
+package reads its own R attributes with `metadata$r`, and `$` on a list matches
+partially, so any footer key beginning with `r` -- `run`, for instance -- makes
+`arrow::read_parquet()` warn `Invalid metadata$r` about a perfectly valid file.
+That is arrow's behavior, not a defect in what qio writes. The cross-check
+avoids such keys so its output stays clean.
