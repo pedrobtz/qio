@@ -454,9 +454,8 @@ order. All four groups depend on the phase 2 read-option surface.
 
 ## Phase 4: bound reader memory and optimize measured hot paths
 
-Status: memory, parallelism, and dictionary text complete. The statistics-driven
-no-null path and backward expansion are unstarted; both are conditional on
-measurement showing they are worth it.
+Status: complete. The two conditional optimizations were measured and closed
+as not justified; see below.
 
 ### What the measurements show
 
@@ -492,10 +491,27 @@ measurement showing they are worth it.
   disables itself when it is not paying for itself, since a plain page gives
   every value a distinct address; without that it cost 9% on a high-cardinality
   column. `read-string_low_cardinality` 0.1130 s to 0.0615 s, -46%.
-- [ ] Add a statistics-driven no-null path only if benchmarks show a useful
-  improvement.
-- [ ] Decode suitable numeric columns into R-owned memory and expand nullable
-  values backward in place.
+- [x] Add a statistics-driven no-null path only if benchmarks show a useful
+  improvement. **Measured and declined.** Reading the same 2,000,000 doubles as
+  REQUIRED (no definition levels at all) takes 0.0170 s against 0.0190 s as
+  OPTIONAL with zero nulls, so eliminating definition-level work entirely is
+  worth at most 10.5%, on a synthetic single-column file that maximizes the
+  share. On the reference workloads it is smaller.
+- [x] Decode suitable numeric columns into R-owned memory and expand nullable
+  values backward in place. **Measured and declined.** Numeric columns already
+  decode into R-owned memory; what expansion would remove is one copy from the
+  worker's scratch into the R vector. A `memcpy` of that column is 0.0006 s
+  against a 0.0190 s read, so the ceiling is 3.2%, and it applies only where
+  the physical and R widths match exactly: `INT32` to integer and `DOUBLE` to
+  double, not `INT64`, `FLOAT`, `INT96`, or `BOOLEAN`.
+
+  Both were declined on the same reasoning: single-digit ceilings, narrow
+  applicability, and each one adds a special-case decode path. This phase spent
+  most of its debugging on exactly that kind of path -- a fast path that ran
+  every task twice, and a cache that regressed the case it did not fit. The
+  gains already banked are 77%, 46%, and 35%; these two are not worth the new
+  surface. Revisit if a profile ever shows definition-level decoding dominating
+  a real workload.
 - [x] Benchmark buffered persistent reads, and implement private-reader
   parallelism with correct ownership. Each worker gets its own
   `carquet_reader_t`, opened on the same path with the same options, because

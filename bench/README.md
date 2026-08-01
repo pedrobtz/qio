@@ -217,11 +217,26 @@ dictionary values are interned once instead of once per row. The
 high-cardinality column is the control -- it has no repeated values to cache
 and no dictionary to exploit, so it should not move, and does not.
 
-## Not measured yet
+## Measured and declined
 
-- **Peak memory.** The phase 4 gate on bounded string scratch needs a peak-RSS
-  probe; wall time will not show it. `read-string_high_cardinality` is the
-  workload it should run against, and the instrument still has to be chosen.
+Two phase 4 optimizations were gated on showing a useful improvement, and did
+not. Recorded so they are not re-proposed without new evidence.
+
+| Idea | What it would remove | Ceiling |
+|---|---|---|
+| Statistics-driven no-null path | definition-level decoding when statistics prove no nulls | 10.5% |
+| Backward in-place expansion | one copy from worker scratch into the R vector | 3.2% |
+
+Both ceilings come from a synthetic single-column file of 2,000,000 doubles,
+which maximizes their share; the same 2,000,000 doubles read 0.0170 s as
+REQUIRED against 0.0190 s as OPTIONAL-with-no-nulls, and a `memcpy` of the
+column is 0.0006 s.
+
+Beware the obvious proxy for the second one: timing `y[] <- x` in R gives
+0.0050 s, eight times the real `memcpy`, and would have made a 3% idea look
+like a 26% one.
+
+## Not measured yet
 - **Compression codecs.** Everything here is Snappy, qio's default. Codec
   comparisons belong with the phase 5 writer configuration work.
 - **Cold cache.** Every run is warm. Numbers are decode cost, not I/O cost.
