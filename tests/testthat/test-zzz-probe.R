@@ -1,12 +1,24 @@
-# TEMPORARY diagnostic, to be deleted once the Windows BYTE_ARRAY failure is
-# understood.
+# TEMPORARY diagnostic, to be deleted once the Windows failure is confirmed.
 #
-# Round one ruled out a great deal: every single-column file round-tripped on
-# Windows across all five codecs, three sizes, nulls or not, mapped or
-# buffered. The failing test differs in one way only -- it writes six columns
-# into one file. So this round varies the column set instead, to find the
-# smallest combination that fails and whether the preceding column's type
-# matters.
+# Round one: every single-column file round-tripped on Windows, all five
+# codecs, three sizes, nulls or not, mapped or buffered.
+# Round two: every multi-column file round-tripped too -- but that round only
+# used snappy and uncompressed.
+#
+# The cell neither round covered is multi-column with a *stateful* codec, and
+# there is a mechanism that predicts exactly that. carquet keeps its zstd
+# decompression context in thread-local storage on POSIX, but on Windows
+# without OpenMP -- which is how Rtools builds this package -- it falls back to
+# a process-global ZSTD_DCtx shared by every thread. A mapped collect() decodes
+# numeric columns on the worker pool while decoding strings on the main thread,
+# so two threads use that one context at once. One numeric column means no
+# pool and no race, which is why rounds one and two passed.
+#
+# This round is the test of that hypothesis. Predictions:
+#   zstd + several numeric columns + default threads -> fails
+#   zstd + several numeric columns + threads = 1     -> passes (no pool)
+#   zstd + one numeric column                        -> passes (no pool)
+#   gzip (stack-local z_stream) and lz4 (stateless)  -> pass throughout
 
 probe_frame <- function(n, nulls) {
   hit <- if (nulls) seq(1L, n, by = 7L) else integer()
@@ -27,25 +39,21 @@ probe_frame <- function(n, nulls) {
 
 probe_sets <- list(
   all = c("lgl", "int", "dbl", "chr", "day", "ts"),
-  no_dbl = c("lgl", "int", "chr", "day", "ts"),
-  dbl_chr = c("dbl", "chr"),
-  chr_dbl = c("chr", "dbl"),
-  int_chr = c("int", "chr"),
-  lgl_chr = c("lgl", "chr"),
-  chr_day = c("chr", "day"),
-  chr_only = "chr",
-  chr_chr = c("chr", "day", "ts")
+  numeric_only = c("lgl", "int", "dbl", "day", "ts"),
+  two_numeric = c("chr", "day", "ts"),
+  one_numeric = c("chr", "day"),
+  chr_only = "chr"
 )
 
-test_that("PROBE: which column combinations fail", {
+test_that("PROBE: codec against thread count", {
   skip_on_cran()
   set.seed(42)
   bad <- character()
 
-  for (codec in c("snappy", "uncompressed")) {
-    for (nulls in c(FALSE, TRUE)) {
-      for (n in c(500L, 2000L)) {
-        frame <- probe_frame(n, nulls)
+  for (codec in c("zstd", "gzip", "lz4", "snappy")) {
+    for (threads in c(0L, 1L)) {
+      for (nulls in c(FALSE, TRUE)) {
+        frame <- probe_frame(2000L, nulls)
         for (set_name in names(probe_sets)) {
           one <- frame[probe_sets[[set_name]]]
           for (mapped in c(TRUE, FALSE)) {
@@ -53,7 +61,7 @@ test_that("PROBE: which column combinations fail", {
             outcome <- tryCatch(
               {
                 write_parquet(one, path, compression = codec)
-                handle <- parquet_open(path, mmap = mapped)
+                handle <- parquet_open(path, mmap = mapped, threads = threads)
                 on.exit(parquet_close(handle), add = TRUE)
                 back <- collect(handle)
                 if (isTRUE(all.equal(back, one))) "ok" else "MISMATCH"
@@ -62,8 +70,8 @@ test_that("PROBE: which column combinations fail", {
             )
             if (!identical(outcome, "ok")) {
               bad <- c(bad, sprintf(
-                "%s n=%d nulls=%s mmap=%s [%s] -> %s",
-                codec, n, nulls, mapped, set_name, outcome
+                "%s threads=%d nulls=%s mmap=%s [%s] -> %s",
+                codec, threads, nulls, mapped, set_name, outcome
               ))
             }
           }
