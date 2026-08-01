@@ -481,12 +481,24 @@ but not implemented; the remaining optimizations are unstarted.
 - [ ] Decode suitable numeric columns into R-owned memory and expand nullable
   values backward in place.
 - [ ] Benchmark buffered persistent reads. Either implement private-reader
-  parallelism with correct ownership or record why it is not justified for
-  v0.1.0. **Benchmarked: it is justified** (2.64x on the default handle), so
-  the recording branch is closed and the implementation is outstanding. It
-  needs one independent `carquet_reader_t` per worker, since the buffered path
-  shares `FILE*` and prebuffer state; each private reader re-parses the footer,
-  so the gain has to be amortized against that for small reads.
+  parallelism with correct ownership or record why it is not justified.
+  **Benchmarked: justified at 2.64x. Implemented, and reverted as unsafe.**
+  One `carquet_reader_t` per worker, tasks grouped into lanes so one reader is
+  only ever used by one lane at a time, produced *intermittent short reads*:
+  3 of 48 fresh-handle collects failed with counts like "yielded 211264 of
+  250000" and once "yielded 0 of 250000". The same 48 runs pass with the
+  change reverted. Failures need several handles in one session to appear;
+  three collects on one handle never reproduced it.
+
+  This is not a qio-side ownership problem as far as it was traced: carquet's
+  buffered reader has no mutable file-scope state, and each lane owned its
+  reader exclusively. Root-causing it means finding what two independent
+  `carquet_reader_t` values share on the buffered path. Until that is
+  understood the 2.6x is not available, and shipping the change would trade a
+  correctness guarantee for speed.
+
+  Next step is diagnosis, not reimplementation: run the lane build under the
+  thread sanitizer, which is the tool that names the shared object.
 
 ### Exit gate
 

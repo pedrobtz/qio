@@ -185,6 +185,22 @@ numbers, per the rules above.
   already chunked, which is why it looks flat. Compare against a build without
   the change instead.
 
+## Buffered reads leave 2.6x on the table
+
+Measured on `mixed.parquet`, and the reason is worth keeping:
+
+| | median | vs buffered |
+|---|---|---|
+| buffered, serial (the `parquet_open()` default) | 0.180 s | 1.00x |
+| memory-mapped, serial | 0.177 s | 1.02x |
+| memory-mapped, parallel | 0.067 s | 2.69x |
+
+Mapping buys essentially nothing; the entire gap is the worker pool, which
+today only runs for mapped readers. Giving each worker a private
+`carquet_reader_t` was implemented and reverted: it produced intermittent short
+reads. See the phase 4 entry in `../.agents/plan.md` for the failure counts and
+the next diagnostic step.
+
 ## Not measured yet
 
 - **Peak memory.** The phase 4 gate on bounded string scratch needs a peak-RSS
