@@ -1,5 +1,5 @@
 diff -ruN a/carquet/compression/snappy.c b/carquet/compression/snappy.c
---- a/carquet/compression/snappy.c	2026-08-01 19:50:10
+--- a/carquet/compression/snappy.c	2026-08-01 20:38:38
 +++ b/carquet/compression/snappy.c	2026-07-02 15:02:47
 @@ -307,11 +307,17 @@
                                           uint8_t* const buf_limit) {
@@ -24,7 +24,7 @@ diff -ruN a/carquet/compression/snappy.c b/carquet/compression/snappy.c
      if (pattern_size < (size_t)big_pattern) {
  #if SNAPPY_HAVE_VECTOR_SHUFFLE
 diff -ruN a/carquet/encoding/plain.c b/carquet/encoding/plain.c
---- a/carquet/encoding/plain.c	2026-08-01 19:50:10
+--- a/carquet/encoding/plain.c	2026-08-01 20:38:38
 +++ b/carquet/encoding/plain.c	2026-08-01 18:53:00
 @@ -234,15 +234,20 @@
      }
@@ -52,7 +52,7 @@ diff -ruN a/carquet/encoding/plain.c b/carquet/encoding/plain.c
      return CARQUET_OK;
  }
 diff -ruN a/carquet/reader/batch_reader.c b/carquet/reader/batch_reader.c
---- a/carquet/reader/batch_reader.c	2026-08-01 19:50:10
+--- a/carquet/reader/batch_reader.c	2026-08-01 20:38:38
 +++ b/carquet/reader/batch_reader.c	2026-08-01 10:02:42
 @@ -435,7 +435,10 @@
          /* Trigger page load to check if it's a zero-copy page */
@@ -148,7 +148,7 @@ diff -ruN a/carquet/reader/batch_reader.c b/carquet/reader/batch_reader.c
      /* If every projected column is backed by a direct page view, trim the
       * batch to the smallest currently available page slice. This avoids
 diff -ruN a/carquet/reader/column_reader.c b/carquet/reader/column_reader.c
---- a/carquet/reader/column_reader.c	2026-08-01 19:50:10
+--- a/carquet/reader/column_reader.c	2026-08-01 20:38:38
 +++ b/carquet/reader/column_reader.c	2026-07-01 22:15:57
 @@ -23,21 +23,12 @@
      int16_t* rep_levels,
@@ -196,7 +196,7 @@ diff -ruN a/carquet/reader/column_reader.c b/carquet/reader/column_reader.c
              dense_values_read += values_read;
          }
 diff -ruN a/carquet/reader/file_reader.c b/carquet/reader/file_reader.c
---- a/carquet/reader/file_reader.c	2026-08-01 19:50:10
+--- a/carquet/reader/file_reader.c	2026-08-01 20:38:38
 +++ b/carquet/reader/file_reader.c	2026-07-01 06:48:41
 @@ -17,6 +17,7 @@
  #include <string.h>
@@ -217,7 +217,7 @@ diff -ruN a/carquet/reader/file_reader.c b/carquet/reader/file_reader.c
      }
  
 diff -ruN a/carquet/reader/page_filter.c b/carquet/reader/page_filter.c
---- a/carquet/reader/page_filter.c	2026-08-01 19:50:10
+--- a/carquet/reader/page_filter.c	2026-08-01 20:38:38
 +++ b/carquet/reader/page_filter.c	2026-07-01 06:34:58
 @@ -664,7 +664,15 @@
          int64_t end_row;
@@ -237,8 +237,8 @@ diff -ruN a/carquet/reader/page_filter.c b/carquet/reader/page_filter.c
          } else {
              end_row = row_group_num_rows;
 diff -ruN a/carquet/reader/page_reader.c b/carquet/reader/page_reader.c
---- a/carquet/reader/page_reader.c	2026-08-01 19:50:10
-+++ b/carquet/reader/page_reader.c	2026-07-02 15:18:18
+--- a/carquet/reader/page_reader.c	2026-08-01 20:38:38
++++ b/carquet/reader/page_reader.c	2026-08-01 20:37:05
 @@ -324,6 +324,16 @@
      return CARQUET_OK;
  }
@@ -318,7 +318,101 @@ diff -ruN a/carquet/reader/page_reader.c b/carquet/reader/page_reader.c
  
      /* Decode values based on encoding - reuse V1 value decoding logic */
      carquet_status_t status = CARQUET_OK;
-@@ -2480,7 +2504,14 @@
+@@ -1701,6 +1725,14 @@
+  * ============================================================================
+  */
+ 
++/* qio patch: some writers (parquet-mr among them) emit a dictionary page as the
++ * first page of a chunk but declare only data_page_offset, leaving
++ * dictionary_page_offset unset. Reading that page as a data page fails with
++ * "Expected data page", which is how datapage_v2.snappy.parquet from the Apache
++ * corpus became unreadable while Arrow reads it fine. When no dictionary offset
++ * is declared, look at data_page_offset instead and treat the page as a
++ * dictionary only if it really is one; the existing recomputation of
++ * data_start_offset then steps the reader past it. */
+ static carquet_status_t load_dictionary_page_mmap(
+     carquet_column_reader_t* reader,
+     carquet_error_t* error) {
+@@ -1710,7 +1742,9 @@
+     const parquet_column_metadata_t* col_meta = reader->col_meta;
+ 
+     /* Parse page header directly from mmap */
+-    int64_t dict_offset = col_meta->dictionary_page_offset;
++    int64_t dict_offset = col_meta->has_dictionary_page_offset
++                              ? col_meta->dictionary_page_offset
++                              : col_meta->data_page_offset;
+     if (dict_offset < 0 || (size_t)dict_offset >= file_reader->file_size) {
+         CARQUET_SET_ERROR(error, CARQUET_ERROR_INVALID_PAGE, "Dictionary page offset out of range");
+         return CARQUET_ERROR_INVALID_PAGE;
+@@ -1730,6 +1764,10 @@
+     }
+ 
+     if (page_header.type != CARQUET_PAGE_DICTIONARY) {
++        if (!col_meta->has_dictionary_page_offset) {
++            /* Probing an undeclared dictionary; this chunk simply has none. */
++            return CARQUET_OK;
++        }
+         CARQUET_SET_ERROR(error, CARQUET_ERROR_INVALID_PAGE, "Expected dictionary page");
+         return CARQUET_ERROR_INVALID_PAGE;
+     }
+@@ -1886,7 +1924,9 @@
+ 
+     carquet_reader_t* file_reader = reader->file_reader;
+     const parquet_column_metadata_t* col_meta = reader->col_meta;
+-    int64_t dict_offset = col_meta->dictionary_page_offset;
++    int64_t dict_offset = col_meta->has_dictionary_page_offset
++                              ? col_meta->dictionary_page_offset
++                              : col_meta->data_page_offset;
+ 
+     /* Read page header (from prebuffer cache or file) */
+     parquet_page_header_t page_header;
+@@ -1898,6 +1938,10 @@
+     }
+ 
+     if (page_header.type != CARQUET_PAGE_DICTIONARY) {
++        if (!col_meta->has_dictionary_page_offset) {
++            /* Probing an undeclared dictionary; this chunk simply has none. */
++            return CARQUET_OK;
++        }
+         CARQUET_SET_ERROR(error, CARQUET_ERROR_INVALID_PAGE, "Expected dictionary page");
+         return CARQUET_ERROR_INVALID_PAGE;
+     }
+@@ -1985,8 +2029,10 @@
+      * after the dictionary page: dict_offset + header + compressed data. */
+     if (status == CARQUET_OK) {
+         int64_t data_start;
+-        if (!checked_add_i64(col_meta->dictionary_page_offset,
+-                             (int64_t)header_size, &data_start) ||
++        /* qio patch: from the offset the dictionary was actually read at, not
++         * col_meta->dictionary_page_offset, which is 0 when the writer omitted
++         * it and the page was found via data_page_offset. */
++        if (!checked_add_i64(dict_offset, (int64_t)header_size, &data_start) ||
+             !checked_add_i64(data_start, (int64_t)page_header.compressed_page_size,
+                              &data_start)) {
+             CARQUET_SET_ERROR(error, CARQUET_ERROR_INVALID_PAGE, "Dictionary page offset overflow");
+@@ -2020,7 +2066,9 @@
+     const parquet_column_metadata_t* col_meta = reader->col_meta;
+ 
+     /* Load dictionary if needed (may update data_start_offset) */
+-    if (col_meta->has_dictionary_page_offset && !reader->has_dictionary) {
++    if (!reader->has_dictionary && reader->current_page == 0 &&
++        (col_meta->has_dictionary_page_offset ||
++         col_meta->data_page_offset > 0)) {
+         carquet_status_t status = load_dictionary_page_mmap(reader, error);
+         if (status != CARQUET_OK) {
+             return status;
+@@ -2250,7 +2298,9 @@
+     const parquet_column_metadata_t* col_meta = reader->col_meta;
+ 
+     /* Load dictionary if needed (may update data_start_offset) */
+-    if (col_meta->has_dictionary_page_offset && !reader->has_dictionary) {
++    if (!reader->has_dictionary && reader->current_page == 0 &&
++        (col_meta->has_dictionary_page_offset ||
++         col_meta->data_page_offset > 0)) {
+         carquet_status_t status = load_dictionary_page_fread(reader, error);
+         if (status != CARQUET_OK) {
+             return status;
+@@ -2480,7 +2530,14 @@
              reader->page_loaded = false;
          }
  
@@ -334,7 +428,7 @@ diff -ruN a/carquet/reader/page_reader.c b/carquet/reader/page_reader.c
      }
  
      return CARQUET_OK;
-@@ -2715,14 +2746,21 @@
+@@ -2715,14 +2772,21 @@
      int32_t values_to_copy = to_copy;
  
      if (reader->decoded_def_levels && reader->max_def_level > 0) {
@@ -364,7 +458,7 @@ diff -ruN a/carquet/reader/page_reader.c b/carquet/reader/page_reader.c
          offset = (size_t)dense_start * value_size;
      }
  
-@@ -2746,8 +2784,12 @@
+@@ -2746,8 +2810,12 @@
          }
      }
  
@@ -378,7 +472,7 @@ diff -ruN a/carquet/reader/page_reader.c b/carquet/reader/page_reader.c
      reader->values_remaining -= to_copy;
      *values_read = to_copy;
  
-@@ -2796,6 +2838,13 @@
+@@ -2796,6 +2864,13 @@
              int64_t want = num_values - total_skipped;
              int64_t n = avail < want ? avail : want;
              if (n > reader->values_remaining) n = reader->values_remaining;
@@ -393,7 +487,7 @@ diff -ruN a/carquet/reader/page_reader.c b/carquet/reader/page_reader.c
              reader->values_remaining -= n;
              total_skipped += n;
 diff -ruN a/carquet/reader/reader_internal.h b/carquet/reader/reader_internal.h
---- a/carquet/reader/reader_internal.h	2026-08-01 19:50:10
+--- a/carquet/reader/reader_internal.h	2026-08-01 20:38:38
 +++ b/carquet/reader/reader_internal.h	2026-08-01 10:15:17
 @@ -169,6 +169,22 @@
      bool page_loaded;           /* Is a page currently loaded? */
@@ -419,7 +513,7 @@ diff -ruN a/carquet/reader/reader_internal.h b/carquet/reader/reader_internal.h
      int32_t page_compressed_size; /* Size of current page compressed data */
      uint8_t* decoded_values;    /* Buffer for decoded values from current page */
 diff -ruN a/carquet/simd/x86/sse_ops.c b/carquet/simd/x86/sse_ops.c
---- a/carquet/simd/x86/sse_ops.c	2026-08-01 19:50:10
+--- a/carquet/simd/x86/sse_ops.c	2026-08-01 20:38:38
 +++ b/carquet/simd/x86/sse_ops.c	2026-06-30 23:47:37
 @@ -16,8 +16,10 @@
  #include <string.h>
@@ -435,7 +529,7 @@ diff -ruN a/carquet/simd/x86/sse_ops.c b/carquet/simd/x86/sse_ops.c
  #ifdef _MSC_VER
  #include <intrin.h>
 diff -ruN a/carquet/writer/page_writer.c b/carquet/writer/page_writer.c
---- a/carquet/writer/page_writer.c	2026-08-01 19:50:10
+--- a/carquet/writer/page_writer.c	2026-08-01 20:38:38
 +++ b/carquet/writer/page_writer.c	2026-08-01 19:47:06
 @@ -124,6 +124,8 @@
      int64_t num_rows;        /* Logical rows (rep_level==0); used by V2 only */

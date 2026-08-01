@@ -53,37 +53,58 @@ test_that("alltypes files read their INT96 timestamp_col", {
   }
 })
 
-# --- DATA_PAGE_V2: which encodings are readable -----------------------------
-# Not a delta problem, despite the fixture's name. DELTA_BINARY_PACKED reads
-# fine; what fails is dictionary encoding inside a DATA_PAGE_V2 page, and RLE
-# used as a data encoding for BOOLEAN. Both are carquet limitations recorded in
-# .agents/carquet.md. Apache Arrow reads this file, so it is qio that is short.
+# --- DATA_PAGE_V2 encodings -------------------------------------------------
+# Not a delta problem, despite the fixture's name. This file's dictionary pages
+# are undeclared: the writer emitted one as the first page of a chunk but set
+# only data_page_offset, leaving dictionary_page_offset unset, which carquet
+# read as a data page. Fixed in the vendored tree; see .agents/VENDORED.md.
+# What remains unsupported is RLE used as a data encoding for BOOLEAN.
 
-test_that("a DATA_PAGE_V2 delta-encoded column reads", {
-  file <- parquet_open(ext("datapage_v2.snappy.parquet"))
+test_that("DATA_PAGE_V2 columns with undeclared dictionaries read", {
+  # The expected values are Apache Arrow's reading of the same file, checked by
+  # tools/check-writer-against-arrow.R's sibling workflow rather than at test
+  # time, so arrow stays out of the test dependencies.
+  path <- ext("datapage_v2.snappy.parquet")
+  file <- parquet_open(path)
   withr::defer(parquet_close(file))
+
+  expect_identical(
+    collect(file, columns = "a")$a,
+    c("abc", "abc", "abc", NA, "abc")
+  )
   expect_identical(collect(file, columns = "b")$b, 1:5)
+  expect_equal(collect(file, columns = "c")$c, c(2, 3, 4, 5, 2))
 })
 
-test_that("unsupported encodings fail naming the column and its encodings", {
-  # The failure used to read "column 1 of row group 1 yielded 0 of 5 rows",
-  # which looks like corruption rather than a limitation: carquet reports a
-  # negative return for a decode error, and that was being treated as a short
-  # read.
-  file <- parquet_open(ext("datapage_v2.snappy.parquet"))
+test_that("a memory-mapped read of the same file agrees", {
+  # The dictionary probe had to be fixed in both the mmap and buffered paths.
+  path <- ext("datapage_v2.snappy.parquet")
+  buffered <- parquet_open(path)
+  mapped <- parquet_open(path, mmap = TRUE)
+  withr::defer({
+    parquet_close(buffered)
+    parquet_close(mapped)
+  })
+  expect_identical(
+    collect(mapped, columns = c("a", "b", "c")),
+    collect(buffered, columns = c("a", "b", "c"))
+  )
+})
+
+test_that("RLE as a BOOLEAN data encoding fails naming the encoding", {
+  # Genuinely unimplemented in carquet, though its own hint text claims RLE is
+  # supported. The failure used to read "yielded 0 of 5 rows", which looks like
+  # corruption rather than a limitation.
+  path <- ext("datapage_v2.snappy.parquet")
+  file <- parquet_open(path)
   withr::defer(parquet_close(file))
 
-  expect_error(
-    collect(file, columns = "a"),
-    "cannot decode column 'a'.*RLE_DICTIONARY.*not supported"
-  )
   expect_error(
     collect(file, columns = "d"),
     "cannot decode column 'd'.*RLE.*not supported"
   )
-  # Whole-file reads surface the same message rather than a row-count mismatch.
   expect_error(
-    suppressMessages(read_parquet(ext("datapage_v2.snappy.parquet"))),
+    suppressMessages(read_parquet(path)),
     "cannot decode column"
   )
 })
@@ -115,11 +136,14 @@ test_that("nested columns are skipped with one message per operation", {
   expect_equal(dimensions, list(c(3L, 1L), c(3L, 1L), c(1L, 1L)))
 })
 
-test_that("errors in remaining flat columns are still reported", {
-  expect_error(
-    suppressMessages(read_parquet(ext("nested_maps.snappy.parquet"))),
-    "qio:"
-  )
+test_that("flat columns of a nested file read once the nested ones are skipped", {
+  # This file used to error: its flat columns carry an undeclared dictionary
+  # page, the same defect that made datapage_v2 unreadable. Values match
+  # Apache Arrow's reading of the same file.
+  result <- suppressMessages(read_parquet(ext("nested_maps.snappy.parquet")))
+  expect_identical(names(result), c("b", "c"))
+  expect_identical(result$b, rep(1L, 6L))
+  expect_equal(result$c, rep(1, 6L))
 })
 
 # --- INT32 sentinel (bare INT32 written by Apache Arrow) --------------------

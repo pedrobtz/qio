@@ -1,5 +1,10 @@
 # qio 0.0.0.9000
 
+* Files whose dictionary page is not declared in the column metadata now read.
+  Some writers emit a dictionary page as a chunk's first page while setting only
+  `data_page_offset`; qio read that page as data and failed. Two files from the
+  Apache Parquet reference corpus are readable as a result.
+
 * A column whose encoding is not supported now fails with a message naming the
   column and its encodings, instead of reporting a row-count mismatch that
   looked like file corruption.

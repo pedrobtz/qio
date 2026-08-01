@@ -84,6 +84,17 @@ them.
   is left alone; qio does not call it. Covered by a thread-count test in
   `tests/testthat/test-parquet-file.R`.
 
+- **Find an undeclared dictionary page** (`reader/page_reader.c`). Some writers
+  emit a dictionary page as the first page of a column chunk but declare only
+  `data_page_offset`, leaving `dictionary_page_offset` unset. carquet read that
+  page as a data page and failed with "Expected data page". The dictionary
+  loader now falls back to `data_page_offset` when no dictionary offset is
+  declared, treats the page as a dictionary only if it is one, and computes the
+  first data page from the offset the dictionary was actually read at rather
+  than from `col_meta->dictionary_page_offset`, which is zero in this case.
+  Both the mapped and buffered paths needed it. This made two Apache reference
+  fixtures readable that were not: `datapage_v2.snappy.parquet` and the flat
+  columns of `nested_maps.snappy.parquet`. Covered by `test-external.R`.
 - **Byte-split a page once, at finalize** (`writer/page_writer.c`).
   BYTE_STREAM_SPLIT transposes a whole page into byte planes, so it cannot be
   applied incrementally. The encoder split each call's subrange and appended,

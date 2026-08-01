@@ -146,15 +146,13 @@ without trouble:
 | `PLAIN`, `PLAIN_DICTIONARY`, `RLE_DICTIONARY` in DATA_PAGE (v1) | works |
 | `DELTA_BINARY_PACKED` | works, including in DATA_PAGE_V2 |
 | `BYTE_STREAM_SPLIT` | works |
-| Dictionary inside a DATA_PAGE_V2 page | fails: "Expected data page" |
+| Dictionary page declared only via `data_page_offset` | fixed locally, see `VENDORED.md` |
 | `RLE` as a data encoding, used for `BOOLEAN` | fails: "Unsupported encoding: 3" |
 
-The second is genuinely unimplemented, though carquet's own error hint claims
-RLE is supported. The first looks like a bug rather than a gap: the V2 path
-handles `RLE_DICTIONARY`, but `load_next_page_*` recomputes the first data page
-offset as dictionary offset plus header plus compressed size, overriding the
-offset declared in the column chunk. That heuristic exists for writers that
-declare it wrongly, and it appears to misfire here.
+`RLE` for `BOOLEAN` is genuinely unimplemented, though carquet's own error hint
+claims RLE is supported. The dictionary case was a bug and is patched: a
+dictionary page emitted as the chunk's first page but not declared in
+`dictionary_page_offset` was read as a data page.
 
 `carquet_column_read_batch()` returns a bare negative on failure, discarding
 both the status and the hint its internals produced, so qio cannot report why a
