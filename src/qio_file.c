@@ -30,6 +30,14 @@ typedef struct {
 #define QIO_INT64_DOUBLE 0
 #define QIO_INT64_BIT64 1
 
+/* What R object a selected column materializes into. The read plan decides
+ * this and passes one code per selected column; C never infers it from the
+ * schema, so a new annotation only changes the plan. */
+#define QIO_KIND_DEFAULT 0 /* physical fallback for the type */
+#define QIO_KIND_INT64 1   /* INT64 under the `int64` range rules */
+#define QIO_KIND_TEXT 2    /* BYTE_ARRAY with a text annotation -> character */
+#define QIO_KIND_BINARY 3  /* BYTE_ARRAY or FIXED_LEN_BYTE_ARRAY -> raw list */
+
 /* R's exact integer range in a double. Both bounds are representable. */
 #define QIO_DOUBLE_EXACT_MAX 9007199254740992LL /* 2^53 */
 
@@ -39,12 +47,14 @@ typedef struct {
     /* Per selected column: 1 when the leaf is an unsigned 64-bit integer.
      * Resolved once from the schema so the decode loops never re-walk it. */
     uint8_t *unsigned64;
-    /* Per selected column: 1 when the read plan maps this INT64 leaf as a
-     * plain 64-bit integer, so `int64` range rules apply. A TIMESTAMP is also
-     * physically INT64 but is a count of sub-second units that R converts
-     * later, and range-checking it against 2^53 would destroy nanosecond
-     * timestamps. The plan decides; C never infers this. */
-    uint8_t *int64_semantics;
+    /* Per selected column: what R object to build (QIO_KIND_*). The plan
+     * decides. A TIMESTAMP is physically INT64 but is a count of sub-second
+     * units R converts later, so range-checking it against 2^53 would destroy
+     * nanosecond timestamps; likewise a UUID is physically a fixed byte array
+     * whose text form R produces. C never infers any of this. */
+    uint8_t *kind;
+    /* Per selected column: declared width of a FIXED_LEN_BYTE_ARRAY leaf. */
+    int32_t *type_length;
     uint8_t *row_group_mask;
     int32_t num_row_groups;
     int filter_row_groups;
@@ -366,6 +376,54 @@ static double qio_int96_to_seconds(carquet_int96_t value) {
     return (double)days * 86400.0 + (double)nanos / 1e9;
 }
 
+/* Validate UTF-8. Returns the 1-based byte offset of the first malformed
+ * sequence, or 0 when the whole range is well formed.
+ *
+ * Rf_mkCharLenCE(CE_UTF8) does not check, so without this a text column of
+ * arbitrary bytes would produce CHARSXPs that claim an encoding they do not
+ * have, misbehaving later rather than failing here. Overlong forms, surrogate
+ * halves, and anything above U+10FFFF are rejected: they are all invalid UTF-8
+ * even though a naive length-only check accepts them. */
+static int64_t qio_utf8_invalid_at(const uint8_t *bytes, int32_t length) {
+    int32_t i = 0;
+    while (i < length) {
+        uint8_t byte = bytes[i];
+        int32_t extra;
+        uint32_t code;
+        if (byte < 0x80) {
+            i++;
+            continue;
+        } else if ((byte & 0xE0) == 0xC0) {
+            extra = 1;
+            code = byte & 0x1Fu;
+        } else if ((byte & 0xF0) == 0xE0) {
+            extra = 2;
+            code = byte & 0x0Fu;
+        } else if ((byte & 0xF8) == 0xF0) {
+            extra = 3;
+            code = byte & 0x07u;
+        } else {
+            return (int64_t)i + 1;
+        }
+        if (i + extra >= length) return (int64_t)i + 1;
+        for (int32_t k = 1; k <= extra; k++) {
+            uint8_t cont = bytes[i + k];
+            if ((cont & 0xC0) != 0x80) return (int64_t)i + 1;
+            code = (code << 6) | (uint32_t)(cont & 0x3Fu);
+        }
+        if ((extra == 1 && code < 0x80u) ||
+            (extra == 2 && code < 0x800u) ||
+            (extra == 3 && code < 0x10000u)) {
+            return (int64_t)i + 1; /* overlong encoding */
+        }
+        if (code > 0x10FFFFu || (code >= 0xD800u && code <= 0xDFFFu)) {
+            return (int64_t)i + 1; /* out of range, or a surrogate half */
+        }
+        i += extra + 1;
+    }
+    return 0;
+}
+
 /* Reject bytes R cannot hold in a CHARSXP before Rf_mkCharLenCE() raises its
  * own message, which names neither the column nor the row. */
 static void qio_check_string_bytes(const carquet_byte_array_t *value,
@@ -379,10 +437,22 @@ static void qio_check_string_bytes(const carquet_byte_array_t *value,
                  "character vectors cannot represent it",
                  column, (long long)row + 1);
     }
+    if (value->length > 0) {
+        int64_t at = qio_utf8_invalid_at(value->data, value->length);
+        if (at > 0) {
+            Rf_error("qio: column '%s' is annotated as text but row %lld is "
+                     "not valid UTF-8 (first bad byte at offset %lld)",
+                     column, (long long)row + 1, (long long)at);
+        }
+    }
 }
 
 static SEXP qio_allocate_column(carquet_physical_type_t type,
-                                R_xlen_t length) {
+                                R_xlen_t length, int kind) {
+    /* A binary column is a list of raw vectors whatever its physical type. */
+    if (kind == QIO_KIND_BINARY) {
+        return Rf_allocVector(VECSXP, length);
+    }
     switch (type) {
     case CARQUET_PHYSICAL_BOOLEAN:
         return Rf_allocVector(LGLSXP, length);
@@ -400,6 +470,23 @@ static SEXP qio_allocate_column(carquet_physical_type_t type,
                  carquet_physical_type_name(type));
     }
     return R_NilValue;
+}
+
+/* True when a column materializes into an R list or character vector, both of
+ * which need the R API and so cannot be built on a worker thread. */
+static int qio_needs_main_thread(carquet_physical_type_t type, int kind) {
+    return kind == QIO_KIND_BINARY || type == CARQUET_PHYSICAL_BYTE_ARRAY ||
+           type == CARQUET_PHYSICAL_FIXED_LEN_BYTE_ARRAY;
+}
+
+/* Copy one value into a raw vector element of a binary list-column. NULL
+ * elements stay NULL, which is how a raw list-column spells NA. */
+static void qio_set_raw_element(SEXP destination, R_xlen_t out,
+                                const uint8_t *bytes, int32_t length) {
+    SEXP value = PROTECT(Rf_allocVector(RAWSXP, length));
+    if (length > 0) memcpy(RAW(value), bytes, (size_t)length);
+    SET_VECTOR_ELT(destination, out, value);
+    UNPROTECT(1);
 }
 
 /* Place one 64-bit value into an R double, per the read's `int64` mode.
@@ -488,9 +575,35 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                                   const void *data, const uint8_t *bitmap,
                                   int64_t length, const char *column,
                                   int *sentinel, int int64_mode,
-                                  int is_unsigned64, int *int64_coerced) {
+                                  int is_unsigned64, int *int64_coerced,
+                                  int kind, int32_t type_length) {
     for (int64_t i = 0; i < length; i++) {
         R_xlen_t out = offset + (R_xlen_t)i;
+        if (kind == QIO_KIND_BINARY) {
+            /* The batch reader hands back row-aligned values, so index by row
+             * rather than tracking a dense cursor. */
+            if (!qio_value_present(bitmap, i)) {
+                SET_VECTOR_ELT(destination, out, R_NilValue);
+                continue;
+            }
+            if (type == CARQUET_PHYSICAL_FIXED_LEN_BYTE_ARRAY) {
+                const uint8_t *src = (const uint8_t *)data;
+                qio_set_raw_element(destination, out,
+                                    src + (size_t)i * (size_t)type_length,
+                                    type_length);
+            } else {
+                const carquet_byte_array_t *value =
+                    &((const carquet_byte_array_t *)data)[i];
+                if (value->length < 0 ||
+                    (value->length > 0 && value->data == NULL)) {
+                    Rf_error("qio: column '%s' returned an invalid byte array",
+                             column);
+                }
+                qio_set_raw_element(destination, out, value->data,
+                                    value->length);
+            }
+            continue;
+        }
         if (!qio_value_present(bitmap, i)) {
             switch (type) {
             case CARQUET_PHYSICAL_BOOLEAN:
@@ -705,7 +818,38 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
                                      int16_t max_def, int64_t length,
                                      const char *column, int *sentinel,
                                      int int64_mode, int is_unsigned64,
-                                     int *int64_coerced) {
+                                     int *int64_coerced, int kind,
+                                     int32_t type_length) {
+    if (kind == QIO_KIND_BINARY) {
+        int64_t j = 0;
+        for (int64_t i = 0; i < length; i++) {
+            R_xlen_t out = offset + (R_xlen_t)i;
+            if (def_levels != NULL && def_levels[i] != max_def) {
+                SET_VECTOR_ELT(destination, out, R_NilValue);
+                continue;
+            }
+            if (type == CARQUET_PHYSICAL_FIXED_LEN_BYTE_ARRAY) {
+                /* Values are packed at exactly type_length bytes each. */
+                const uint8_t *src = (const uint8_t *)values;
+                qio_set_raw_element(destination, out,
+                                    src + (size_t)j * (size_t)type_length,
+                                    type_length);
+            } else {
+                const carquet_byte_array_t *value =
+                    &((const carquet_byte_array_t *)values)[j];
+                if (value->length < 0 ||
+                    (value->length > 0 && value->data == NULL)) {
+                    Rf_error("qio: column '%s' returned an invalid byte array",
+                             column);
+                }
+                qio_set_raw_element(destination, out, value->data,
+                                    value->length);
+            }
+            j++;
+        }
+        return;
+    }
+
     switch (type) {
     case CARQUET_PHYSICAL_BYTE_ARRAY: {
         /* Strings must go through SET_STRING_ELT (write barrier) and
@@ -849,7 +993,7 @@ static bool qio_row_group_filter(const carquet_reader_t *reader,
 
 static void qio_prepare_selection(qio_parquet_handle_t *handle,
                                   SEXP columns, SEXP row_groups,
-                                  SEXP int64_columns,
+                                  SEXP column_kinds,
                                   qio_selection_t *selection) {
     const carquet_schema_t *schema =
         carquet_reader_schema(handle->reader);
@@ -894,17 +1038,22 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
                                 : 1);
     selection->unsigned64 = (uint8_t *)R_alloc(flags, sizeof(uint8_t));
     memset(selection->unsigned64, 0, flags);
-    selection->int64_semantics = (uint8_t *)R_alloc(flags, sizeof(uint8_t));
-    memset(selection->int64_semantics, 0, flags);
+    selection->kind = (uint8_t *)R_alloc(flags, sizeof(uint8_t));
+    memset(selection->kind, 0, flags);
+    selection->type_length = (int32_t *)R_alloc(flags, sizeof(int32_t));
+    memset(selection->type_length, 0, flags * sizeof(int32_t));
 
-    /* One flag per selected column, produced by the read plan. */
-    if (TYPEOF(int64_columns) != INTSXP ||
-        Rf_length(int64_columns) != selection->num_columns) {
-        Rf_error("qio: `int64_columns` must have one entry per selected "
-                 "column");
+    /* One kind per selected column, produced by the read plan. */
+    if (TYPEOF(column_kinds) != INTSXP ||
+        Rf_length(column_kinds) != selection->num_columns) {
+        Rf_error("qio: `column_kinds` must have one entry per selected column");
     }
     for (int32_t i = 0; i < selection->num_columns; i++) {
-        selection->int64_semantics[i] = INTEGER(int64_columns)[i] ? 1 : 0;
+        int kind = INTEGER(column_kinds)[i];
+        if (kind < QIO_KIND_DEFAULT || kind > QIO_KIND_BINARY) {
+            Rf_error("qio: invalid column kind %d", kind);
+        }
+        selection->kind[i] = (uint8_t)kind;
     }
 
     for (int32_t i = 0; i < selection->num_columns; i++) {
@@ -923,6 +1072,8 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
             !logical->params.integer.is_signed) {
             selection->unsigned64[i] = 1;
         }
+        selection->type_length[i] =
+            node ? carquet_schema_node_type_length(node) : 0;
         carquet_physical_type_t type =
             carquet_schema_column_type(schema, column);
         /* R drops nested leaves before selecting, so this is a backstop. */
@@ -939,6 +1090,21 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
         case CARQUET_PHYSICAL_FLOAT:
         case CARQUET_PHYSICAL_DOUBLE:
         case CARQUET_PHYSICAL_BYTE_ARRAY:
+            break;
+        case CARQUET_PHYSICAL_FIXED_LEN_BYTE_ARRAY:
+            /* Only as raw bytes: every other mapping (UUID, FLOAT16, DECIMAL)
+             * is produced by the read plan from those bytes. */
+            if (selection->kind[i] != QIO_KIND_BINARY) {
+                Rf_error("qio: column '%s' is FIXED_LEN_BYTE_ARRAY but the "
+                         "read plan did not ask for raw bytes",
+                         qio_column_path_cstr(schema, column));
+            }
+            if (selection->type_length[i] <= 0) {
+                Rf_error("qio: column '%s' declares an invalid "
+                         "FIXED_LEN_BYTE_ARRAY width of %d",
+                         qio_column_path_cstr(schema, column),
+                         selection->type_length[i]);
+            }
             break;
         default:
             Rf_error("qio: column '%s' has unsupported physical type %s "
@@ -1034,7 +1200,9 @@ static SEXP qio_allocate_result(qio_batch_context_t *context,
         int32_t file_column = context->selection.columns[i];
         carquet_physical_type_t type =
             carquet_schema_column_type(schema, file_column);
-        SET_VECTOR_ELT(result, i, qio_allocate_column(type, rows));
+        SET_VECTOR_ELT(
+            result, i,
+            qio_allocate_column(type, rows, context->selection.kind[i]));
         SET_STRING_ELT(names, i,
                        qio_column_path_string(schema, file_column));
     }
@@ -1069,8 +1237,10 @@ static void qio_copy_batch(qio_batch_context_t *context, SEXP result,
             VECTOR_ELT(result, i), offset, type, data, bitmap, rows,
             carquet_schema_column_name(schema, context->selection.columns[i]),
             &context->int32_sentinel,
-            context->selection.int64_semantics[i] ? context->int64_mode : -1,
-            context->selection.unsigned64[i], &context->int64_coerced);
+            context->selection.kind[i] == QIO_KIND_INT64 ? context->int64_mode
+                                                         : -1,
+            context->selection.unsigned64[i], &context->int64_coerced,
+            context->selection.kind[i], context->selection.type_length[i]);
     }
 }
 
@@ -1185,14 +1355,14 @@ static SEXP qio_collect_body(void *data) {
     qio_column_task_t *tasks = (qio_column_task_t *)R_alloc(
         (size_t)(max_tasks > 0 ? max_tasks : 1), sizeof(qio_column_task_t));
     int32_t n_tasks = 0;
-    int has_strings = 0;
+    int has_main_thread = 0;
     for (int32_t s = 0; s < n_groups; s++) {
         for (int32_t i = 0; i < ncol; i++) {
             int32_t file_col = context->selection.columns[i];
             carquet_physical_type_t type =
                 carquet_schema_column_type(schema, file_col);
-            if (type == CARQUET_PHYSICAL_BYTE_ARRAY) {
-                has_strings = 1;
+            if (qio_needs_main_thread(type, context->selection.kind[i])) {
+                has_main_thread = 1;
                 continue;
             }
             qio_column_task_t *task = &tasks[n_tasks++];
@@ -1205,7 +1375,7 @@ static SEXP qio_collect_body(void *data) {
             task->dst = qio_column_data_pointer(VECTOR_ELT(result, i), type);
             task->dst_offset = rg_offset[s];
             task->rows = rg_rows[s];
-            task->int64_mode = context->selection.int64_semantics[i]
+            task->int64_mode = context->selection.kind[i] == QIO_KIND_INT64
                                    ? context->int64_mode
                                    : -1;
             task->is_unsigned64 = context->selection.unsigned64[i];
@@ -1248,9 +1418,18 @@ static SEXP qio_collect_body(void *data) {
 
     /* String columns on the main thread (interning and the write barrier are
      * R API), overlapping the workers. An error here unwinds through
-     * qio_batch_cleanup, which waits for the pool before the jump continues. */
-    if (has_strings) {
+     * qio_batch_cleanup, which waits for the pool before the jump continues.
+     * Binary columns build R lists, so they belong here too. */
+    if (has_main_thread) {
+        /* One value buffer for every main-thread column, so size it for the
+         * widest: a variable byte array descriptor, or a fixed-width value. */
         size_t value_width = sizeof(carquet_byte_array_t);
+        for (int32_t i = 0; i < ncol; i++) {
+            if (context->selection.type_length[i] > 0 &&
+                (size_t)context->selection.type_length[i] > value_width) {
+                value_width = (size_t)context->selection.type_length[i];
+            }
+        }
         void *value_buf = R_alloc((size_t)max_rg_rows, (int)value_width);
         int16_t *def_buf =
             (int16_t *)R_alloc((size_t)max_rg_rows, sizeof(int16_t));
@@ -1259,7 +1438,9 @@ static SEXP qio_collect_body(void *data) {
                 int32_t file_col = context->selection.columns[i];
                 carquet_physical_type_t type =
                     carquet_schema_column_type(schema, file_col);
-                if (type != CARQUET_PHYSICAL_BYTE_ARRAY) continue;
+                if (!qio_needs_main_thread(type, context->selection.kind[i])) {
+                    continue;
+                }
                 int16_t max_def =
                     carquet_schema_max_def_level(schema, file_col);
 
@@ -1291,11 +1472,12 @@ static SEXP qio_collect_body(void *data) {
                     def_ptr, max_def, n,
                     carquet_schema_column_name(schema, file_col),
                     &context->int32_sentinel,
-                    context->selection.int64_semantics[i]
+                    context->selection.kind[i] == QIO_KIND_INT64
                         ? context->int64_mode
                         : -1,
-                    context->selection.unsigned64[i],
-                    &context->int64_coerced);
+                    context->selection.unsigned64[i], &context->int64_coerced,
+                    context->selection.kind[i],
+                    context->selection.type_length[i]);
                 carquet_column_reader_free(col);
                 context->column = NULL;
             }
@@ -1670,7 +1852,7 @@ SEXP qio_parquet_metadata(SEXP file) {
 
 SEXP qio_parquet_collect(SEXP file, SEXP columns, SEXP row_groups,
                          SEXP batch_size, SEXP int64_mode,
-                         SEXP int64_columns) {
+                         SEXP column_kinds) {
     qio_parquet_handle_t *handle = qio_get_handle(file, 0);
     if (handle->busy) {
         Rf_error("qio: parquet file already has an active read");
@@ -1682,7 +1864,7 @@ SEXP qio_parquet_collect(SEXP file, SEXP columns, SEXP row_groups,
     context.file = file;
     context.batch_size = qio_batch_size(batch_size);
     context.int64_mode = qio_int64_mode(int64_mode);
-    qio_prepare_selection(handle, columns, row_groups, int64_columns,
+    qio_prepare_selection(handle, columns, row_groups, column_kinds,
                           &context.selection);
 
     handle->busy = 1;
@@ -1698,7 +1880,7 @@ SEXP qio_parquet_collect(SEXP file, SEXP columns, SEXP row_groups,
 
 SEXP qio_parquet_walk(SEXP file, SEXP columns, SEXP row_groups,
                       SEXP batch_size, SEXP callback, SEXP int64_mode,
-                      SEXP int64_columns) {
+                      SEXP column_kinds) {
     qio_parquet_handle_t *handle = qio_get_handle(file, 0);
     if (handle->busy) {
         Rf_error("qio: parquet file already has an active read");
@@ -1714,7 +1896,7 @@ SEXP qio_parquet_walk(SEXP file, SEXP columns, SEXP row_groups,
     context.callback = callback;
     context.batch_size = qio_batch_size(batch_size);
     context.int64_mode = qio_int64_mode(int64_mode);
-    qio_prepare_selection(handle, columns, row_groups, int64_columns,
+    qio_prepare_selection(handle, columns, row_groups, column_kinds,
                           &context.selection);
 
     handle->busy = 1;

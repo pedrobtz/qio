@@ -1,5 +1,16 @@
 # qio 0.0.0.9000
 
+* **Breaking:** a `BYTE_ARRAY` column now reads as character only when it
+  carries a `STRING`, `ENUM`, or `JSON` annotation. An unannotated column is
+  arbitrary bytes and reads as a list of raw vectors, with `NULL` for nulls.
+  qio previously returned every `BYTE_ARRAY` as character by assuming UTF-8,
+  which silently mangled binary data; Apache Arrow reads these columns as
+  binary too. Text columns are now validated as UTF-8 and fail with the column
+  path and row when they are not.
+* `FIXED_LEN_BYTE_ARRAY` columns are now readable. They return a list of
+  fixed-width raw vectors, except `UUID`, which returns canonical hyphenated
+  text, and `FLOAT16`, which widens to double.
+
 * 64-bit integer columns are now read correctly. `read_parquet()`, `collect()`,
   `walk_batches()`, and `read_plan()` gain `int64`, which selects `"double"`
   (the default, exact from `-2^53` through `2^53`) or `"integer64"`

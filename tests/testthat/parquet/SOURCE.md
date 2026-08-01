@@ -114,3 +114,34 @@ cannot: qio's writer has no unsigned 64-bit type and no NULL logical type.
 - Contents: a column of the Parquet `NULL` logical type plus an `INT32` column.
 - Expected behavior: the NULL-typed column reads as all-`NA` logical and the
   row count is preserved.
+
+## Text and binary fixture
+
+`binary_types.parquet` was written by the Apache Arrow R package.
+
+- Generator: `tools/generate-binary-fixture.R`, R `arrow` 24.0.0
+- Contents: an annotated `STRING` column, an unannotated `BYTE_ARRAY` column, a
+  `FIXED_LEN_BYTE_ARRAY(4)` column, and a `FLOAT16` column, each with a null.
+- Expected behavior: only the annotated column is character; the other byte
+  columns are lists of raw vectors with `NULL` for nulls; `FLOAT16` widens to
+  double. See `.agents/TYPES.md`.
+
+No `UUID` fixture exists yet: Apache Arrow's R bindings have no UUID type, and
+qio's writer cannot emit the annotation. `qio_format_uuid()` is unit-tested
+directly. A fixture needs a generator built on carquet's writer, like
+`tools/generate-lazy-fixture.c`.
+
+### Fixtures still needed
+
+Two cases have no fixture because neither Apache Arrow nor qio can produce
+them, and both need a generator built on carquet's writer along the lines of
+`tools/generate-lazy-fixture.c`:
+
+- a `UUID`-annotated `FIXED_LEN_BYTE_ARRAY(16)` column; Arrow's R bindings have
+  no UUID type; and
+- a `STRING`-annotated column holding invalid UTF-8; Arrow refuses to build one,
+  correctly, so qio's UTF-8 validation is currently only exercised by valid
+  input.
+
+`qio_format_uuid()` and the malformed-width errors are unit-tested directly in
+the meantime.

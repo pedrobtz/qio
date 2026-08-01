@@ -108,45 +108,58 @@ Rules for using it:
   must say so and record the measured numbers, per the plan's working rules.
 - Re-measure before and after on the same machine and fixtures. Numbers from
   different machines are not comparable and must not be used as evidence.
+- **A baseline goes stale.** It is only valid for a machine in the same state
+  that recorded it, so an otherwise idle machine is part of the method. If a
+  comparison reports improvements the change does not explain, suspect the
+  baseline before believing the result, and re-record it.
 
 ## Baseline
 
-Recorded on the commit that completed phase P, before any phase 4 work.
+Re-recorded at the end of phase 3.2. **The phase 0 baseline was discarded**: it
+was measured while the machine was busy compiling, so every case was 15-40%
+slower than the same commit measures when the machine is idle. Comparing
+against it reported large phantom improvements, and worse, would have masked a
+real regression -- a 20% slowdown from a true 0.19s still looks "improved" next
+to a stale 0.30s.
 
-- R 4.6.1, `aarch64-apple-darwin23`, Darwin/arm64, 8 cores
+The lesson is recorded in the rules above: a baseline is only valid for a
+machine in the same state that recorded it. Re-record it whenever comparisons
+start showing improvements nothing in the change explains.
+
+- R 4.6.1, `aarch64-apple-darwin23`, Darwin/arm64, 8 cores, idle
 - 10 repetitions, 2 warmups
 - Saved to `bench/results/baseline.csv` (not committed; regenerate with
   `--save baseline`)
 
 | Case | Median (s) | Min (s) | IQR (s) |
 |---|---|---|---|
-| `read-numeric` | 0.1170 | 0.107 | 0.0073 |
-| `read-numeric_nulls` | 0.1250 | 0.113 | 0.0330 |
-| `read-string_low_cardinality` | 0.1220 | 0.121 | 0.0060 |
-| `read-string_high_cardinality` | 0.2840 | 0.280 | 0.0065 |
-| `read-mixed` | 0.0970 | 0.086 | 0.0133 |
-| `collect-buffered` | 0.2660 | 0.264 | 0.0008 |
-| `collect-mmap` | 0.0980 | 0.069 | 0.0415 |
-| `collect-mmap-serial` | 0.2650 | 0.264 | 0.0018 |
-| `collect-projection` | 0.0780 | 0.078 | 0.0010 |
-| `collect-row-groups` | 0.0670 | 0.067 | 0.0007 |
-| `walk-batches` | 0.3630 | 0.360 | 0.0103 |
-| `write-numeric` | 0.4060 | 0.393 | 0.0360 |
-| `write-string_low_cardinality` | 0.3015 | 0.295 | 0.0153 |
-| `write-mixed` | 0.4535 | 0.447 | 0.0042 |
+| `read-numeric` | 0.0640 | 0.063 | 0.0010 |
+| `read-numeric_nulls` | 0.0680 | 0.066 | 0.0010 |
+| `read-string_low_cardinality` | 0.1050 | 0.104 | 0.0023 |
+| `read-string_high_cardinality` | 0.2120 | 0.208 | 0.0032 |
+| `read-mixed` | 0.0620 | 0.055 | 0.0045 |
+| `collect-buffered` | 0.1790 | 0.179 | 0.0007 |
+| `collect-mmap` | 0.0675 | 0.061 | 0.0018 |
+| `collect-mmap-serial` | 0.1790 | 0.178 | 0.0000 |
+| `collect-projection` | 0.0490 | 0.048 | 0.0000 |
+| `collect-row-groups` | 0.0460 | 0.045 | 0.0010 |
+| `walk-batches` | 0.2405 | 0.240 | 0.0010 |
+| `write-numeric` | 0.2440 | 0.241 | 0.0025 |
+| `write-string_low_cardinality` | 0.1860 | 0.184 | 0.0010 |
+| `write-mixed` | 0.2885 | 0.286 | 0.0028 |
 
 ### What the baseline already shows
 
 Two results are worth carrying into phase 4 rather than rediscovering:
 
-- **The speedup is parallelism, not mmap.** `collect-mmap-serial` (0.265) is
-  indistinguishable from `collect-buffered` (0.266), while `collect-mmap`
-  (0.098) is 2.7x faster than both. Mapping alone buys nothing here; the worker
-  pool buys everything. Phase 4 asks whether private-reader parallelism for
-  buffered reads is justified — on this evidence it is worth about 2.7x for
-  every persistent handle, since `parquet_open()` defaults to `mmap = FALSE`.
-- **`walk_batches()` is the slowest way to read the same file.** 0.363 against
-  0.266 for `collect-buffered`, so the batch reader costs roughly 35% more than
+- **The speedup is parallelism, not mmap.** `collect-mmap-serial` (0.179) is
+  identical to `collect-buffered` (0.179), while `collect-mmap` (0.0675) is 2.7x
+  faster than both. Mapping alone buys nothing here; the worker pool buys
+  everything. Phase 4 asks whether private-reader parallelism for buffered reads
+  is justified -- on this evidence it is worth about 2.7x for every persistent
+  handle, since `parquet_open()` defaults to `mmap = FALSE`.
+- **`walk_batches()` is the slowest way to read the same file.** 0.2405 against
+  0.179 for `collect-buffered`, so the batch reader costs roughly 34% more than
   the direct column path for a full pass.
 
 Neither is a defect; both are starting points with numbers attached.

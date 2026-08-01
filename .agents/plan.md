@@ -347,7 +347,8 @@ silently. Selections now resolve to leaf indexes in R before any native call.
 
 ## Phase 3: complete v0.1.0 type coverage
 
-Status: 3.1 complete; 3.2, 3.3, and 3.4 not started.
+Status: 3.1 complete; 3.2 reads complete (writes and two fixtures
+outstanding); 3.3 and 3.4 not started.
 
 ### What 3.1 turned up
 
@@ -379,11 +380,21 @@ order. All four groups depend on the phase 2 read-option surface.
 
 ### 3.2 Text, binary, and exact identifiers
 
-- [ ] Restrict character conversion to text annotations.
-- [ ] Materialize variable and fixed binary as raw-vector list-columns.
-- [ ] Add UUID, JSON, BSON, ENUM, and FLOAT16 mappings, with symmetric writes
-  where the R representation is unambiguous.
-- [ ] Validate UTF-8, fixed widths, UUID bytes, and malformed annotations.
+- [x] Restrict character conversion to text annotations. Only `STRING`,
+  `ENUM`, and `JSON` become character; this changes existing behavior, and the
+  Apache reference `alltypes_*` fixtures are affected. Recorded in `NEWS.md`.
+- [x] Materialize variable and fixed binary as raw-vector list-columns, with
+  `NULL` for null values. `FIXED_LEN_BYTE_ARRAY` is now readable.
+- [x] Add JSON, BSON, ENUM, UUID, and FLOAT16 read mappings.
+- [ ] Symmetric writes where the R representation is unambiguous: a raw
+  list-column identifies binary, and canonical text identifies `UUID`. Reads
+  land first because they are what breaks on existing files.
+- [x] Validate UTF-8 and fixed widths, and reject malformed UUID and FLOAT16
+  widths.
+- [ ] Add fixtures for a `UUID` column and for a text column holding invalid
+  UTF-8. Neither Arrow nor qio can write them, so both need a generator on
+  carquet's writer; `tools/generate-lazy-fixture.c` is the model. Tracked in
+  `tests/testthat/parquet/SOURCE.md`.
 
 ### 3.3 Decimal
 

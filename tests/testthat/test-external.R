@@ -373,3 +373,80 @@ test_that("the NULL logical type survives batching", {
   expect_true(all(is.na(rebuilt$nothing)))
   expect_identical(rebuilt$id, 1:3)
 })
+
+# --- Text and binary (phase 3.2) -------------------------------------------
+# Only an annotated column is text. An unannotated BYTE_ARRAY is arbitrary
+# bytes, and returning it as character would assume an encoding the file never
+# claimed. .agents/TYPES.md, "Text and binary".
+
+test_that("only annotated columns become character", {
+  path <- ext("binary_types.parquet")
+  plan <- read_plan(path)
+
+  expect_identical(
+    plan$r_type,
+    c("character", "list", "list", "double")
+  )
+  expect_identical(
+    plan$converter,
+    c("text", "binary", "binary", "float16")
+  )
+
+  df <- read_parquet(path)
+  expect_type(df$text, "character")
+  expect_identical(df$text, c("hello", NA, "éè"))
+})
+
+test_that("unannotated and fixed-width bytes read as raw list-columns", {
+  df <- read_parquet(ext("binary_types.parquet"))
+
+  expect_type(df$bytes, "list")
+  expect_identical(df$bytes[[1]], as.raw(c(1, 2, 3)))
+  expect_null(df$bytes[[2]]) # a null value is a NULL element
+  expect_identical(df$bytes[[3]], as.raw(c(255, 0, 128)))
+
+  expect_type(df$fixed, "list")
+  expect_identical(df$fixed[[1]], as.raw(c(1, 2, 3, 4)))
+  expect_null(df$fixed[[2]])
+  expect_identical(df$fixed[[3]], as.raw(c(9, 9, 9, 9)))
+  # Every present value has exactly the declared width.
+  present <- Filter(Negate(is.null), df$fixed)
+  expect_true(all(lengths(present) == 4L))
+})
+
+test_that("FLOAT16 widens to double", {
+  df <- read_parquet(ext("binary_types.parquet"))
+  expect_type(df$half, "double")
+  expect_identical(df$half, c(1.5, NA, -2.25))
+})
+
+test_that("binary columns survive batching and projection", {
+  path <- ext("binary_types.parquet")
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+
+  projected <- collect(file, columns = c("fixed", "bytes"))
+  expect_identical(names(projected), c("fixed", "bytes"))
+  expect_type(projected$fixed, "list")
+
+  batches <- list()
+  walk_batches(
+    file,
+    function(batch, index) batches[[index]] <<- batch,
+    batch_size = 2L
+  )
+  rebuilt <- do.call(rbind, batches)
+  full <- collect(file)
+  expect_identical(rebuilt$bytes, full$bytes)
+  expect_identical(rebuilt$fixed, full$fixed)
+  expect_identical(rebuilt$half, full$half)
+})
+
+test_that("the reference corpus's unannotated string columns are now bytes", {
+  # alltypes_plain.parquet carries no annotation on string_col, and Apache
+  # Arrow also reads it as binary. qio used to return character by assuming
+  # UTF-8. This is the deliberate change recorded in NEWS.md.
+  df <- read_parquet(ext("alltypes_plain.parquet"))
+  expect_type(df$string_col, "list")
+  expect_type(df$string_col[[1]], "raw")
+})

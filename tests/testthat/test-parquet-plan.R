@@ -100,11 +100,11 @@ test_that("read_plan() maps physical types to R types", {
       "double",
       "double",
       "character",
-      "character",
+      "list",
       "Date",
       "double",
       "POSIXct",
-      NA,
+      "list",
       "integer",
       "double"
     )
@@ -117,12 +117,12 @@ test_that("read_plan() maps physical types to R types", {
       "int64_double",
       "float",
       "double",
-      "byte_array",
-      "byte_array",
+      "text",
+      "binary",
       "date32",
       "int64",
       "int96",
-      NA,
+      "binary",
       "int32",
       "double"
     )
@@ -172,7 +172,7 @@ test_that("read_plan() flags collectible columns and explains the rest", {
       TRUE,
       TRUE,
       TRUE,
-      FALSE,
+      TRUE,
       FALSE,
       FALSE
     )
@@ -182,10 +182,8 @@ test_that("read_plan() flags collectible columns and explains the rest", {
   expect_true(is.na(plan$note[plan$name == "dt"]))
   expect_true(is.na(plan$note[plan$name == "i96"]))
   expect_match(plan$note[plan$name == "ts"], "TIMESTAMP is not yet applied")
-  expect_match(
-    plan$note[plan$name == "flba"],
-    "FIXED_LEN_BYTE_ARRAY is not supported"
-  )
+  # FIXED_LEN_BYTE_ARRAY now reads as a list of fixed-width raw vectors.
+  expect_true(is.na(plan$note[plan$name == "flba"]))
   expect_match(plan$note[plan$name == "lst"], "nested or repeated")
   expect_match(plan$note[plan$path == "struct.value"], "nested or repeated")
 })
@@ -382,4 +380,106 @@ test_that("qio_select_columns() returns NULL when every column is selectable", {
     stringsAsFactors = FALSE
   )
   expect_null(qio_select_columns(plan, NULL))
+})
+
+# --- Phase 3.2: text, binary, UUID, FLOAT16 --------------------------------
+
+test_that("qio_format_uuid() produces the canonical form", {
+  bytes <- as.raw(c(
+    0x12,
+    0x34,
+    0x56,
+    0x78,
+    0x9a,
+    0xbc,
+    0xde,
+    0xf0,
+    0x11,
+    0x22,
+    0x33,
+    0x44,
+    0x55,
+    0x66,
+    0x77,
+    0x88
+  ))
+  expect_identical(
+    qio_format_uuid(list(bytes)),
+    "12345678-9abc-def0-1122-334455667788"
+  )
+  # A null value stays NA rather than becoming a string of zeroes.
+  expect_identical(qio_format_uuid(list(NULL)), NA_character_)
+  expect_identical(
+    qio_format_uuid(list(bytes, NULL)),
+    c("12345678-9abc-def0-1122-334455667788", NA)
+  )
+})
+
+test_that("qio_format_uuid() rejects a wrong byte count", {
+  # A malformed file, not a value to reinterpret silently.
+  expect_error(qio_format_uuid(list(as.raw(1:15))), "exactly 16")
+  expect_error(qio_format_uuid(list(as.raw(1:17))), "exactly 16")
+})
+
+test_that("qio_decode_float16() decodes IEEE binary16", {
+  half <- function(lo, hi) list(as.raw(c(lo, hi)))
+  expect_identical(qio_decode_float16(half(0x00, 0x3C)), 1) # 1.0
+  expect_identical(qio_decode_float16(half(0x00, 0xBC)), -1) # -1.0
+  expect_identical(qio_decode_float16(half(0x00, 0x00)), 0) # +0
+  expect_identical(qio_decode_float16(half(0x00, 0x40)), 2) # 2.0
+  expect_identical(qio_decode_float16(half(0x00, 0x7C)), Inf)
+  expect_identical(qio_decode_float16(half(0x00, 0xFC)), -Inf)
+  expect_true(is.nan(qio_decode_float16(half(0x01, 0x7C))))
+  # Smallest positive subnormal, 2^-24.
+  expect_identical(qio_decode_float16(half(0x01, 0x00)), 2^-24)
+  expect_identical(qio_decode_float16(list(NULL)), NA_real_)
+})
+
+test_that("qio_decode_float16() rejects a wrong byte count", {
+  expect_error(qio_decode_float16(list(as.raw(1:3))), "exactly 2")
+})
+
+test_that("the plan maps text annotations to character and bytes to lists", {
+  schema <- data.frame(
+    name = c("s", "e", "j", "b", "raw", "fx", "u", "h"),
+    path = c("s", "e", "j", "b", "raw", "fx", "u", "h"),
+    physical_type = c(
+      rep("BYTE_ARRAY", 5),
+      rep("FIXED_LEN_BYTE_ARRAY", 3)
+    ),
+    logical_type = c(
+      "STRING",
+      "ENUM",
+      "JSON",
+      "BSON",
+      NA,
+      NA,
+      "UUID",
+      "FLOAT16"
+    ),
+    logical_details = NA_character_,
+    max_definition_level = 0L,
+    max_repetition_level = 0L,
+    stringsAsFactors = FALSE
+  )
+  plan <- read_plan(schema)
+
+  expect_identical(
+    plan$r_type,
+    c(
+      "character", # STRING
+      "character", # ENUM
+      "character", # JSON
+      "list", # BSON is bytes, not text
+      "list", # unannotated BYTE_ARRAY
+      "list", # unannotated FIXED_LEN_BYTE_ARRAY
+      "character", # UUID
+      "double" # FLOAT16
+    )
+  )
+  expect_identical(
+    plan$converter,
+    c("text", "text", "text", "binary", "binary", "binary", "uuid", "float16")
+  )
+  expect_true(all(plan$collectible))
 })

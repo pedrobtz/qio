@@ -205,7 +205,7 @@ collect.qio_parquet_file <- function(
     row_groups,
     batch_size,
     qio_int64_code(options),
-    qio_int64_columns(plan, columns)
+    qio_column_kinds(plan, columns)
   )
   qio_apply_plan(result, plan)
 }
@@ -257,7 +257,7 @@ walk_batches <- function(
     batch_size,
     callback,
     qio_int64_code(options),
-    qio_int64_columns(plan, columns)
+    qio_column_kinds(plan, columns)
   )
   invisible(x)
 }
@@ -397,17 +397,23 @@ qio_resolve_columns <- function(plan, columns) {
   as.integer(unlist(matches))
 }
 
-# One flag per selected column: does the read plan treat this leaf as a plain
-# 64-bit integer?
+# One code per selected column telling the native layer what R object to build.
+# Must stay in step with the QIO_KIND_* constants in src/qio_file.c.
 #
-# A TIMESTAMP is physically INT64 too, but it is a count of sub-second units
-# that the plan converts afterwards; applying the `int64` range rules to it
-# would turn every nanosecond timestamp past 2^53 into NA. The plan already
-# knows which is which, so the native layer is told rather than left to infer
-# it from the schema a second time.
-qio_int64_columns <- function(plan, columns) {
+# The plan decides, and the native layer is told. A TIMESTAMP is physically
+# INT64 but is a count of sub-second units, so applying the `int64` range rules
+# would turn every nanosecond timestamp past 2^53 into NA; a UUID is physically
+# a fixed byte array whose text form the plan produces. Inferring any of this
+# from the schema in C would duplicate the plan and let the two drift.
+qio_column_kinds <- function(plan, columns) {
   selected <- if (is.null(columns)) seq_len(nrow(plan)) else columns
-  as.integer(plan$converter[selected] %in% c("int64_double", "int64_bit64"))
+  converter <- plan$converter[selected]
+  kind <- rep(0L, length(selected)) # QIO_KIND_DEFAULT
+  kind[converter %in% c("int64_double", "int64_bit64")] <- 1L # INT64
+  kind[converter == "text"] <- 2L # TEXT
+  # UUID and FLOAT16 are decoded as raw bytes and converted by the plan.
+  kind[converter %in% c("binary", "uuid", "float16")] <- 3L # BINARY
+  kind
 }
 
 # Resolve a selection and drop leaves qio cannot materialize yet, reporting the

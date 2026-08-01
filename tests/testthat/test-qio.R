@@ -122,7 +122,7 @@ test_that("parquet_type_mapping() describes read and write support", {
         "double",
         "double",
         "character",
-        NA
+        "list"
       ),
       written_from = c(
         "logical",

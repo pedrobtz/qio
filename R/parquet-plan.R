@@ -30,7 +30,7 @@ qio_type_registry <- function() {
       "double",
       "double",
       "character",
-      NA
+      "list"
     ),
     converter = c(
       "boolean",
@@ -40,7 +40,7 @@ qio_type_registry <- function() {
       "float",
       "double",
       "byte_array",
-      NA
+      "binary"
     ),
     written_from = c(
       "logical",
@@ -137,6 +137,36 @@ qio_resolve_logical <- function(schema, options = qio_read_options()) {
     r_type[rows] <- "POSIXct"
     converter[rows] <- paste0("timestamp_utc_", tolower(time$unit[ok]))
   }
+
+  # Byte arrays are text only when the file says so. An unannotated
+  # BYTE_ARRAY is arbitrary bytes, and returning it as character would assume a
+  # UTF-8 encoding the file never claimed. TYPES.md, "Text and binary".
+  is_text <- !is.na(schema$logical_type) &
+    schema$logical_type %in% c("STRING", "ENUM", "JSON") &
+    schema$physical_type == "BYTE_ARRAY"
+  r_type[is_text] <- "character"
+  converter[is_text] <- "text"
+
+  # UUID is 16 fixed bytes with a canonical text form; FLOAT16 is 2 fixed bytes
+  # widened to double. Both are decoded as raw in C and converted here.
+  is_uuid <- !is.na(schema$logical_type) &
+    schema$logical_type == "UUID" &
+    schema$physical_type == "FIXED_LEN_BYTE_ARRAY"
+  r_type[is_uuid] <- "character"
+  converter[is_uuid] <- "uuid"
+
+  is_float16 <- !is.na(schema$logical_type) &
+    schema$logical_type == "FLOAT16" &
+    schema$physical_type == "FIXED_LEN_BYTE_ARRAY"
+  r_type[is_float16] <- "double"
+  converter[is_float16] <- "float16"
+
+  # Everything else stored as bytes stays bytes: unannotated BYTE_ARRAY, BSON,
+  # and any FIXED_LEN_BYTE_ARRAY without a mapping above.
+  is_binary <- is.na(r_type) &
+    schema$physical_type %in% c("BYTE_ARRAY", "FIXED_LEN_BYTE_ARRAY")
+  r_type[is_binary] <- "list"
+  converter[is_binary] <- "binary"
 
   # 64-bit integers are selected by the read's `int64` mode, not by the file.
   # Bare INT64 and an unsigned INTEGER(64) annotation both land here: C reads
@@ -385,8 +415,83 @@ qio_apply_converter <- function(x, converter) {
     int64_bit64 = structure(x, class = "integer64"),
     # A NULL-annotated column has no values; preserve only its length.
     null_logical = rep(NA, length(x)),
+    # C already produced a character vector or a list of raw vectors.
+    text = x,
+    binary = x,
+    # 16 raw bytes to the canonical 8-4-4-4-12 hyphenated form.
+    uuid = qio_format_uuid(x),
+    # IEEE 754 binary16, little-endian, widened to double.
+    float16 = qio_decode_float16(x),
     # Physical converters return their column unchanged.
     x
+  )
+}
+
+# 16 raw bytes to the canonical hyphenated UUID form. A NULL element is a null
+# value and stays NA; any other length is a malformed file, not a value qio can
+# silently reinterpret.
+qio_format_uuid <- function(x) {
+  vapply(
+    x,
+    function(bytes) {
+      if (is.null(bytes)) {
+        return(NA_character_)
+      }
+      if (length(bytes) != 16L) {
+        stop(
+          "A UUID column contains a value of ",
+          length(bytes),
+          " bytes; UUID requires exactly 16.",
+          call. = FALSE
+        )
+      }
+      hex <- paste(format(bytes), collapse = "")
+      paste(
+        substr(hex, 1L, 8L),
+        substr(hex, 9L, 12L),
+        substr(hex, 13L, 16L),
+        substr(hex, 17L, 20L),
+        substr(hex, 21L, 32L),
+        sep = "-"
+      )
+    },
+    character(1),
+    USE.NAMES = FALSE
+  )
+}
+
+# IEEE 754 binary16 (little-endian) widened to double. Parquet stores FLOAT16
+# as two fixed bytes; R has no half type, so widening is lossless.
+qio_decode_float16 <- function(x) {
+  vapply(
+    x,
+    function(bytes) {
+      if (is.null(bytes)) {
+        return(NA_real_)
+      }
+      if (length(bytes) != 2L) {
+        stop(
+          "A FLOAT16 column contains a value of ",
+          length(bytes),
+          " bytes; FLOAT16 requires exactly 2.",
+          call. = FALSE
+        )
+      }
+      bits <- as.integer(bytes[[1L]]) + 256L * as.integer(bytes[[2L]])
+      sign <- if (bits >= 32768L) -1 else 1
+      exponent <- bits %/% 1024L %% 32L
+      mantissa <- bits %% 1024L
+      if (exponent == 0L) {
+        # Subnormal, or a signed zero when the mantissa is zero too.
+        sign * mantissa * 2^-24
+      } else if (exponent == 31L) {
+        if (mantissa == 0L) sign * Inf else NaN
+      } else {
+        sign * (1 + mantissa / 1024) * 2^(exponent - 15L)
+      }
+    },
+    numeric(1),
+    USE.NAMES = FALSE
   )
 }
 

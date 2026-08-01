@@ -39,8 +39,8 @@ as negative values.
 | `INT64` | numeric, `bit64::integer64`, or `POSIXct` | Selected by `int64`; unrepresentable values become `NA` with one warning per read |
 | `INT96` | UTC `POSIXct` | Read-only legacy timestamp |
 | `FLOAT`, `DOUBLE` | numeric | `FLOAT` is widened to double |
-| `BYTE_ARRAY` | character | All payloads are currently assumed to be UTF-8 |
-| `FIXED_LEN_BYTE_ARRAY` | unsupported | — |
+| `BYTE_ARRAY` | character or list of raw | Character only with a `STRING`, `ENUM`, or `JSON` annotation; validated as UTF-8 |
+| `FIXED_LEN_BYTE_ARRAY` | list of raw, character, or numeric | Raw by default; `UUID` becomes canonical text and `FLOAT16` widens to double |
 
 Only flat, non-repeated leaves are materialized. Selected nested leaves are
 omitted with one operation-level message. If all selected leaves are nested,
@@ -49,6 +49,11 @@ the result has zero columns and preserves its row count.
 `DATE` and UTC-adjusted `TIMESTAMP` conversions are applied by the shared R read
 plan. Other logical annotations are visible through `schema()` but currently
 use their physical fallback when one exists.
+
+Bytes are only text when the file says so. An unannotated `BYTE_ARRAY` is
+arbitrary bytes and reads as a list of raw vectors, where a null value is a
+`NULL` element. Text columns are validated as UTF-8 and fail with the column
+path and row when they are not.
 
 ### Writes
 
