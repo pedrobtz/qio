@@ -1,5 +1,11 @@
 # qio 0.0.0.9000
 
+* `write_parquet()` no longer allocates scratch proportional to the number of
+  rows, and can be interrupted. Columns are encoded in fixed chunks; peak
+  memory for a 4-million-row string column fell from 101MB to 40MB.
+* Fixed silent corruption of `logical` columns written in more than one chunk,
+  whose bit packing restarted at each chunk instead of continuing.
+
 * Writing an all-`NA` logical column now works. It failed outright with an
   out-of-memory error, because a Parquet page holding no present values needs
   no bytes and the vendored encoder treated a zero-size request as failure.

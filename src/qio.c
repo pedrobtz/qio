@@ -157,160 +157,177 @@ static SEXP qio_write_body(void *data) {
         Rf_error("qio: cannot create '%s': %s", ctx->path, err.message);
     }
 
-    int64_t n = (int64_t)nrow;
+    /* Rows moved per carquet_writer_write_batch() call. Bounds the scratch a
+     * write allocates and gives interrupts somewhere to land: a column used to
+     * be encoded in one pass, so a large frame allocated nrow-sized buffers per
+     * column and could not be interrupted at all.
+     *
+     * This needs every encoding to resume correctly across batches. Two did
+     * not, and both are fixed in the vendored tree: BYTE_STREAM_SPLIT split
+     * each call separately, and BOOLEAN bit packing restarted at each call.
+     * See .agents/VENDORED.md. */
+#define QIO_WRITE_CHUNK 65536
 
     for (int c = 0; c < ncol; c++) {
-        void *vmax = vmaxget();
+        void *vmax_column = vmaxget();
         SEXP v = VECTOR_ELT(ctx->x, c);
+        R_xlen_t chunk = nrow < QIO_WRITE_CHUNK ? nrow : QIO_WRITE_CHUNK;
+        if (chunk < 1) chunk = 1;
+
+        /* Allocated once per column, outside the per-chunk vmax scope. */
         int16_t *def =
-            nullable[c] ? (int16_t *)R_alloc(nrow, sizeof(int16_t)) : NULL;
-        R_xlen_t i, k = 0;
-        const void *out = NULL;
+            nullable[c] ? (int16_t *)R_alloc(chunk, sizeof(int16_t)) : NULL;
+        size_t width = sizeof(double);
+        if (ptype[c] == CARQUET_PHYSICAL_BYTE_ARRAY) {
+            width = sizeof(carquet_byte_array_t);
+        }
+        void *buf = R_alloc(chunk, (int)width);
 
-        if (ltype[c] == 1) {
-            /* Date stores days since 1970-01-01; write them as INT32. */
-            int32_t *buf = (int32_t *)R_alloc(nrow, sizeof(int32_t));
-            double *p = REAL(v);
-            for (i = 0; i < nrow; i++) {
-                if (!R_IsNA(p[i])) {
-                    buf[k++] = (int32_t)round(p[i]);
-                    if (def) def[i] = 1;
-                } else if (def) {
-                    def[i] = 0;
-                }
-            }
-            out = buf;
-        } else if (ltype[c] == 2) {
-            /* POSIXct stores UTC seconds; rescale to the requested unit. */
-            int64_t *buf = (int64_t *)R_alloc(nrow, sizeof(int64_t));
-            double *p = REAL(v);
-            double scale = time_unit[c] == 1 ? 1e3 :
-                           time_unit[c] == 2 ? 1e6 : 1e9;
-            for (i = 0; i < nrow; i++) {
-                if (!R_IsNA(p[i])) {
-                    buf[k++] = (int64_t)llround(p[i] * scale);
-                    if (def) def[i] = 1;
-                } else if (def) {
-                    def[i] = 0;
-                }
-            }
-            out = buf;
-        } else switch (ptype[c]) {
-        case CARQUET_PHYSICAL_BOOLEAN: {
-            uint8_t *buf = (uint8_t *)R_alloc(nrow, 1);
-            int *p = LOGICAL(v);
-            for (i = 0; i < nrow; i++) {
-                if (p[i] != NA_LOGICAL) {
-                    buf[k++] = p[i] ? 1 : 0;
-                    if (def) def[i] = 1;
-                } else if (def) {
-                    def[i] = 0;
-                }
-            }
-            out = buf;
-            break;
-        }
-        case CARQUET_PHYSICAL_INT32: {
-            int32_t *buf = (int32_t *)R_alloc(nrow, sizeof(int32_t));
-            int *p = INTEGER(v);
-            for (i = 0; i < nrow; i++) {
-                if (p[i] != NA_INTEGER) {
-                    buf[k++] = p[i];
-                    if (def) def[i] = 1;
-                } else if (def) {
-                    def[i] = 0;
-                }
-            }
-            out = buf;
-            break;
-        }
-        case CARQUET_PHYSICAL_INT64: {
-            int64_t *buf = (int64_t *)R_alloc(nrow, sizeof(int64_t));
-            double *p = REAL(v);
-            for (i = 0; i < nrow; i++) {
-                if (!R_IsNA(p[i])) {
-                    buf[k++] = (int64_t)llround(p[i]);
-                    if (def) def[i] = 1;
-                } else if (def) {
-                    def[i] = 0;
-                }
-            }
-            out = buf;
-            break;
-        }
-        case CARQUET_PHYSICAL_FLOAT: {
-            float *buf = (float *)R_alloc(nrow, sizeof(float));
-            double *p = REAL(v);
-            for (i = 0; i < nrow; i++) {
-                if (!R_IsNA(p[i])) {
-                    buf[k++] = (float)p[i];
-                    if (def) def[i] = 1;
-                } else if (def) {
-                    def[i] = 0;
-                }
-            }
-            out = buf;
-            break;
-        }
-        case CARQUET_PHYSICAL_DOUBLE: {
-            double *buf = (double *)R_alloc(nrow, sizeof(double));
-            double *p = REAL(v);
-            for (i = 0; i < nrow; i++) {
-                if (!R_IsNA(p[i])) {
-                    buf[k++] = p[i];
-                    if (def) def[i] = 1;
-                } else if (def) {
-                    def[i] = 0;
-                }
-            }
-            out = buf;
-            break;
-        }
-        case CARQUET_PHYSICAL_BYTE_ARRAY: {
-            carquet_byte_array_t *buf = (carquet_byte_array_t *)R_alloc(
-                nrow, sizeof(carquet_byte_array_t));
-            /* R_alloc does not zero. Present values are packed densely into
-             * [0, k); the null tail [k, nrow) is never filled, but carquet's
-             * batch-size estimate scans all nrow entries and reads
-             * arrays[i].length. Zero the buffer so those reads are defined
-             * (length 0) instead of garbage — uninitialized bytes are benign
-             * on some allocators but corrupt the estimate on others (x86). */
-            memset(buf, 0, (size_t)nrow * sizeof(carquet_byte_array_t));
-            for (i = 0; i < nrow; i++) {
-                SEXP e = STRING_ELT(v, i);
-                if (e != NA_STRING) {
-                    const char *s = Rf_translateCharUTF8(e);
-                    buf[k].data = (uint8_t *)s;
-                    buf[k].length = (int32_t)strlen(s);
-                    k++;
-                    if (def) def[i] = 1;
-                } else if (def) {
-                    def[i] = 0;
-                }
-            }
-            out = buf;
-            break;
-        }
-        default:
-            Rf_error("qio: invalid physical type for column %d", c + 1);
-        }
+        for (R_xlen_t row0 = 0; row0 < nrow; row0 += chunk) {
+            R_xlen_t len = nrow - row0;
+            if (len > chunk) len = chunk;
+            /* Translated strings live only for this chunk. */
+            void *vmax_chunk = vmaxget();
+            R_xlen_t i, k = 0;
 
-        /* A REQUIRED column carries no definition levels, so carquet reads all
-         * `n` values from the dense buffer. Any skipped NA would leave that
-         * tail uninitialized. R rejects this combination before we get here;
-         * this is the C-side backstop the validation comment above promises. */
-        if (!def && k != nrow) {
-            Rf_error("qio: column %d is REQUIRED but contains missing values",
-                     c + 1);
-        }
+            if (ltype[c] == 1) {
+                /* Date stores days since 1970-01-01; write them as INT32. */
+                int32_t *out = (int32_t *)buf;
+                double *p = REAL(v) + row0;
+                for (i = 0; i < len; i++) {
+                    if (!R_IsNA(p[i])) {
+                        out[k++] = (int32_t)round(p[i]);
+                        if (def) def[i] = 1;
+                    } else if (def) {
+                        def[i] = 0;
+                    }
+                }
+            } else if (ltype[c] == 2) {
+                /* POSIXct stores UTC seconds; rescale to the requested unit. */
+                int64_t *out = (int64_t *)buf;
+                double *p = REAL(v) + row0;
+                double scale = time_unit[c] == 1 ? 1e3 :
+                               time_unit[c] == 2 ? 1e6 : 1e9;
+                for (i = 0; i < len; i++) {
+                    if (!R_IsNA(p[i])) {
+                        out[k++] = (int64_t)llround(p[i] * scale);
+                        if (def) def[i] = 1;
+                    } else if (def) {
+                        def[i] = 0;
+                    }
+                }
+            } else switch (ptype[c]) {
+            case CARQUET_PHYSICAL_BOOLEAN: {
+                uint8_t *out = (uint8_t *)buf;
+                int *p = LOGICAL(v) + row0;
+                for (i = 0; i < len; i++) {
+                    if (p[i] != NA_LOGICAL) {
+                        out[k++] = p[i] ? 1 : 0;
+                        if (def) def[i] = 1;
+                    } else if (def) {
+                        def[i] = 0;
+                    }
+                }
+                break;
+            }
+            case CARQUET_PHYSICAL_INT32: {
+                int32_t *out = (int32_t *)buf;
+                int *p = INTEGER(v) + row0;
+                for (i = 0; i < len; i++) {
+                    if (p[i] != NA_INTEGER) {
+                        out[k++] = p[i];
+                        if (def) def[i] = 1;
+                    } else if (def) {
+                        def[i] = 0;
+                    }
+                }
+                break;
+            }
+            case CARQUET_PHYSICAL_INT64: {
+                int64_t *out = (int64_t *)buf;
+                double *p = REAL(v) + row0;
+                for (i = 0; i < len; i++) {
+                    if (!R_IsNA(p[i])) {
+                        out[k++] = (int64_t)llround(p[i]);
+                        if (def) def[i] = 1;
+                    } else if (def) {
+                        def[i] = 0;
+                    }
+                }
+                break;
+            }
+            case CARQUET_PHYSICAL_FLOAT: {
+                float *out = (float *)buf;
+                double *p = REAL(v) + row0;
+                for (i = 0; i < len; i++) {
+                    if (!R_IsNA(p[i])) {
+                        out[k++] = (float)p[i];
+                        if (def) def[i] = 1;
+                    } else if (def) {
+                        def[i] = 0;
+                    }
+                }
+                break;
+            }
+            case CARQUET_PHYSICAL_DOUBLE: {
+                double *out = (double *)buf;
+                double *p = REAL(v) + row0;
+                for (i = 0; i < len; i++) {
+                    if (!R_IsNA(p[i])) {
+                        out[k++] = p[i];
+                        if (def) def[i] = 1;
+                    } else if (def) {
+                        def[i] = 0;
+                    }
+                }
+                break;
+            }
+            case CARQUET_PHYSICAL_BYTE_ARRAY: {
+                carquet_byte_array_t *out = (carquet_byte_array_t *)buf;
+                /* R_alloc does not zero. Present values pack densely into
+                 * [0, k); the null tail is never filled, but carquet's
+                 * batch-size estimate scans every entry and reads
+                 * arrays[i].length. Zero it so those reads are defined. */
+                memset(out, 0, (size_t)len * sizeof(carquet_byte_array_t));
+                for (i = 0; i < len; i++) {
+                    SEXP e = STRING_ELT(v, row0 + i);
+                    if (e != NA_STRING) {
+                        const char *str = Rf_translateCharUTF8(e);
+                        out[k].data = (uint8_t *)str;
+                        out[k].length = (int32_t)strlen(str);
+                        k++;
+                        if (def) def[i] = 1;
+                    } else if (def) {
+                        def[i] = 0;
+                    }
+                }
+                break;
+            }
+            default:
+                Rf_error("qio: invalid physical type for column %d", c + 1);
+            }
 
-        carquet_status_t written =
-            carquet_writer_write_batch(ctx->writer, c, out, n, def, NULL);
-        if (written != CARQUET_OK) {
-            Rf_error("qio: failed to write column %d: %s", c + 1,
-                     carquet_status_string(written));
+            /* A REQUIRED column carries no definition levels, so carquet reads
+             * all `len` values from the dense buffer. Any skipped NA would
+             * leave that tail uninitialized. R rejects this combination before
+             * we get here; this is the C-side backstop. */
+            if (!def && k != len) {
+                Rf_error(
+                    "qio: column %d is REQUIRED but contains missing values",
+                    c + 1);
+            }
+
+            carquet_status_t written = carquet_writer_write_batch(
+                ctx->writer, c, buf, (int64_t)len, def, NULL);
+            if (written != CARQUET_OK) {
+                Rf_error("qio: failed to write column %d at row %lld: %s",
+                         c + 1, (long long)row0 + 1,
+                         carquet_status_string(written));
+            }
+            vmaxset(vmax_chunk);
+            R_CheckUserInterrupt();
         }
-        vmaxset(vmax);
+        vmaxset(vmax_column);
     }
 
     carquet_writer_t *writer = ctx->writer;

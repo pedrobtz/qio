@@ -1,5 +1,5 @@
 diff -ruN a/carquet/compression/snappy.c b/carquet/compression/snappy.c
---- a/carquet/compression/snappy.c	2026-08-01 19:28:38
+--- a/carquet/compression/snappy.c	2026-08-01 19:50:10
 +++ b/carquet/compression/snappy.c	2026-07-02 15:02:47
 @@ -307,11 +307,17 @@
                                           uint8_t* const buf_limit) {
@@ -24,7 +24,7 @@ diff -ruN a/carquet/compression/snappy.c b/carquet/compression/snappy.c
      if (pattern_size < (size_t)big_pattern) {
  #if SNAPPY_HAVE_VECTOR_SHUFFLE
 diff -ruN a/carquet/encoding/plain.c b/carquet/encoding/plain.c
---- a/carquet/encoding/plain.c	2026-08-01 19:28:38
+--- a/carquet/encoding/plain.c	2026-08-01 19:50:10
 +++ b/carquet/encoding/plain.c	2026-08-01 18:53:00
 @@ -234,15 +234,20 @@
      }
@@ -52,7 +52,7 @@ diff -ruN a/carquet/encoding/plain.c b/carquet/encoding/plain.c
      return CARQUET_OK;
  }
 diff -ruN a/carquet/reader/batch_reader.c b/carquet/reader/batch_reader.c
---- a/carquet/reader/batch_reader.c	2026-08-01 19:28:38
+--- a/carquet/reader/batch_reader.c	2026-08-01 19:50:10
 +++ b/carquet/reader/batch_reader.c	2026-08-01 10:02:42
 @@ -435,7 +435,10 @@
          /* Trigger page load to check if it's a zero-copy page */
@@ -148,7 +148,7 @@ diff -ruN a/carquet/reader/batch_reader.c b/carquet/reader/batch_reader.c
      /* If every projected column is backed by a direct page view, trim the
       * batch to the smallest currently available page slice. This avoids
 diff -ruN a/carquet/reader/column_reader.c b/carquet/reader/column_reader.c
---- a/carquet/reader/column_reader.c	2026-08-01 19:28:38
+--- a/carquet/reader/column_reader.c	2026-08-01 19:50:10
 +++ b/carquet/reader/column_reader.c	2026-07-01 22:15:57
 @@ -23,21 +23,12 @@
      int16_t* rep_levels,
@@ -196,7 +196,7 @@ diff -ruN a/carquet/reader/column_reader.c b/carquet/reader/column_reader.c
              dense_values_read += values_read;
          }
 diff -ruN a/carquet/reader/file_reader.c b/carquet/reader/file_reader.c
---- a/carquet/reader/file_reader.c	2026-08-01 19:28:38
+--- a/carquet/reader/file_reader.c	2026-08-01 19:50:10
 +++ b/carquet/reader/file_reader.c	2026-07-01 06:48:41
 @@ -17,6 +17,7 @@
  #include <string.h>
@@ -217,7 +217,7 @@ diff -ruN a/carquet/reader/file_reader.c b/carquet/reader/file_reader.c
      }
  
 diff -ruN a/carquet/reader/page_filter.c b/carquet/reader/page_filter.c
---- a/carquet/reader/page_filter.c	2026-08-01 19:28:38
+--- a/carquet/reader/page_filter.c	2026-08-01 19:50:10
 +++ b/carquet/reader/page_filter.c	2026-07-01 06:34:58
 @@ -664,7 +664,15 @@
          int64_t end_row;
@@ -237,7 +237,7 @@ diff -ruN a/carquet/reader/page_filter.c b/carquet/reader/page_filter.c
          } else {
              end_row = row_group_num_rows;
 diff -ruN a/carquet/reader/page_reader.c b/carquet/reader/page_reader.c
---- a/carquet/reader/page_reader.c	2026-08-01 19:28:38
+--- a/carquet/reader/page_reader.c	2026-08-01 19:50:10
 +++ b/carquet/reader/page_reader.c	2026-07-02 15:18:18
 @@ -324,6 +324,16 @@
      return CARQUET_OK;
@@ -393,7 +393,7 @@ diff -ruN a/carquet/reader/page_reader.c b/carquet/reader/page_reader.c
              reader->values_remaining -= n;
              total_skipped += n;
 diff -ruN a/carquet/reader/reader_internal.h b/carquet/reader/reader_internal.h
---- a/carquet/reader/reader_internal.h	2026-08-01 19:28:38
+--- a/carquet/reader/reader_internal.h	2026-08-01 19:50:10
 +++ b/carquet/reader/reader_internal.h	2026-08-01 10:15:17
 @@ -169,6 +169,22 @@
      bool page_loaded;           /* Is a page currently loaded? */
@@ -419,7 +419,7 @@ diff -ruN a/carquet/reader/reader_internal.h b/carquet/reader/reader_internal.h
      int32_t page_compressed_size; /* Size of current page compressed data */
      uint8_t* decoded_values;    /* Buffer for decoded values from current page */
 diff -ruN a/carquet/simd/x86/sse_ops.c b/carquet/simd/x86/sse_ops.c
---- a/carquet/simd/x86/sse_ops.c	2026-08-01 19:28:38
+--- a/carquet/simd/x86/sse_ops.c	2026-08-01 19:50:10
 +++ b/carquet/simd/x86/sse_ops.c	2026-06-30 23:47:37
 @@ -16,8 +16,10 @@
  #include <string.h>
@@ -435,25 +435,47 @@ diff -ruN a/carquet/simd/x86/sse_ops.c b/carquet/simd/x86/sse_ops.c
  #ifdef _MSC_VER
  #include <intrin.h>
 diff -ruN a/carquet/writer/page_writer.c b/carquet/writer/page_writer.c
---- a/carquet/writer/page_writer.c	2026-08-01 19:28:38
-+++ b/carquet/writer/page_writer.c	2026-08-01 19:26:48
-@@ -124,6 +124,7 @@
+--- a/carquet/writer/page_writer.c	2026-08-01 19:50:10
++++ b/carquet/writer/page_writer.c	2026-08-01 19:47:06
+@@ -124,6 +124,8 @@
      int64_t num_rows;        /* Logical rows (rep_level==0); used by V2 only */
  
      bool data_page_v2;       /* Emit DATA_PAGE_V2 instead of DATA_PAGE */
 +    bool bss_applied;        /* qio patch: page already byte-split at finalize */
++    int64_t bool_bits;       /* qio patch: BOOLEAN bits packed into this page */
  
      int32_t compression_level;   /* 0 = use codec default */
  
-@@ -284,6 +285,7 @@
+@@ -284,6 +286,8 @@
  
  void carquet_page_writer_reset(carquet_page_writer_t* writer) {
      carquet_buffer_clear(&writer->values_buffer);
 +    writer->bss_applied = false;
++    writer->bool_bits = 0;
      carquet_buffer_clear(&writer->def_levels_buffer);
      carquet_buffer_clear(&writer->rep_levels_buffer);
      carquet_buffer_clear(&writer->staging_buffer);
-@@ -849,23 +851,12 @@
+@@ -840,32 +844,66 @@
+ #endif
+ }
+ 
+-static carquet_status_t encode_float_values(
++/* qio patch: append booleans to the page's PLAIN bit stream, continuing from
++ * the bit position the previous call left.
++ *
++ * Parquet packs a page's booleans as one continuous little-endian bit stream.
++ * carquet_encode_plain_boolean() always starts a fresh byte, so a column
++ * written in several batches restarted the stream at each call whenever the
++ * running count was not a multiple of 8, and every value after the first batch
++ * landed on the wrong bit. Writing 1000 booleans as 5 then 995 corrupted 398
++ * of them. */
++static carquet_status_t append_plain_boolean(
+     carquet_page_writer_t* writer,
+-    const float* values,
++    const uint8_t* values,
+     int64_t count) {
+ 
+     if (count == 0) {
          return CARQUET_OK;
      }
  
@@ -463,17 +485,47 @@ diff -ruN a/carquet/writer/page_writer.c b/carquet/writer/page_writer.c
 -        uint8_t* dest = carquet_buffer_advance(&writer->values_buffer, bytes_needed);
 -        size_t bytes_written = 0;
 -        if (!dest) {
--            return CARQUET_ERROR_OUT_OF_MEMORY;
--        }
++    int64_t start_bit = writer->bool_bits;
++    size_t have_bytes = (size_t)((start_bit + 7) / 8);
++    size_t need_bytes = (size_t)((start_bit + count + 7) / 8);
++
++    if (need_bytes > have_bytes) {
++        uint8_t* grown = carquet_buffer_advance(&writer->values_buffer,
++                                                need_bytes - have_bytes);
++        if (!grown) {
+             return CARQUET_ERROR_OUT_OF_MEMORY;
+         }
 -        carquet_status_t status = carquet_byte_stream_split_encode_float(
 -            values, count, dest, bytes_needed, &bytes_written);
 -        if (status != CARQUET_OK || bytes_written != bytes_needed) {
 -            writer->values_buffer.size = offset;
 -            return status != CARQUET_OK ? status : CARQUET_ERROR_ENCODE;
--        }
--        return CARQUET_OK;
--    }
--
++        /* Only the newly added bytes need clearing; the partial byte already
++         * in the buffer holds bits this call must preserve. */
++        memset(grown, 0, need_bytes - have_bytes);
++    }
++
++    uint8_t* base = writer->values_buffer.data +
++                    (writer->values_buffer.size - need_bytes);
++    for (int64_t i = 0; i < count; i++) {
++        if (values[i]) {
++            int64_t bit = start_bit + i;
++            base[bit >> 3] |= (uint8_t)(1u << (bit & 7));
+         }
++    }
++    writer->bool_bits = start_bit + count;
++    return CARQUET_OK;
++}
++
++static carquet_status_t encode_float_values(
++    carquet_page_writer_t* writer,
++    const float* values,
++    int64_t count) {
++
++    if (count == 0) {
+         return CARQUET_OK;
+     }
+ 
 +    /* qio patch: BYTE_STREAM_SPLIT transposes a whole page into byte planes,
 +     * so it cannot be applied incrementally. This used to split each call's
 +     * subrange and append, which produced independently transposed regions
@@ -483,7 +535,7 @@ diff -ruN a/carquet/writer/page_writer.c b/carquet/writer/page_writer.c
      return carquet_encode_plain_float(values, count, &writer->values_buffer);
  }
  
-@@ -878,23 +869,7 @@
+@@ -878,23 +916,7 @@
          return CARQUET_OK;
      }
  
@@ -508,7 +560,17 @@ diff -ruN a/carquet/writer/page_writer.c b/carquet/writer/page_writer.c
      return carquet_encode_plain_double(values, count, &writer->values_buffer);
  }
  
-@@ -1696,6 +1671,42 @@
+@@ -1098,8 +1120,7 @@
+     switch (writer->type) {
+         case CARQUET_PHYSICAL_BOOLEAN: {
+             const uint8_t* bools = (const uint8_t*)values;
+-            status = carquet_encode_plain_boolean(bools, num_non_null,
+-                                                   &writer->values_buffer);
++            status = append_plain_boolean(writer, bools, num_non_null);
+             if (status == CARQUET_OK && writer->write_statistics) {
+                 update_statistics_boolean(writer, bools, num_non_null);
+             }
+@@ -1696,6 +1717,42 @@
   * ============================================================================
   */
  
@@ -551,7 +613,7 @@ diff -ruN a/carquet/writer/page_writer.c b/carquet/writer/page_writer.c
  carquet_status_t carquet_page_writer_finalize(
      carquet_page_writer_t* writer,
      const uint8_t** page_data,
-@@ -1727,6 +1738,11 @@
+@@ -1727,6 +1784,11 @@
  
      if (!writer || !output_buffer || !page_size) {
          return CARQUET_ERROR_INVALID_ARGUMENT;

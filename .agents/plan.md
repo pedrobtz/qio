@@ -553,8 +553,8 @@ as not justified; see below.
 
 ## Phase 5: harden and configure the writer
 
-Status: correctness work complete. Bounded chunks and interrupts are blocked
-upstream; the reusable configuration object is deferred to v0.2.0.
+Status: complete for v0.1.0. The reusable configuration object is deferred to
+v0.2.0; everything else in the phase is done.
 
 ### What the work turned up
 
@@ -582,12 +582,12 @@ Both are recorded in
 
 ### Work
 
-- [ ] Write bounded chunks and check user interrupts between chunks. Still
-  blocked, but by one type rather than two: fixing the BYTE_STREAM_SPLIT
-  encoder cleared `FLOAT`/`DOUBLE`, leaving `BOOLEAN`, whose bit packing
-  restarts instead of resuming across batches. `INT32`, `INT64`, and
-  `BYTE_ARRAY` were verified to survive multiple batches. Cleanup is already
-  protected with `R_UnwindProtect` from phase P.
+- [x] Write bounded chunks and check user interrupts between chunks. Unblocked
+  by fixing both encodings that could not resume across batches. Columns are
+  written 65536 rows at a time, with an interrupt check between chunks. Peak
+  heap for a 4-million-row string column fell from 101MB to 40MB; measure this
+  on a single wide column, because a mixed frame's own memory hides the
+  scratch. Cleanup was already protected with `R_UnwindProtect` from phase P.
 - [x] Stop writing corrupt `FLOAT` and `DOUBLE` columns. First worked around by
   forcing `PLAIN`, which cost 50% write time and 38% file size; then fixed
   properly by patching carquet to transpose each page once at finalize, which
@@ -620,9 +620,9 @@ Both are recorded in
 
 ### Exit gate
 
-- [x] Failed writes release native resources and do not leave a file that
-  appears successfully complete. Interruption is out of reach until chunking
-  is unblocked upstream.
+- [x] Interrupted and failed writes release native resources and do not leave a
+  file that appears successfully complete. Interrupts are now checked between
+  chunks; the unwind path is the same one the failure tests exercise.
 - [x] All configuration is validated before output mutation. Reuse across
   writes moves with the configuration object to v0.2.0.
 - [x] Codec, null, and page-boundary tests pass: every writable type across

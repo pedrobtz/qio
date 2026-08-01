@@ -95,6 +95,14 @@ them.
   finalize, byte-wise so it does not depend on buffer alignment. Verified
   against Apache Arrow at sizes that previously corrupted everything; covered
   by `test-qio.R`.
+- **Resume BOOLEAN bit packing across write batches**
+  (`writer/page_writer.c`). Parquet packs a page's booleans as one continuous
+  bit stream, but `carquet_encode_plain_boolean()` always starts a fresh byte,
+  so a column written in several batches restarted the stream whenever the
+  running count was not a multiple of 8 and every later value landed on the
+  wrong bit. Writing 1000 booleans as 5 then 995 corrupted 398 of them.
+  `append_plain_boolean()` now continues from the page's bit position. Verified
+  against Apache Arrow; covered by `test-qio.R`.
 - **Allow an empty BOOLEAN page** (`encoding/plain.c`). A page with no present
   values needs no bytes, but `carquet_buffer_advance()` returns `NULL` for a
   zero-size request and `carquet_encode_plain_boolean()` reported that as
@@ -126,20 +134,16 @@ Two consequences worth knowing:
 `find src -name '*.o' -delete` is still a valid reset, but is no longer
 required after a header change.
 
-## Known upstream defects worked around in qio
+## Upstream reporting
 
-These are carquet bugs qio avoids rather than patches. Each one should be
-reported upstream and rechecked on every re-vendor.
+Every entry in the patch ledger above is a carquet bug worth reporting
+upstream, and each should be rechecked on every re-vendor. The three writer
+defects found in phase 5 are the most consequential, because all three
+corrupted data silently rather than failing:
 
-### BOOLEAN bit packing does not resume across write batches
-
-Calling `carquet_writer_write_batch()` several times for one `BOOLEAN` column
-corrupts it: the bit packing restarts rather than continuing from the previous
-partial byte. `INT32`, `INT64`, `BYTE_ARRAY`, and now `FLOAT`/`DOUBLE` all
-round-trip correctly across multiple batches.
-
-This is the remaining blocker on bounding the writer's scratch memory and
-adding interrupt checks, since both need a column written in pieces.
+- BYTE_STREAM_SPLIT applied per call instead of per page,
+- BOOLEAN bit packing restarting at each call,
+- an empty BOOLEAN page reported as out of memory.
 
 ## Patch record
 

@@ -451,3 +451,55 @@ test_that("write errors carry carquet's status", {
     "cannot create"
   )
 })
+
+test_that("writes are chunked, so scratch does not scale with row count", {
+  # A column used to be encoded in one pass, so scratch was sized by the frame:
+  # a 4-million-row string column needed 64MB of byte-array descriptors. It is
+  # now written in fixed chunks. This needs every encoding to resume correctly
+  # across batches, which BYTE_STREAM_SPLIT and BOOLEAN did not until the
+  # vendored fixes; see .agents/VENDORED.md.
+  skip_on_cran()
+  measure <- function(rows) {
+    frame <- data.frame(s = rep("abcdefghij", rows), stringsAsFactors = FALSE)
+    path <- withr::local_tempfile(fileext = ".parquet")
+    gc(reset = TRUE, full = TRUE)
+    write_parquet(frame, path)
+    gc(full = TRUE)["Vcells", "max used"] * 8 / 1024^2
+  }
+  small <- measure(200000L)
+  large <- measure(1600000L)
+  # Eight times the rows must not cost eight times the peak.
+  expect_lt(large, small * 4)
+})
+
+test_that("a chunked write round-trips at sizes spanning many chunks", {
+  # The chunk is 65536 rows, so this crosses it repeatedly and lands on a
+  # boundary that is not a multiple of it.
+  skip_on_cran()
+  set.seed(11)
+  n <- 200003L
+  frame <- data.frame(
+    lgl = rep(c(TRUE, FALSE, NA), length.out = n),
+    dbl = stats::rnorm(n),
+    int = seq_len(n),
+    chr = paste0("v", seq_len(n)),
+    stringsAsFactors = FALSE
+  )
+  frame$dbl[seq(1L, n, by = 11L)] <- NA
+  path <- withr::local_tempfile(fileext = ".parquet")
+  write_parquet(frame, path)
+  expect_equal(read_parquet(path), frame)
+})
+
+test_that("booleans survive a write split across chunks", {
+  # PLAIN boolean encoding is one continuous bit stream per page, so a batch
+  # boundary that is not a multiple of 8 must not restart it. Writing 1000
+  # booleans as 5 then 995 corrupted 398 of them before the fix.
+  skip_on_cran()
+  n <- 200000L
+  values <- rep(c(TRUE, TRUE, FALSE, TRUE, FALSE), length.out = n)
+  values[seq(3L, n, by = 13L)] <- NA
+  path <- withr::local_tempfile(fileext = ".parquet")
+  write_parquet(data.frame(v = values), path)
+  expect_identical(read_parquet(path)$v, values)
+})
