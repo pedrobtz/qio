@@ -273,6 +273,45 @@ test_that("every writable type round-trips across codecs, sizes, and nulls", {
   }
 })
 
+test_that("a zstd file with several numeric columns reads in parallel", {
+  # The regression this exists for is Windows-only and was invisible on every
+  # other platform. carquet cached one zstd decompression context for the whole
+  # process there instead of one per thread, and a mapped collect() decodes
+  # numeric columns on the worker pool while decoding strings on the main
+  # thread, so two threads shared it: the read either failed to decode or ended
+  # the session. The test above covers this incidentally; this one states the
+  # conditions so they cannot be lost by editing that frame.
+  #
+  # It needs more than one *numeric* column, because that is what decides
+  # whether a pool is created at all, plus a string column to keep the main
+  # thread decoding at the same time.
+  skip_on_cran()
+  set.seed(45)
+  n <- 5000L
+  data <- data.frame(
+    a = seq_len(n),
+    b = stats::rnorm(n),
+    c = as.Date("2020-01-01") + (seq_len(n) %% 3650L),
+    d = as.POSIXct("2020-01-01", tz = "UTC") + seq_len(n),
+    s = paste0("s", sprintf("%06d", seq_len(n))),
+    stringsAsFactors = FALSE
+  )
+  path <- withr::local_tempfile(fileext = ".parquet")
+  write_parquet(data, path, compression = "zstd")
+
+  for (threads in c(0L, 1L, 4L)) {
+    for (mapped in c(TRUE, FALSE)) {
+      file <- parquet_open(path, mmap = mapped, threads = threads)
+      withr::defer(parquet_close(file))
+      expect_equal(
+        collect(file),
+        data,
+        info = paste("threads", threads, "mmap", mapped)
+      )
+    }
+  }
+})
+
 test_that("columns larger than one data page round-trip under every codec", {
   # The regression this exists for: with a codec set, carquet selects
   # BYTE_STREAM_SPLIT for FLOAT/DOUBLE, whose encoder corrupted any page built
