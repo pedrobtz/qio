@@ -329,9 +329,11 @@ static SEXP qio_write_body(void *data) {
                      c + 1);
         }
 
-        if (carquet_writer_write_batch(ctx->writer, c, out, n, def, NULL) !=
-            CARQUET_OK) {
-            Rf_error("qio: failed to write column %d", c + 1);
+        carquet_status_t written =
+            carquet_writer_write_batch(ctx->writer, c, out, n, def, NULL);
+        if (written != CARQUET_OK) {
+            Rf_error("qio: failed to write column %d: %s", c + 1,
+                     carquet_status_string(written));
         }
         vmaxset(vmax);
     }

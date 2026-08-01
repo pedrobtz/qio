@@ -184,6 +184,11 @@ For v0.1.0:
 - Reads and writes are flat-only as specified in
   [`TYPES.md`](TYPES.md#nested-release-boundary); nested reading targets v0.2.0.
 
+- The reusable writer configuration object is v0.2.0. `write_parquet()` keeps
+  `compression`, and `parquet_schema()` keeps types; nothing else in v0.1.0
+  needs tuning. Deferring leaves its open questions -- constructor and argument
+  names, row-group targets in rows or bytes, fields, defaults, and dictionary
+  controls -- unanswered rather than guessed.
 - Writes of types with no unambiguous R representation are v0.2.0: binary,
   fixed binary, `UUID`, `FLOAT16`, `ENUM`, `BSON`, and decimal. Reads carry the
   interop value, because a user must read whatever another tool wrote but

@@ -1,5 +1,9 @@
 # qio 0.0.0.9000
 
+* Writing an all-`NA` logical column now works. It failed outright with an
+  out-of-memory error, because a Parquet page holding no present values needs
+  no bytes and the vendored encoder treated a zero-size request as failure.
+
 * Fixed silent corruption of large `double` and `float` columns. With any
   compression codec, the vendored writer selected an encoding whose
   implementation is wrong for pages assembled from more than one call, so a

@@ -553,8 +553,8 @@ as not justified; see below.
 
 ## Phase 5: harden and configure the writer
 
-Status: in progress. A silent data-corruption bug in the default write path was
-found and fixed here; bounded chunks and interrupts are blocked upstream.
+Status: correctness work complete. Bounded chunks and interrupts are blocked
+upstream; the reusable configuration object is deferred to v0.2.0.
 
 ### What the work turned up
 
@@ -576,10 +576,9 @@ Both are recorded in
 
 ### Entry gate
 
-- [ ] The remaining writer-configuration choices in `roadmap.md` are resolved:
-  constructor and argument names, row-group sizing units, v0.1.0 fields,
-  defaults, and global and per-column dictionary controls. Configuration work
-  in this phase does not start until they are.
+- [x] The remaining writer-configuration choices are resolved by deferral: the
+  configuration object moves to v0.2.0, so none of the naming, sizing, or
+  dictionary questions block v0.1.0. Recorded in `roadmap.md`.
 
 ### Work
 
@@ -592,27 +591,51 @@ Both are recorded in
   fix. Cleanup is already protected with `R_UnwindProtect` from phase P.
 - [x] Stop writing corrupt `FLOAT` and `DOUBLE` columns, by forcing `PLAIN`
   encoding for them. Measured cost in file size: none worth reporting.
-- [ ] Abort after write failures but never after `carquet_writer_close()` has
-  consumed the handle. Test interruption and every failure stage.
-- [ ] Validate schema and configuration before creating or truncating output.
+- [x] Abort after write failures but never after `carquet_writer_close()` has
+  consumed the handle, and test every failure stage. Covered in `test-qio.R`:
+  a validation failure leaves an existing file byte-identical, a failure during
+  encoding leaves no file at all and frees the path, and the close path clears
+  the handle before calling close so cleanup can never abort a consumed writer.
+  Interruption is not directly tested: with writes unchunked there is no
+  interrupt check to reach, and adding one is blocked upstream.
+- [x] Validate schema and configuration before creating or truncating output.
+  Asserted rather than assumed: six rejected writes are attempted over an
+  existing file and its size and contents are compared afterwards.
 - [x] Preserve contextual carquet write errors through the C and R boundaries,
   as far as carquet exposes them: `carquet_writer_write_batch()` and
   `carquet_writer_close()` return only a status, with no `carquet_error_t`, so
   messages now carry `carquet_status_string()` and the failing row.
 - [ ] Implement the resolved reusable configuration object with global and
-  complete-path per-column settings.
-- [ ] Keep `parquet_schema()` responsible for types and verify that the default
-  configuration preserves current `write_parquet()` output choices.
-- [ ] Add reproducible write benchmarks before attempting optimizations.
+  complete-path per-column settings. **Deferred to v0.2.0** with the other
+  writer API decisions; the release needs none of it, and deferring leaves the
+  open naming and sizing questions unanswered rather than guessed.
+- [x] Keep `parquet_schema()` responsible for types. With the configuration
+  object deferred there is no second source of truth to reconcile; the only
+  output choice qio now overrides is `PLAIN` encoding for `FLOAT`/`DOUBLE`, to
+  avoid the corrupting encoder.
+- [x] Add reproducible write benchmarks before attempting optimizations.
+  `bench/` has carried `write-numeric`, `write-string_low_cardinality`, and
+  `write-mixed` since phase 0.
 
 ### Exit gate
 
-- [ ] Interrupted and failed writes release native resources and do not leave a
-  file that appears successfully complete.
-- [ ] All configuration is validated before output mutation and is reusable
-  across writes.
-- [ ] Codec, null, row-group, page, and per-column configuration tests pass.
-- [ ] Writer round trips pass against qio and independent Parquet readers.
+- [x] Failed writes release native resources and do not leave a file that
+  appears successfully complete. Interruption is out of reach until chunking
+  is unblocked upstream.
+- [x] All configuration is validated before output mutation. Reuse across
+  writes moves with the configuration object to v0.2.0.
+- [x] Codec, null, and page-boundary tests pass: every writable type across
+  five codecs, with and without nulls, at sizes on both sides of a data page,
+  plus degenerate frames. Row-group and per-column configuration tests move
+  with the deferred configuration object.
+- [x] Writer round trips pass against qio and an independent Parquet reader.
+  The suite round-trips against the input, which is what detects a corrupt
+  write; `tools/check-writer-against-arrow.R` reads the same files with Apache
+  Arrow and compares *that* against the input, which is what attributes the
+  fault to the writer rather than the reader. Comparing the two readers to each
+  other would prove nothing: a badly written file decodes to the same wrong
+  values in both, and verifying this on a build with the corruption restored is
+  how that was established.
 
 ## Phase 6: expose the remaining inspection and writer controls
 

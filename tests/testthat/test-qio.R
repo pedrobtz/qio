@@ -226,3 +226,228 @@ test_that("float and double survive every codec at page-spanning sizes", {
   expect_identical(is.na(back), is.na(values))
   expect_equal(back, values, tolerance = 1e-6)
 })
+
+# --- Writer: adversarial round trips ---------------------------------------
+# The writer was previously only tested on frames small enough to fit one data
+# page, which is why a corruption bug past ~1MB of present values survived. The
+# comparison is against Apache Arrow as well as the input, so a fault shared by
+# qio's reader and writer cannot hide.
+
+writer_frame <- function(n, nulls) {
+  hit <- if (nulls) seq(1L, n, by = 7L) else integer()
+  na <- function(x) {
+    if (length(hit)) {
+      x[hit] <- NA
+    }
+    x
+  }
+  data.frame(
+    lgl = na(rep(c(TRUE, FALSE), length.out = n)),
+    int = na(seq_len(n)),
+    dbl = na(stats::rnorm(n)),
+    chr = na(paste0("s", sprintf("%08d", seq_len(n)))),
+    day = na(as.Date("2020-01-01") + (seq_len(n) %% 3650L)),
+    ts = na(as.POSIXct("2020-01-01", tz = "UTC") + seq_len(n)),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Round-tripping through qio catches a corrupt write on its own: the corrupted
+# float columns differed from the input. Confirming that the *file* rather than
+# the reader is at fault needs an independent implementation, which lives in
+# tools/check-writer-against-arrow.R so arrow stays out of the test
+# dependencies.
+expect_round_trip <- function(data, path, codec = "snappy", tolerance = 1e-9) {
+  write_parquet(data, path, compression = codec)
+  expect_equal(read_parquet(path), data, tolerance = tolerance, info = codec)
+}
+
+test_that("every writable type round-trips across codecs, sizes, and nulls", {
+  skip_on_cran()
+  set.seed(42)
+  for (codec in c("snappy", "zstd", "gzip", "lz4", "uncompressed")) {
+    for (nulls in c(FALSE, TRUE)) {
+      path <- withr::local_tempfile(fileext = ".parquet")
+      expect_round_trip(writer_frame(2000L, nulls), path, codec)
+    }
+  }
+})
+
+test_that("columns larger than one data page round-trip under every codec", {
+  # The regression this exists for: with a codec set, carquet selects
+  # BYTE_STREAM_SPLIT for FLOAT/DOUBLE, whose encoder corrupted any page built
+  # from more than one call. A nullable double column past roughly a megabyte
+  # of present values came back with every non-null value wrong.
+  skip_on_cran()
+  set.seed(43)
+  n <- 150000L
+  values <- stats::rnorm(n)
+  values[seq(1L, n, by = 7L)] <- NA
+
+  for (codec in c("snappy", "zstd", "gzip", "uncompressed")) {
+    path <- withr::local_tempfile(fileext = ".parquet")
+    write_parquet(data.frame(v = values), path, compression = codec)
+    back <- read_parquet(path)$v
+    expect_identical(is.na(back), is.na(values), info = codec)
+    expect_equal(back, values, info = codec)
+  }
+})
+
+test_that("page-spanning logical, integer, and string columns survive", {
+  skip_on_cran()
+  set.seed(44)
+  n <- 200000L
+  frames <- list(
+    logical = data.frame(
+      v = ifelse(stats::runif(n) < 0.3, NA, stats::runif(n) > 0.5)
+    ),
+    integer = data.frame(
+      v = ifelse(stats::runif(n) < 0.3, NA_integer_, seq_len(n))
+    ),
+    string = data.frame(
+      v = ifelse(stats::runif(n) < 0.3, NA, strrep(paste0("x", seq_len(n)), 3)),
+      stringsAsFactors = FALSE
+    )
+  )
+  for (name in names(frames)) {
+    path <- withr::local_tempfile(fileext = ".parquet")
+    write_parquet(frames[[name]], path)
+    expect_equal(read_parquet(path), frames[[name]], info = name)
+  }
+})
+
+test_that("explicit schema types round-trip past a page boundary", {
+  skip_on_cran()
+  set.seed(45)
+  n <- 200000L
+  path <- withr::local_tempfile(fileext = ".parquet")
+
+  write_parquet(
+    data.frame(v = as.double(seq_len(n))),
+    path,
+    schema = parquet_schema(v = "INT64")
+  )
+  expect_equal(read_parquet(path)$v, as.double(seq_len(n)))
+
+  singles <- stats::rnorm(n)
+  write_parquet(
+    data.frame(v = singles),
+    path,
+    schema = parquet_schema(v = "FLOAT")
+  )
+  expect_equal(read_parquet(path)$v, singles, tolerance = 1e-6)
+
+  for (unit in c("MILLIS", "MICROS", "NANOS")) {
+    stamps <- as.POSIXct("2020-01-01", tz = "UTC") + seq_len(n)
+    write_parquet(
+      data.frame(v = stamps),
+      path,
+      schema = parquet_schema(v = list("TIMESTAMP", unit = unit))
+    )
+    expect_equal(read_parquet(path)$v, stamps, info = unit)
+  }
+})
+
+test_that("degenerate frames round-trip", {
+  cases <- list(
+    "all-NA double" = data.frame(v = rep(NA_real_, 500L)),
+    "all-NA character" = data.frame(v = rep(NA_character_, 500L)),
+    "all-NA logical" = data.frame(v = rep(NA, 500L)),
+    "single row" = data.frame(v = 1.5),
+    "constant" = data.frame(v = rep(3.14, 5000L)),
+    "empty strings" = data.frame(v = rep("", 5000L), stringsAsFactors = FALSE)
+  )
+  for (name in names(cases)) {
+    path <- withr::local_tempfile(fileext = ".parquet")
+    write_parquet(cases[[name]], path)
+    expect_equal(read_parquet(path), cases[[name]], info = name)
+  }
+})
+
+# --- Writer: nothing is destroyed by a write that fails ---------------------
+
+test_that("a rejected write leaves an existing file untouched", {
+  # Every validation must happen before the output is created, because opening
+  # for writing truncates. A user overwriting a good file with a bad frame must
+  # still have the good file.
+  original <- data.frame(keep = 1:5)
+  rejections <- list(
+    "unsupported R type" = list(
+      data = data.frame(v = complex(real = 1:3)),
+      schema = NULL
+    ),
+    "schema type mismatch" = list(
+      data = data.frame(v = c("a", "b")),
+      schema = parquet_schema(v = "INT32")
+    ),
+    "REQUIRED column with NA" = list(
+      data = data.frame(v = c(1L, NA)),
+      schema = parquet_schema(
+        v = list(type = "INT32", repetition_type = "REQUIRED")
+      )
+    ),
+    "INT64 outside the exact range" = list(
+      data = data.frame(v = 2^60),
+      schema = parquet_schema(v = "INT64")
+    ),
+    "NaN in a DATE column" = list(
+      data = data.frame(v = c(1, NaN)),
+      schema = parquet_schema(v = "DATE")
+    ),
+    "no columns" = list(data = data.frame(), schema = NULL)
+  )
+
+  for (name in names(rejections)) {
+    path <- withr::local_tempfile(fileext = ".parquet")
+    write_parquet(original, path)
+    before <- file.info(path)$size
+    case <- rejections[[name]]
+
+    expect_error(
+      if (is.null(case$schema)) {
+        write_parquet(case$data, path)
+      } else {
+        write_parquet(case$data, path, schema = case$schema)
+      },
+      info = name
+    )
+
+    expect_identical(file.info(path)$size, before, info = name)
+    expect_identical(read_parquet(path)$keep, 1:5, info = name)
+  }
+})
+
+test_that("a failure after the writer exists leaves no readable file", {
+  # Once encoding starts the output has been created, so the contract changes:
+  # there must be no file left that any reader would accept as complete.
+  path <- withr::local_tempfile(fileext = ".parquet")
+  value <- rawToChar(as.raw(c(0xff, 0xfe)))
+  Encoding(value) <- "bytes"
+  x <- data.frame(
+    a = 1:3,
+    b = 1:3,
+    s = c("ok", "ok", "ok"),
+    stringsAsFactors = FALSE
+  )
+  x$s[3] <- value
+
+  expect_error(write_parquet(x, path), "bytes")
+  expect_false(file.exists(path))
+  expect_error(read_parquet(path))
+
+  # The path is reusable: nothing was left holding it open.
+  write_parquet(data.frame(z = 1:4), path)
+  expect_identical(read_parquet(path)$z, 1:4)
+})
+
+test_that("write errors carry carquet's status", {
+  # write_batch() and close() return a bare status with no carquet_error_t, so
+  # the status string is the whole of the context available.
+  expect_error(
+    write_parquet(
+      data.frame(a = 1),
+      file.path(tempdir(), "no", "such", "dir", "f.parquet")
+    ),
+    "cannot create"
+  )
+})

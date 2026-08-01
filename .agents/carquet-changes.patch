@@ -1,5 +1,5 @@
 diff -ruN a/carquet/compression/snappy.c b/carquet/compression/snappy.c
---- a/carquet/compression/snappy.c	2026-08-01 10:07:10
+--- a/carquet/compression/snappy.c	2026-08-01 18:53:50
 +++ b/carquet/compression/snappy.c	2026-07-02 15:02:47
 @@ -307,11 +307,17 @@
                                           uint8_t* const buf_limit) {
@@ -23,8 +23,36 @@ diff -ruN a/carquet/compression/snappy.c b/carquet/compression/snappy.c
  
      if (pattern_size < (size_t)big_pattern) {
  #if SNAPPY_HAVE_VECTOR_SHUFFLE
+diff -ruN a/carquet/encoding/plain.c b/carquet/encoding/plain.c
+--- a/carquet/encoding/plain.c	2026-08-01 18:53:50
++++ b/carquet/encoding/plain.c	2026-08-01 18:53:00
+@@ -234,15 +234,20 @@
+     }
+ 
+     size_t bytes_needed = ((size_t)count + 7) / 8;
++    /* qio patch: a page with no present values needs no bytes. Requesting a
++     * zero-size advance returns NULL, which was reported as out of memory, so
++     * writing an all-null BOOLEAN column failed. The guard below already
++     * anticipated a zero count. */
++    if (bytes_needed == 0) {
++        return CARQUET_OK;
++    }
+     uint8_t* dest = carquet_buffer_advance(output, bytes_needed);
+     if (!dest) {
+         return CARQUET_ERROR_OUT_OF_MEMORY;
+     }
+ 
+-    if (bytes_needed > 0) {
+-        memset(dest, 0, bytes_needed);
+-        carquet_dispatch_pack_bools(input, dest, count);
+-    }
++    memset(dest, 0, bytes_needed);
++    carquet_dispatch_pack_bools(input, dest, count);
+ 
+     return CARQUET_OK;
+ }
 diff -ruN a/carquet/reader/batch_reader.c b/carquet/reader/batch_reader.c
---- a/carquet/reader/batch_reader.c	2026-08-01 10:07:10
+--- a/carquet/reader/batch_reader.c	2026-08-01 18:53:50
 +++ b/carquet/reader/batch_reader.c	2026-08-01 10:02:42
 @@ -435,7 +435,10 @@
          /* Trigger page load to check if it's a zero-copy page */
@@ -120,7 +148,7 @@ diff -ruN a/carquet/reader/batch_reader.c b/carquet/reader/batch_reader.c
      /* If every projected column is backed by a direct page view, trim the
       * batch to the smallest currently available page slice. This avoids
 diff -ruN a/carquet/reader/column_reader.c b/carquet/reader/column_reader.c
---- a/carquet/reader/column_reader.c	2026-08-01 10:07:10
+--- a/carquet/reader/column_reader.c	2026-08-01 18:53:50
 +++ b/carquet/reader/column_reader.c	2026-07-01 22:15:57
 @@ -23,21 +23,12 @@
      int16_t* rep_levels,
@@ -168,7 +196,7 @@ diff -ruN a/carquet/reader/column_reader.c b/carquet/reader/column_reader.c
              dense_values_read += values_read;
          }
 diff -ruN a/carquet/reader/file_reader.c b/carquet/reader/file_reader.c
---- a/carquet/reader/file_reader.c	2026-08-01 10:07:10
+--- a/carquet/reader/file_reader.c	2026-08-01 18:53:50
 +++ b/carquet/reader/file_reader.c	2026-07-01 06:48:41
 @@ -17,6 +17,7 @@
  #include <string.h>
@@ -189,7 +217,7 @@ diff -ruN a/carquet/reader/file_reader.c b/carquet/reader/file_reader.c
      }
  
 diff -ruN a/carquet/reader/page_filter.c b/carquet/reader/page_filter.c
---- a/carquet/reader/page_filter.c	2026-08-01 10:07:10
+--- a/carquet/reader/page_filter.c	2026-08-01 18:53:50
 +++ b/carquet/reader/page_filter.c	2026-07-01 06:34:58
 @@ -664,7 +664,15 @@
          int64_t end_row;
@@ -209,7 +237,7 @@ diff -ruN a/carquet/reader/page_filter.c b/carquet/reader/page_filter.c
          } else {
              end_row = row_group_num_rows;
 diff -ruN a/carquet/reader/page_reader.c b/carquet/reader/page_reader.c
---- a/carquet/reader/page_reader.c	2026-08-01 10:07:10
+--- a/carquet/reader/page_reader.c	2026-08-01 18:53:50
 +++ b/carquet/reader/page_reader.c	2026-07-02 15:18:18
 @@ -324,6 +324,16 @@
      return CARQUET_OK;
@@ -365,8 +393,8 @@ diff -ruN a/carquet/reader/page_reader.c b/carquet/reader/page_reader.c
              reader->values_remaining -= n;
              total_skipped += n;
 diff -ruN a/carquet/reader/reader_internal.h b/carquet/reader/reader_internal.h
---- a/carquet/reader/reader_internal.h	2026-08-01 10:07:10
-+++ b/carquet/reader/reader_internal.h	2026-08-01 10:06:05
+--- a/carquet/reader/reader_internal.h	2026-08-01 18:53:50
++++ b/carquet/reader/reader_internal.h	2026-08-01 10:15:17
 @@ -169,6 +169,22 @@
      bool page_loaded;           /* Is a page currently loaded? */
      int32_t page_num_values;    /* Total values in current page */
@@ -391,7 +419,7 @@ diff -ruN a/carquet/reader/reader_internal.h b/carquet/reader/reader_internal.h
      int32_t page_compressed_size; /* Size of current page compressed data */
      uint8_t* decoded_values;    /* Buffer for decoded values from current page */
 diff -ruN a/carquet/simd/x86/sse_ops.c b/carquet/simd/x86/sse_ops.c
---- a/carquet/simd/x86/sse_ops.c	2026-08-01 10:07:10
+--- a/carquet/simd/x86/sse_ops.c	2026-08-01 18:53:50
 +++ b/carquet/simd/x86/sse_ops.c	2026-06-30 23:47:37
 @@ -16,8 +16,10 @@
  #include <string.h>

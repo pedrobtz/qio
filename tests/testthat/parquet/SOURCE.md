@@ -54,6 +54,14 @@ Parquet implementation. That implementation is the **Apache Arrow R package**
 
 Generators: `tools/generate-int32-min-fixture.R`, `bench/benchmark.R`.
 
+`tools/check-writer-against-arrow.R` uses it differently: rather than producing
+a fixture, it reads qio's own output back with Arrow and compares that against
+the original input. The distinction matters. Comparing qio's read against
+Arrow's read proves nothing about the writer, because a badly written file
+decodes to the same wrong values in both -- which is exactly what happened when
+the float-encoding corruption was live. Only comparing an independent read
+against the input separates a writer fault from a reader fault.
+
 ## Third-party boundary fixture
 
 `int32_min.parquet` was written by the Apache Arrow R package, an independent

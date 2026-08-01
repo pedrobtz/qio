@@ -84,6 +84,14 @@ them.
   is left alone; qio does not call it. Covered by a thread-count test in
   `tests/testthat/test-parquet-file.R`.
 
+- **Allow an empty BOOLEAN page** (`encoding/plain.c`). A page with no present
+  values needs no bytes, but `carquet_buffer_advance()` returns `NULL` for a
+  zero-size request and `carquet_encode_plain_boolean()` reported that as
+  `CARQUET_ERROR_OUT_OF_MEMORY`. Writing an all-null `logical` column therefore
+  failed outright; every other type already handled it. The function's own
+  `if (bytes_needed > 0)` guard shows a zero count was anticipated. Covered by
+  the degenerate-frame tests in `tests/testthat/test-qio.R`.
+
 `reader_internal.h` defines structs shared by multiple translation units. R's
 own build rules do not track header dependencies, so `src/Makevars` and
 `src/Makevars.win` declare one explicitly: every object depends on every
