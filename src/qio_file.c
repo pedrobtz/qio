@@ -2475,6 +2475,337 @@ SEXP qio_parquet_column_statistics(SEXP file) {
     return result;
 }
 
+/* Per-page statistics and locations.
+ *
+ * A column index and an offset index describe the same pages from two sides:
+ * one holds bounds and null counts, the other file offsets and first rows.
+ * They are reported as one frame because a page is the row, and either side
+ * may be missing.
+ *
+ * Both handles are owned by the caller and must be freed. The extraction below
+ * copies everything it needs into R's vmax storage and frees both before
+ * building any R object, so the only call that can longjmp while a handle is
+ * held is the single R_alloc, and nothing is left behind on the normal paths.
+ */
+typedef struct {
+    int64_t null_count;
+    int64_t first_row;
+    int64_t offset;
+    int32_t compressed_size;
+    int32_t min_size;
+    int32_t max_size;
+    const uint8_t *min_value;
+    const uint8_t *max_value;
+    int is_null_page;
+    int has_stats;
+    int has_location;
+} qio_page_row_t;
+
+SEXP qio_parquet_page_index(SEXP file) {
+    qio_parquet_handle_t *handle = qio_get_handle(file, 0);
+    const carquet_schema_t *schema = carquet_reader_schema(handle->reader);
+    int32_t groups = carquet_reader_num_row_groups(handle->reader);
+    int32_t columns = carquet_reader_num_columns(handle->reader);
+
+    const carquet_schema_node_t **leaves =
+        (const carquet_schema_node_t **)R_alloc(
+            (size_t)(columns > 0 ? columns : 1), sizeof(*leaves));
+    if (qio_leaf_nodes(schema, leaves, columns) != columns) {
+        Rf_error("qio: parquet schema does not describe all %d columns",
+                 columns);
+    }
+
+    /* Count first, so every output vector is allocated once and the fill pass
+     * never has to grow anything while holding a native handle. */
+    R_xlen_t total = 0;
+    for (int32_t g = 0; g < groups; g++) {
+        for (int32_t c = 0; c < columns; c++) {
+            carquet_error_t err = CARQUET_ERROR_INIT;
+            carquet_column_index_t *stats =
+                carquet_reader_get_column_index(handle->reader, g, c, &err);
+            int32_t pages = stats ? carquet_column_index_num_pages(stats) : 0;
+            if (stats) carquet_column_index_free(stats);
+            if (pages == 0) {
+                carquet_error_t offset_err = CARQUET_ERROR_INIT;
+                carquet_offset_index_t *locations =
+                    carquet_reader_get_offset_index(handle->reader, g, c,
+                                                    &offset_err);
+                if (locations) {
+                    pages = carquet_offset_index_num_pages(locations);
+                    carquet_offset_index_free(locations);
+                }
+            }
+            if (pages > 0) total += pages;
+        }
+    }
+
+    const int ncol = 11;
+    const char *column_names[] = {
+        "row_group", "column",     "name",        "page",
+        "first_row", "offset",     "compressed_bytes", "null_count",
+        "null_page", "min",        "max"};
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, ncol));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, ncol));
+    SET_VECTOR_ELT(result, 0, Rf_allocVector(INTSXP, total));
+    SET_VECTOR_ELT(result, 1, Rf_allocVector(INTSXP, total));
+    SET_VECTOR_ELT(result, 2, Rf_allocVector(STRSXP, total));
+    SET_VECTOR_ELT(result, 3, Rf_allocVector(INTSXP, total));
+    SET_VECTOR_ELT(result, 4, Rf_allocVector(REALSXP, total));
+    SET_VECTOR_ELT(result, 5, Rf_allocVector(REALSXP, total));
+    SET_VECTOR_ELT(result, 6, Rf_allocVector(REALSXP, total));
+    SET_VECTOR_ELT(result, 7, Rf_allocVector(REALSXP, total));
+    SET_VECTOR_ELT(result, 8, Rf_allocVector(LGLSXP, total));
+    SET_VECTOR_ELT(result, 9, Rf_allocVector(VECSXP, total));
+    SET_VECTOR_ELT(result, 10, Rf_allocVector(VECSXP, total));
+    for (int i = 0; i < ncol; i++)
+        SET_STRING_ELT(names, i, Rf_mkChar(column_names[i]));
+
+    R_xlen_t at = 0;
+    for (int32_t g = 0; g < groups && at < total; g++) {
+        for (int32_t c = 0; c < columns && at < total; c++) {
+            void *vmax_chunk = vmaxget();
+            carquet_error_t stats_err = CARQUET_ERROR_INIT;
+            carquet_error_t offset_err = CARQUET_ERROR_INIT;
+            carquet_column_index_t *stats =
+                carquet_reader_get_column_index(handle->reader, g, c,
+                                                &stats_err);
+            carquet_offset_index_t *locations =
+                carquet_reader_get_offset_index(handle->reader, g, c,
+                                                &offset_err);
+
+            int32_t pages = stats ? carquet_column_index_num_pages(stats) : 0;
+            int32_t located =
+                locations ? carquet_offset_index_num_pages(locations) : 0;
+            if (located > pages) pages = located;
+            if (pages <= 0) {
+                if (stats) carquet_column_index_free(stats);
+                if (locations) carquet_offset_index_free(locations);
+                vmaxset(vmax_chunk);
+                continue;
+            }
+
+            /* The one allocation made while the handles are held. */
+            qio_page_row_t *rows = (qio_page_row_t *)R_alloc(
+                (size_t)pages, sizeof(qio_page_row_t));
+            memset(rows, 0, (size_t)pages * sizeof(qio_page_row_t));
+
+            for (int32_t p = 0; p < pages; p++) {
+                if (stats && p < carquet_column_index_num_pages(stats)) {
+                    carquet_page_stats_t page;
+                    memset(&page, 0, sizeof(page));
+                    if (carquet_column_index_get_page_stats(stats, p, &page) ==
+                        CARQUET_OK) {
+                        rows[p].has_stats = 1;
+                        rows[p].null_count = page.null_count;
+                        rows[p].is_null_page = page.is_null_page;
+                        rows[p].min_value = (const uint8_t *)page.min_value;
+                        rows[p].min_size = page.min_value_size;
+                        rows[p].max_value = (const uint8_t *)page.max_value;
+                        rows[p].max_size = page.max_value_size;
+                    }
+                }
+                if (locations && p < located) {
+                    carquet_page_location_t where;
+                    memset(&where, 0, sizeof(where));
+                    if (carquet_offset_index_get_page_location(
+                            locations, p, &where) == CARQUET_OK) {
+                        rows[p].has_location = 1;
+                        rows[p].offset = where.offset;
+                        rows[p].compressed_size = where.compressed_size;
+                        rows[p].first_row = where.first_row_index;
+                    }
+                }
+            }
+
+            /* Bounds point into index storage, so copy them before freeing. */
+            for (int32_t p = 0; p < pages; p++) {
+                if (rows[p].min_value && rows[p].min_size > 0) {
+                    uint8_t *copy = (uint8_t *)R_alloc((size_t)rows[p].min_size, 1);
+                    memcpy(copy, rows[p].min_value, (size_t)rows[p].min_size);
+                    rows[p].min_value = copy;
+                }
+                if (rows[p].max_value && rows[p].max_size > 0) {
+                    uint8_t *copy = (uint8_t *)R_alloc((size_t)rows[p].max_size, 1);
+                    memcpy(copy, rows[p].max_value, (size_t)rows[p].max_size);
+                    rows[p].max_value = copy;
+                }
+            }
+
+            if (stats) carquet_column_index_free(stats);
+            if (locations) carquet_offset_index_free(locations);
+
+            carquet_physical_type_t type = carquet_schema_column_type(schema, c);
+            const carquet_logical_type_t *logical =
+                carquet_schema_node_logical_type(leaves[c]);
+            int is_text = logical && (logical->id == CARQUET_LOGICAL_STRING ||
+                                      logical->id == CARQUET_LOGICAL_ENUM ||
+                                      logical->id == CARQUET_LOGICAL_JSON);
+            int32_t type_length = carquet_schema_node_type_length(leaves[c]);
+
+            for (int32_t p = 0; p < pages && at < total; p++, at++) {
+                INTEGER(VECTOR_ELT(result, 0))[at] = g + 1;
+                INTEGER(VECTOR_ELT(result, 1))[at] = c + 1;
+                SET_STRING_ELT(VECTOR_ELT(result, 2), at,
+                               qio_column_path_string(schema, c));
+                INTEGER(VECTOR_ELT(result, 3))[at] = p + 1;
+                REAL(VECTOR_ELT(result, 4))[at] =
+                    rows[p].has_location ? (double)rows[p].first_row : NA_REAL;
+                REAL(VECTOR_ELT(result, 5))[at] =
+                    rows[p].has_location ? (double)rows[p].offset : NA_REAL;
+                REAL(VECTOR_ELT(result, 6))[at] =
+                    rows[p].has_location ? (double)rows[p].compressed_size
+                                         : NA_REAL;
+                REAL(VECTOR_ELT(result, 7))[at] =
+                    rows[p].has_stats ? (double)rows[p].null_count : NA_REAL;
+                LOGICAL(VECTOR_ELT(result, 8))[at] =
+                    rows[p].has_stats ? rows[p].is_null_page : NA_LOGICAL;
+
+                SEXP low = PROTECT(qio_statistic_value(
+                    rows[p].min_value, rows[p].min_size, type, type_length,
+                    is_text));
+                SEXP high = PROTECT(qio_statistic_value(
+                    rows[p].max_value, rows[p].max_size, type, type_length,
+                    is_text));
+                if (low != R_NilValue)
+                    SET_VECTOR_ELT(VECTOR_ELT(result, 9), at, low);
+                if (high != R_NilValue)
+                    SET_VECTOR_ELT(VECTOR_ELT(result, 10), at, high);
+                UNPROTECT(2);
+            }
+            vmaxset(vmax_chunk);
+        }
+    }
+
+    qio_set_data_frame_attributes(result, names, (int32_t)at);
+    UNPROTECT(2);
+    return result;
+}
+
+/* Bloom-filter membership.
+ *
+ * A bloom filter answers only "definitely absent" or "possibly present", so
+ * the result is deliberately named for what it can promise. Values are matched
+ * against the column's physical type: carquet hashes the physical
+ * representation, so an R value has to be reduced to the same thing the writer
+ * hashed, and anything qio cannot reduce is an error rather than a silent
+ * FALSE, which would read as "definitely absent".
+ */
+SEXP qio_parquet_bloom_check(SEXP file, SEXP column_sexp, SEXP values,
+                             SEXP row_group_sexp) {
+    qio_parquet_handle_t *handle = qio_get_handle(file, 0);
+    const carquet_schema_t *schema = carquet_reader_schema(handle->reader);
+    int32_t columns = carquet_reader_num_columns(handle->reader);
+    int32_t groups = carquet_reader_num_row_groups(handle->reader);
+
+    int32_t column = Rf_asInteger(column_sexp) - 1;
+    if (column < 0 || column >= columns) {
+        Rf_error("qio: column index out of range");
+    }
+    int32_t group = Rf_asInteger(row_group_sexp) - 1;
+    if (group < 0 || group >= groups) {
+        Rf_error("qio: row group index out of range");
+    }
+
+    carquet_physical_type_t type = carquet_schema_column_type(schema, column);
+    R_xlen_t n = XLENGTH(values);
+
+    /* Reject an unusable request before opening anything, so no handle is held
+     * across an error. */
+    switch (type) {
+    case CARQUET_PHYSICAL_INT32:
+    case CARQUET_PHYSICAL_INT64:
+    case CARQUET_PHYSICAL_FLOAT:
+    case CARQUET_PHYSICAL_DOUBLE:
+        if (TYPEOF(values) != INTSXP && TYPEOF(values) != REALSXP) {
+            Rf_error("qio: `values` must be numeric for this column");
+        }
+        break;
+    case CARQUET_PHYSICAL_BYTE_ARRAY:
+    case CARQUET_PHYSICAL_FIXED_LEN_BYTE_ARRAY:
+        if (TYPEOF(values) != STRSXP) {
+            Rf_error("qio: `values` must be character for this column");
+        }
+        break;
+    default:
+        Rf_error("qio: bloom filters are not defined for %s columns",
+                 carquet_physical_type_name(type));
+    }
+
+    carquet_error_t err = CARQUET_ERROR_INIT;
+    carquet_bloom_filter_t *filter =
+        carquet_reader_get_bloom_filter(handle->reader, group, column, &err);
+    if (!filter) {
+        Rf_error("qio: column '%s' has no bloom filter in row group %d",
+                 carquet_schema_column_name(schema, column), group + 1);
+    }
+
+    SEXP result = PROTECT(Rf_allocVector(LGLSXP, n));
+    int *out = LOGICAL(result);
+    for (R_xlen_t i = 0; i < n; i++) {
+        switch (type) {
+        case CARQUET_PHYSICAL_INT32: {
+            double value = TYPEOF(values) == INTSXP
+                               ? (INTEGER(values)[i] == NA_INTEGER
+                                      ? NA_REAL
+                                      : (double)INTEGER(values)[i])
+                               : REAL(values)[i];
+            out[i] = ISNA(value) ? NA_LOGICAL
+                                 : carquet_bloom_filter_check_i32(
+                                       filter, (int32_t)value);
+            break;
+        }
+        case CARQUET_PHYSICAL_INT64: {
+            double value = TYPEOF(values) == INTSXP
+                               ? (INTEGER(values)[i] == NA_INTEGER
+                                      ? NA_REAL
+                                      : (double)INTEGER(values)[i])
+                               : REAL(values)[i];
+            out[i] = ISNA(value) ? NA_LOGICAL
+                                 : carquet_bloom_filter_check_i64(
+                                       filter, (int64_t)value);
+            break;
+        }
+        case CARQUET_PHYSICAL_FLOAT: {
+            double value = TYPEOF(values) == INTSXP
+                               ? (INTEGER(values)[i] == NA_INTEGER
+                                      ? NA_REAL
+                                      : (double)INTEGER(values)[i])
+                               : REAL(values)[i];
+            out[i] = ISNA(value) ? NA_LOGICAL
+                                 : carquet_bloom_filter_check_float(
+                                       filter, (float)value);
+            break;
+        }
+        case CARQUET_PHYSICAL_DOUBLE: {
+            double value = TYPEOF(values) == INTSXP
+                               ? (INTEGER(values)[i] == NA_INTEGER
+                                      ? NA_REAL
+                                      : (double)INTEGER(values)[i])
+                               : REAL(values)[i];
+            out[i] = ISNA(value)
+                         ? NA_LOGICAL
+                         : carquet_bloom_filter_check_double(filter, value);
+            break;
+        }
+        default: {
+            SEXP element = STRING_ELT(values, i);
+            if (element == NA_STRING) {
+                out[i] = NA_LOGICAL;
+                break;
+            }
+            const char *text = Rf_translateCharUTF8(element);
+            out[i] = carquet_bloom_filter_check_bytes(
+                filter, (const uint8_t *)text, strlen(text));
+            break;
+        }
+        }
+    }
+
+    carquet_bloom_filter_destroy(filter);
+    UNPROTECT(1);
+    return result;
+}
+
 SEXP qio_parquet_metadata(SEXP file) {
     qio_parquet_handle_t *handle = qio_get_handle(file, 0);
     int32_t rows = carquet_reader_num_metadata(handle->reader);

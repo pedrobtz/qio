@@ -243,3 +243,30 @@ partially, so any footer key beginning with `r` -- `run`, for instance -- makes
 `arrow::read_parquet()` warn `Invalid metadata$r` about a perfectly valid file.
 That is arrow's behavior, not a defect in what qio writes. The cross-check
 avoids such keys so its output stays clean.
+
+## Bloom filter, page index, and sort order fixture
+
+`bloom_sorted.parquet` was written by **pyarrow**, because qio's writer emits
+none of the three things it exists to test: bloom filters, page indexes, and a
+declared sort order.
+
+- Generator: `tools/generate-bloom-sorting-fixture.py`, `pyarrow` 25.0.0
+- Command: `version = "2.6"`, `compression = "snappy"`,
+  `row_group_size = 1000`, `data_page_size = 4096`, `write_page_index = True`,
+  `bloom_filter_options` on `key` and `label`, and one `SortingColumn` on `key`
+- License: Apache License 2.0
+- Contents: 4000 rows across four row groups. `key` is `INT64` running 0..3999
+  ascending, so the declared sort order is truthful; `label` is the matching
+  `item-00000` string; `score` is a `DOUBLE` with no bloom filter, so a request
+  for one can be tested as an error.
+
+Expected behavior: `page_index()` reports every page with both its location and
+its bounds; `bloom_filter_may_contain()` never returns `FALSE` for a value that
+is present, and rules out the overwhelming majority of values that are not. The
+generator aborts unless the file really carries several row groups, a page
+index, a bloom filter, and a sort order, since any of those missing would make
+the tests vacuous.
+
+Bloom filters are probabilistic, so tests assert per-value only in the
+direction the structure guarantees -- no false negatives -- and assert on the
+bulk for the other direction.

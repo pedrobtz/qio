@@ -594,3 +594,96 @@ column_statistics.qio_parquet_file <- function(x, ...) {
   qio_empty_dots(...)
   .Call(C_qio_parquet_column_statistics, x)
 }
+
+#' Inspect Parquet page indexes
+#'
+#' Reports the per-page index of each column chunk: where each data page sits
+#' in the file, which row it starts at, and the bounds and null count it
+#' declares. One row per page.
+#'
+#' A page index is optional, and many writers omit it. Columns without one
+#' contribute no rows, so a file with no page index at all returns a
+#' zero-row data frame rather than an error. qio's own writer does not emit
+#' page indexes; see [qio-limitations].
+#'
+#' Like [column_statistics()], the bounds are claims made by whoever wrote the
+#' file. qio reports them and does not use them to skip pages.
+#'
+#' @param x A `qio_parquet_file` object.
+#' @param ... Reserved for future use.
+#'
+#' @return A data frame with one row per page. `first_row`, `offset`, and
+#'   `compressed_bytes` come from the offset index and are `NA` when only a
+#'   column index is present; `null_count`, `null_page`, `min`, and `max` come
+#'   from the column index and are `NA` or `NULL` when only an offset index is.
+#'   `min` and `max` are list columns, decoded as in [column_statistics()].
+#' @seealso [column_statistics()], [column_chunks()]
+#' @export
+#' @examples
+#' # qio does not write page indexes, so a file it wrote has none and the
+#' # result is empty rather than an error.
+#' path <- tempfile(fileext = ".parquet")
+#' write_parquet(data.frame(n = 1:10), path)
+#' pf <- parquet_open(path)
+#' nrow(page_index(pf))
+#' parquet_close(pf)
+page_index <- function(x, ...) {
+  UseMethod("page_index")
+}
+
+#' @rdname page_index
+#' @export
+page_index.qio_parquet_file <- function(x, ...) {
+  qio_empty_dots(...)
+  .Call(C_qio_parquet_page_index, x)
+}
+
+#' Test values against a Parquet bloom filter
+#'
+#' A bloom filter answers one question: is this value *definitely absent* from
+#' the column chunk? It never proves presence. `FALSE` means the value is not
+#' there; `TRUE` means it may be, and only reading can settle it.
+#'
+#' Values are matched against the column's physical type, because that is what
+#' the writer hashed. A value qio cannot reduce to that type is an error rather
+#' than a `FALSE`, which would read as "definitely absent".
+#'
+#' qio's own writer does not emit bloom filters; see [qio-limitations]. Use
+#' [column_chunks()] to find out whether a chunk has one.
+#'
+#' @param x A `qio_parquet_file` object.
+#' @param column A single column name, as [schema()] reports it.
+#' @param values Values to test. Numeric for numeric columns, character for
+#'   byte-array columns. `NA` returns `NA`.
+#' @param row_group Row group to test, 1-based. A bloom filter belongs to one
+#'   column chunk, so it covers one row group.
+#' @param ... Reserved for future use.
+#'
+#' @return A logical vector the length of `values`: `FALSE` where the value is
+#'   definitely absent, `TRUE` where it may be present.
+#' @seealso [column_chunks()]
+#' @export
+bloom_filter_may_contain <- function(x, column, values, row_group = 1L, ...) {
+  UseMethod("bloom_filter_may_contain")
+}
+
+#' @rdname bloom_filter_may_contain
+#' @export
+bloom_filter_may_contain.qio_parquet_file <- function(
+  x,
+  column,
+  values,
+  row_group = 1L,
+  ...
+) {
+  qio_empty_dots(...)
+  if (!is.character(column) || length(column) != 1L || is.na(column)) {
+    stop("`column` must be a single column name.", call. = FALSE)
+  }
+  index <- match(column, names(x))
+  if (is.na(index)) {
+    stop("Unknown column: ", column, call. = FALSE)
+  }
+  row_group <- qio_whole_number(row_group, "row_group", minimum = 1L)
+  .Call(C_qio_parquet_bloom_check, x, index, values, row_group)
+}

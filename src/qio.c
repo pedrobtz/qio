@@ -71,11 +71,20 @@ typedef struct {
      * for closing the stream and for removing a half-written file. */
     FILE *file;
     int finished; /* the file is complete and must survive cleanup */
+    /* Appending writes into a file that already holds the user's data. The
+     * cleanup below removes a failed write, which for an append would destroy
+     * exactly what it was meant to add to, so it must never fire here. */
+    int append;
     SEXP x;
     SEXP path_sexp;
     SEXP nms;
     SEXP meta_keys;   /* character, or R_NilValue */
     SEXP meta_values; /* character, same length as meta_keys */
+    /* Declared sort order: parallel vectors of 0-based leaf index, descending
+     * flag, and nulls-first flag. R_NilValue when nothing was declared. */
+    SEXP sort_columns;
+    SEXP sort_descending;
+    SEXP sort_nulls_first;
     qio_path_t path;
     carquet_compression_t codec;
     int ncol;
@@ -108,7 +117,10 @@ static void qio_write_cleanup(void *data, Rboolean jump) {
         fclose(ctx->file);
         ctx->file = NULL;
     }
-    if (!ctx->finished) {
+    /* Only a file this call created may be removed. An append failure leaves
+     * the original alone: carquet's abort closes it without truncating, and
+     * the footer it did not rewrite still describes the original row groups. */
+    if (!ctx->finished && !ctx->append) {
         qio_path_remove(&ctx->path);
     }
 }
@@ -173,16 +185,35 @@ static SEXP qio_write_body(void *data) {
     carquet_writer_options_init(&wopts);
     wopts.compression = ctx->codec;
 
-    /* Opened here rather than by carquet so that a path outside Windows'
-     * active code page still works; see qio_path.h. */
-    ctx->file = qio_path_fopen(&ctx->path, "wb");
-    if (!ctx->file) {
-        Rf_error("qio: cannot create '%s'", ctx->path.display);
-    }
-    ctx->writer =
-        carquet_writer_create_file(ctx->file, ctx->schema, &wopts, &err);
-    if (!ctx->writer) {
-        Rf_error("qio: cannot create '%s': %s", ctx->path.display, err.message);
+    if (ctx->append) {
+        /* carquet reopens the path itself for append, so there is no stream to
+         * hand it and no FILE* for qio to own. That also means an append needs
+         * a path the byte interface can express, which on Windows is not every
+         * path; say so rather than fail inside the open. */
+        if (!qio_path_opens_natively(&ctx->path)) {
+            Rf_error("qio: cannot append to '%s': appending needs a path the "
+                     "system's active code page can represent",
+                     ctx->path.display);
+        }
+        ctx->writer = carquet_writer_open_append(ctx->path.native, ctx->schema,
+                                                 &wopts, &err);
+        if (!ctx->writer) {
+            Rf_error("qio: cannot append to '%s': %s", ctx->path.display,
+                     err.message);
+        }
+    } else {
+        /* Opened here rather than by carquet so that a path outside Windows'
+         * active code page still works; see qio_path.h. */
+        ctx->file = qio_path_fopen(&ctx->path, "wb");
+        if (!ctx->file) {
+            Rf_error("qio: cannot create '%s'", ctx->path.display);
+        }
+        ctx->writer =
+            carquet_writer_create_file(ctx->file, ctx->schema, &wopts, &err);
+        if (!ctx->writer) {
+            Rf_error("qio: cannot create '%s': %s", ctx->path.display,
+                     err.message);
+        }
     }
 
     /* Footer key/value metadata, added before any data so a failure costs
@@ -204,6 +235,27 @@ static SEXP qio_write_body(void *data) {
                          carquet_status_string(added));
             }
             vmaxset(vmax_entry);
+        }
+    }
+
+    /* A declared sort order is metadata only: carquet records it on every row
+     * group and neither sorts nor verifies anything, which is also what
+     * PyArrow does. qio validates the column names, not the data. */
+    if (ctx->sort_columns != R_NilValue) {
+        int32_t count = (int32_t)XLENGTH(ctx->sort_columns);
+        carquet_sorting_column_t *order =
+            (carquet_sorting_column_t *)R_alloc((size_t)(count > 0 ? count : 1),
+                                                sizeof(carquet_sorting_column_t));
+        for (int32_t i = 0; i < count; i++) {
+            order[i].column_index = INTEGER(ctx->sort_columns)[i];
+            order[i].descending = LOGICAL(ctx->sort_descending)[i] == TRUE;
+            order[i].nulls_first = LOGICAL(ctx->sort_nulls_first)[i] == TRUE;
+        }
+        carquet_status_t declared =
+            carquet_writer_set_sorting_columns(ctx->writer, order, count);
+        if (declared != CARQUET_OK) {
+            Rf_error("qio: failed to declare the sort order: %s",
+                     carquet_status_string(declared));
         }
     }
 
@@ -420,11 +472,14 @@ static SEXP qio_write_body(void *data) {
 
     /* The footer is written, so the file is complete: flush it and tell the
      * cleanup to leave it alone. A failure to flush still counts as a failed
-     * write, and the cleanup then removes the file as it would for any other. */
-    FILE *file = ctx->file;
-    ctx->file = NULL;
-    if (fclose(file) != 0) {
-        Rf_error("qio: failed to finalize '%s'", ctx->path.display);
+     * write, and the cleanup then removes the file as it would for any other.
+     * An append owns no stream; carquet closed its own. */
+    if (ctx->file) {
+        FILE *file = ctx->file;
+        ctx->file = NULL;
+        if (fclose(file) != 0) {
+            Rf_error("qio: failed to finalize '%s'", ctx->path.display);
+        }
     }
     ctx->finished = 1;
 
@@ -434,7 +489,8 @@ static SEXP qio_write_body(void *data) {
 }
 
 SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
-                       SEXP row_group_sexp, SEXP meta_sexp) {
+                       SEXP row_group_sexp, SEXP meta_sexp,
+                       SEXP sort_sexp, SEXP append_sexp) {
     if (TYPEOF(x) != VECSXP)
         Rf_error("qio: `x` must be a data.frame");
     if (TYPEOF(path_sexp) != STRSXP || LENGTH(path_sexp) < 1)
@@ -483,6 +539,28 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
         if (TYPEOF(meta_keys) != STRSXP || TYPEOF(meta_values) != STRSXP ||
             XLENGTH(meta_keys) != XLENGTH(meta_values))
             Rf_error("qio: invalid `metadata`");
+    }
+
+    SEXP sort_columns = R_NilValue;
+    SEXP sort_descending = R_NilValue;
+    SEXP sort_nulls_first = R_NilValue;
+    if (sort_sexp != R_NilValue) {
+        if (TYPEOF(sort_sexp) != VECSXP || LENGTH(sort_sexp) != 3)
+            Rf_error("qio: invalid `sorted_by`");
+        sort_columns = VECTOR_ELT(sort_sexp, 0);
+        sort_descending = VECTOR_ELT(sort_sexp, 1);
+        sort_nulls_first = VECTOR_ELT(sort_sexp, 2);
+        if (TYPEOF(sort_columns) != INTSXP ||
+            TYPEOF(sort_descending) != LGLSXP ||
+            TYPEOF(sort_nulls_first) != LGLSXP ||
+            XLENGTH(sort_columns) != XLENGTH(sort_descending) ||
+            XLENGTH(sort_columns) != XLENGTH(sort_nulls_first))
+            Rf_error("qio: invalid `sorted_by`");
+        for (R_xlen_t i = 0; i < XLENGTH(sort_columns); i++) {
+            int index = INTEGER(sort_columns)[i];
+            if (index == NA_INTEGER || index < 0 || index >= ncol)
+                Rf_error("qio: invalid `sorted_by` column");
+        }
     }
 
     SEXP ptype_sexp = VECTOR_ELT(spec_sexp, 0);
@@ -540,6 +618,10 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
     ctx.nms = nms;
     ctx.meta_keys = meta_keys;
     ctx.meta_values = meta_values;
+    ctx.sort_columns = sort_columns;
+    ctx.sort_descending = sort_descending;
+    ctx.sort_nulls_first = sort_nulls_first;
+    ctx.append = Rf_asLogical(append_sexp) == TRUE;
     ctx.path = path;
     ctx.codec = codec;
     ctx.ncol = ncol;
@@ -563,7 +645,7 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
 /* ------------------------------------------------------------------------- */
 
 static const R_CallMethodDef CallEntries[] = {
-    {"qio_write_parquet", (DL_FUNC)&qio_write_parquet, 6},
+    {"qio_write_parquet", (DL_FUNC)&qio_write_parquet, 8},
     {"qio_parquet_open", (DL_FUNC)&qio_parquet_open, 4},
     {"qio_parquet_close", (DL_FUNC)&qio_parquet_close, 1},
     {"qio_parquet_is_open", (DL_FUNC)&qio_parquet_is_open, 1},
@@ -575,6 +657,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"qio_parquet_metadata", (DL_FUNC)&qio_parquet_metadata, 1},
     {"qio_parquet_column_chunks", (DL_FUNC)&qio_parquet_column_chunks, 1},
     {"qio_parquet_column_statistics", (DL_FUNC)&qio_parquet_column_statistics, 1},
+    {"qio_parquet_page_index", (DL_FUNC)&qio_parquet_page_index, 1},
+    {"qio_parquet_bloom_check", (DL_FUNC)&qio_parquet_bloom_check, 4},
     {"qio_parquet_collect", (DL_FUNC)&qio_parquet_collect, 6},
     {"qio_parquet_walk", (DL_FUNC)&qio_parquet_walk, 7},
     {NULL, NULL, 0}

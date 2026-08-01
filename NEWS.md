@@ -1,5 +1,25 @@
 # qio 0.0.0.9000
 
+* `write_parquet()` gains `append`, which adds row groups to an existing file.
+  qio checks compatibility itself before writing a byte, because the bundled
+  library's check compares logical type identity without comparing its
+  parameters: it would accept microsecond timestamps appended to a millisecond
+  file and rewrite the footer, so rows that were already correct decode wrongly
+  afterwards. Nullability is taken from the existing file, so a batch that
+  happens to contain no `NA` can still be appended to a nullable column.
+
+* `write_parquet()` gains `sorted_by`, which records that the data is already
+  sorted by given columns. It is a declaration only: qio neither sorts the data
+  nor checks the claim.
+
+* New `page_index()` reports the per-page bounds, null counts, file offsets, and
+  starting rows recorded in a file's page index, one row per page. Files without
+  one, including everything qio writes, return no rows.
+
+* New `bloom_filter_may_contain()` tests values against a column chunk's bloom
+  filter. `FALSE` means the value is definitely absent; `TRUE` means it may be
+  present.
+
 * `write_parquet()` gains `row_group_size`, which sets how many rows go in each
   row group. Row groups are the unit other readers skip on, and qio previously
   wrote every file as a single group, leaving nothing to skip. The default is

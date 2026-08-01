@@ -324,3 +324,186 @@ test_that("parquet_validate() reports a corrupt footer as a footer problem", {
   writeBin(bytes, path)
   expect_error(parquet_validate(path), "footer does not parse")
 })
+
+# --- Page indexes -----------------------------------------------------------
+# A page index is optional and qio's writer emits none, so these read files
+# written by Apache Arrow and pyarrow.
+
+test_that("page_index() reports pages with locations and bounds", {
+  file <- parquet_open(test_path("parquet", "bloom_sorted.parquet"))
+  withr::defer(parquet_close(file))
+
+  pages <- page_index(file)
+  expect_gt(nrow(pages), 0L)
+  expect_identical(
+    names(pages),
+    c(
+      "row_group",
+      "column",
+      "name",
+      "page",
+      "first_row",
+      "offset",
+      "compressed_bytes",
+      "null_count",
+      "null_page",
+      "min",
+      "max"
+    )
+  )
+  # Both indexes are present in this file, so nothing should be missing.
+  expect_false(anyNA(pages$offset))
+  expect_false(anyNA(pages$first_row))
+  expect_false(anyNA(pages$null_count))
+  # Pages are numbered from one within each chunk and start at row zero.
+  expect_true(all(pages$page >= 1L))
+  expect_true(all(pages$first_row[pages$page == 1L] == 0))
+  # Offsets increase within a column chunk.
+  key <- pages[pages$name == "key" & pages$row_group == 1L, ]
+  expect_false(is.unsorted(key$offset))
+})
+
+test_that("page bounds decode in the column's own type", {
+  file <- parquet_open(test_path("parquet", "bloom_sorted.parquet"))
+  withr::defer(parquet_close(file))
+  pages <- page_index(file)
+
+  key <- pages[pages$name == "key", ]
+  expect_true(all(vapply(key$min, is.numeric, logical(1))))
+  # The fixture's key column is 0..3999 ascending, so the first page of the
+  # first row group must start at zero.
+  expect_equal(key$min[[1]], 0)
+
+  label <- pages[pages$name == "label", ]
+  expect_type(label$min[[1]], "character")
+  expect_identical(label$min[[1]], "item-00000")
+})
+
+test_that("a file with no page index yields no rows, not an error", {
+  # qio does not write page indexes; see ?qio-limitations.
+  path <- withr::local_tempfile(fileext = ".parquet")
+  write_parquet(data.frame(n = 1:100), path, row_group_size = 25)
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+
+  pages <- page_index(file)
+  expect_identical(nrow(pages), 0L)
+  expect_identical(ncol(pages), 11L)
+})
+
+# --- Bloom filters ----------------------------------------------------------
+
+test_that("a bloom filter never misses a value that is present", {
+  # The one guarantee a bloom filter makes: no false negatives. False
+  # positives are permitted, so only this direction can be asserted per value.
+  file <- parquet_open(test_path("parquet", "bloom_sorted.parquet"))
+  withr::defer(parquet_close(file))
+
+  # Row group 1 of the fixture holds keys 0..999 and matching labels.
+  present <- c(0, 1, 500, 999)
+  expect_true(all(bloom_filter_may_contain(file, "key", present)))
+  expect_true(all(bloom_filter_may_contain(
+    file,
+    "label",
+    sprintf("item-%05d", c(0, 1, 500, 999))
+  )))
+
+  # Row group 2 holds 1000..1999.
+  expect_true(all(
+    bloom_filter_may_contain(file, "key", c(1000, 1500, 1999), row_group = 2)
+  ))
+})
+
+test_that("a bloom filter rules out values that are absent", {
+  # Individually a FALSE is not guaranteed, so this asserts on the bulk: a
+  # filter that answered TRUE to everything would be useless and must fail here.
+  file <- parquet_open(test_path("parquet", "bloom_sorted.parquet"))
+  withr::defer(parquet_close(file))
+
+  absent <- seq(100000, 100999)
+  ruled_out <- !bloom_filter_may_contain(file, "key", absent)
+  expect_gt(mean(ruled_out), 0.9)
+
+  absent_labels <- sprintf("absent-%05d", 1:500)
+  expect_gt(mean(!bloom_filter_may_contain(file, "label", absent_labels)), 0.9)
+
+  # Values in a different row group are absent from this one.
+  expect_false(bloom_filter_may_contain(file, "key", 3500, row_group = 1))
+})
+
+test_that("bloom filter lookups validate their arguments", {
+  file <- parquet_open(test_path("parquet", "bloom_sorted.parquet"))
+  withr::defer(parquet_close(file))
+
+  expect_identical(bloom_filter_may_contain(file, "key", NA_real_), NA)
+  expect_error(bloom_filter_may_contain(file, "nope", 1), "Unknown column")
+  expect_error(bloom_filter_may_contain(file, "key", "text"), "must be numeric")
+  expect_error(
+    bloom_filter_may_contain(file, "label", 1),
+    "must be character"
+  )
+  expect_error(
+    bloom_filter_may_contain(file, "key", 1, row_group = 99),
+    "out of range"
+  )
+  # score has no bloom filter in this fixture.
+  expect_error(bloom_filter_may_contain(file, "score", 1), "no bloom filter")
+})
+
+# --- Declared sort order ----------------------------------------------------
+# Write-only: the bundled library records the declaration but exposes no way to
+# read it back, so agreement is checked against pyarrow in
+# tools/check-inspection-against-arrow.R rather than here.
+
+test_that("sorted_by accepts names and a full declaration", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  data <- data.frame(a = 1:20, b = rev(1:20), s = letters[1:20])
+
+  write_parquet(data, path, sorted_by = "a")
+  expect_identical(read_parquet(path), data)
+
+  write_parquet(
+    data,
+    path,
+    row_group_size = 5,
+    sorted_by = data.frame(
+      name = c("b", "a"),
+      descending = c(TRUE, FALSE),
+      nulls_first = c(TRUE, FALSE)
+    )
+  )
+  expect_identical(read_parquet(path), data)
+})
+
+test_that("sorted_by rejects columns it cannot resolve", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  data <- data.frame(a = 1:5, b = 6:10)
+
+  expect_error(
+    write_parquet(data, path, sorted_by = "nope"),
+    "not being written"
+  )
+  expect_error(
+    write_parquet(data, path, sorted_by = c("a", "a")),
+    "more than once"
+  )
+  expect_error(
+    write_parquet(data, path, sorted_by = data.frame(nope = "a")),
+    "`name` column"
+  )
+  expect_error(
+    write_parquet(
+      data,
+      path,
+      sorted_by = data.frame(name = "a", descending = NA)
+    ),
+    "must not be NA"
+  )
+})
+
+test_that("an empty sort declaration is the same as none", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  data <- data.frame(a = 1:5)
+  write_parquet(data, path, sorted_by = character())
+  expect_identical(read_parquet(path), data)
+})

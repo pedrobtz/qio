@@ -10,7 +10,9 @@ write_parquet(
   compression = c("snappy", "zstd", "gzip", "lz4", "uncompressed"),
   schema = NULL,
   row_group_size = NULL,
-  metadata = NULL
+  metadata = NULL,
+  sorted_by = NULL,
+  append = FALSE
 )
 }
 \arguments{
@@ -31,6 +33,17 @@ per-group metadata and can compress worse.}
 \item{metadata}{A named character vector of footer key/value metadata, or
 \code{NULL}. Duplicate keys are written in the order given. An \code{NA} value is
 written as a key with no value, and reads back as \code{NA}.}
+
+\item{sorted_by}{Columns the data is already sorted by, or \code{NULL}. Either a
+character vector of column names, meaning ascending with nulls last, or a
+data frame with a \code{name} column and optional logical \code{descending} and
+\code{nulls_first} columns. This \strong{records a claim and nothing more}: qio does
+not sort the data and does not check that the claim is true. A wrong
+declaration misleads every reader that trusts it.}
+
+\item{append}{Append new row groups to an existing file instead of replacing
+it. The file must already exist and describe exactly the columns being
+written; see Details.}
 }
 \value{
 The output path, invisibly.
@@ -48,6 +61,20 @@ of a second are rounded. Other classed columns are still written using their
 underlying storage type and lose their class. An explicit \code{\link[=parquet_schema]{parquet_schema()}}
 may instead select \code{INT64}, \code{FLOAT}, or a different timestamp unit, among the
 supported declarations.
+
+\code{append} adds row groups to a file that already exists, rather than replacing
+it. Because it writes into data the user already has, qio checks
+compatibility itself and refuses anything it cannot prove safe. The bundled
+library compares column count, order, names, physical types, repetition, and
+logical type \emph{identity} -- but not logical \emph{parameters}, so it would happily
+append microsecond timestamps to a millisecond file, or a decimal of one
+scale to another. qio compares the full declaration, including those
+parameters, and the schema path of every column.
+
+Nullability is taken from the existing file rather than inferred from the new
+data, so appending a batch that happens to contain no \code{NA} to a nullable
+column works. Appending data that does contain \code{NA} to a column the file
+declares \code{REQUIRED} is refused.
 
 Row groups are the unit other readers skip on: a reader that can rule a group
 out from its statistics never touches its pages. \code{row_group_size} sets how

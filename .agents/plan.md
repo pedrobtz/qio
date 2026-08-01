@@ -651,9 +651,14 @@ Both are recorded in
 
 ## Phase 6: expose the remaining inspection and writer controls
 
-Status: the five required items are complete. The four deferrable ones are
-untouched and move to v0.2.0 unless they land before phase 7; append is now
-cut first, for the reason recorded under Descope order.
+Status: complete. All five required items and all four deferrable ones
+shipped, so nothing was cut and the descope order below was never exercised.
+
+Append shipped against the earlier recommendation to defer it, on an explicit
+call. The reasoning for that recommendation was not wrong, and the evidence
+for it is now recorded in the gate: bypassing qio's own compatibility check
+lets carquet corrupt a file that was correct. What changed is that the check
+exists and is tested, not that the hazard went away.
 
 This phase carries the most optional scope in the release. Each item is labelled
 Required or Deferrable; deferrable items ship only if they land complete and
@@ -683,20 +688,33 @@ tested before phase 7 begins.
 - [x] Required: document unsupported carquet capabilities instead of exposing
   incomplete wrappers. `?qio-limitations` lists each one with the reason, so an
   absent function reads as a decision.
-- [ ] Deferrable: add column-index and offset-index inspection with explicit
-  ownership cleanup. Do not add predicate evaluation or pushdown.
-- [ ] Deferrable: add append mode with qio-side complete schema compatibility
-  checks.
-- [ ] Deferrable: add sorting declarations, documenting that they do not sort or
-  verify input.
-- [ ] Deferrable: add bloom-filter inspection with explicit ownership cleanup.
+- [x] Deferrable: add column-index and offset-index inspection with explicit
+  ownership cleanup. Do not add predicate evaluation or pushdown. `page_index()`
+  reports both sides as one frame, one row per page. Neither handle is held
+  across an R allocation other than a single `R_alloc`, and bounds are copied
+  out before the handles are freed. No pushdown was added.
+- [x] Deferrable: add append mode with qio-side complete schema compatibility
+  checks. `write_parquet(append = TRUE)`. The qio-side check is the point: with
+  it bypassed, carquet accepts a MICROS-for-MILLIS timestamp append, rewrites
+  the footer, and three rows that read as 2020 before the append read as 1970
+  after it. qio compares the complete declaration, including logical
+  parameters and schema paths, and adopts the file's nullability so a
+  null-free batch can still be appended to a nullable column.
+- [x] Deferrable: add sorting declarations, documenting that they do not sort or
+  verify input. `write_parquet(sorted_by =)`. Write-only: carquet records the
+  declaration but exposes no way to read it back, so agreement is checked
+  against pyarrow rather than by round trip.
+- [x] Deferrable: add bloom-filter inspection with explicit ownership cleanup.
+  `bloom_filter_may_contain()`, named for the only thing a bloom filter can
+  promise. Values are reduced to the column's physical type, and a value that
+  cannot be is an error rather than a `FALSE` that would read as
+  "definitely absent".
 
 ### Descope order
 
-Under schedule pressure, cut deferrable items in this order and record each cut
-in `roadmap.md` before removing it here: **append mode, bloom-filter
-inspection, sorting declarations, page indexes**. The required items stay in
-v0.1.0.
+Kept for the record; nothing was cut. Had schedule pressure forced it, the
+order would have been **append mode, bloom-filter inspection, sorting
+declarations, page indexes**, with each cut recorded in `roadmap.md` first.
 
 Append moved from third cut to first. It is the only item in the release that
 can damage data the user already has. carquet's append compares leaf count,
@@ -717,9 +735,9 @@ compatibility work it needs.
   malformed-file tests. All four new results are plain data frames, so ownership
   and printing are R's. `test-inspect.R` covers a file that is too small, not
   Parquet, truncated, encrypted, and structurally inconsistent.
-- [ ] Any cut item is recorded as deferred in `roadmap.md` and absent from the
-  README feature matrix and reference index. The four deferrable items are
-  recorded; the README matrix is phase 7's.
+- [x] Any cut item is recorded as deferred in `roadmap.md` and absent from the
+  README feature matrix and reference index. Nothing was cut: all four
+  deferrable items shipped. The README matrix is phase 7's.
 - [x] If append mode ships, it rejects incompatible logical parameters and
   parent paths before writing. It does not ship; see Descope order.
 - [x] Inspection results agree with the independent Parquet tool chosen in

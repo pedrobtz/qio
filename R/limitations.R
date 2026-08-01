@@ -16,17 +16,14 @@
 #'     statistics. qio reads whole columns. Filtering happens in R, after the
 #'     read, where the answer does not depend on a writer's honesty about its
 #'     own statistics.}
-#'   \item{Bloom filters, column indexes, and offset indexes}{Their presence is
-#'     reported by [column_chunks()], but their contents are not. They exist to
-#'     support pruning, which qio does not do.}
-#'   \item{Append mode}{carquet can add row groups to an existing file, but its
-#'     compatibility check compares physical types and logical type IDs without
-#'     comparing parent paths or logical *parameters*: decimal scale, timestamp
-#'     unit, integer signedness. Appending a microsecond timestamp column to a
-#'     millisecond file passes that check and corrupts a file that was correct.
-#'     Deferred to 0.2.0 with the qio-side validation it needs.}
-#'   \item{Sorting declarations}{Parquet can record that a file is sorted by
-#'     given columns. Nothing verifies the claim, and qio has no use for it.}
+#'   \item{Writing bloom filters and page indexes}{Both can be *read*:
+#'     [bloom_filter_may_contain()] tests membership and [page_index()] reports
+#'     per-page bounds and locations. Neither is written, because the writer
+#'     options that control them belong to the writer configuration deferred
+#'     below.}
+#'   \item{Reading back a declared sort order}{[write_parquet()] can record one
+#'     with `sorted_by`, but carquet exposes no way to read it back, so qio
+#'     cannot report the declaration in a file it did not write.}
 #'   \item{Encryption}{Files with an encrypted footer are rejected by
 #'     [parquet_validate()] and cannot be read.}
 #'   \item{External column metadata}{Modelled by carquet but not implemented

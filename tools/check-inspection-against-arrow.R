@@ -130,6 +130,67 @@ check(
   isTRUE(all.equal(per_group, groups$compressed_bytes))
 )
 
+# 6. Append: the check qio makes and carquet does not. With qio's validation
+#    bypassed, carquet accepts a MICROS-for-MILLIS append and rewrites the
+#    footer, so rows that were already correct decode wrongly afterwards. This
+#    asserts both halves: that qio refuses it, and that the file survives.
+stamps <- as.POSIXct("2020-01-01", tz = "UTC") + 1:3
+millis <- qio::parquet_schema(t = list("TIMESTAMP", unit = "MILLIS"))
+micros <- qio::parquet_schema(t = list("TIMESTAMP", unit = "MICROS"))
+append_path <- tempfile(fileext = ".parquet")
+qio::write_parquet(data.frame(t = stamps), append_path, schema = millis)
+
+refused <- inherits(
+  try(
+    qio::write_parquet(
+      data.frame(t = stamps),
+      append_path,
+      schema = micros,
+      append = TRUE
+    ),
+    silent = TRUE
+  ),
+  "try-error"
+)
+check("qio refuses a mismatched append", refused)
+check(
+  "the refused append left the file intact",
+  isTRUE(all.equal(qio::read_parquet(append_path)$t, stamps))
+)
+
+qio::write_parquet(
+  data.frame(t = stamps),
+  append_path,
+  schema = millis,
+  append = TRUE
+)
+check(
+  "a matching append is readable by arrow",
+  nrow(as.data.frame(arrow::read_parquet(append_path))) == 6L
+)
+
+# 7. Sorting declarations are write-only in qio, because carquet exposes no way
+#    to read them back. Arrow can, so it is the oracle here.
+sorted_path <- tempfile(fileext = ".parquet")
+qio::write_parquet(
+  data.frame(a = 1:100, b = rev(1:100)),
+  sorted_path,
+  row_group_size = 40,
+  sorted_by = data.frame(
+    name = c("b", "a"),
+    descending = c(TRUE, FALSE),
+    nulls_first = c(TRUE, FALSE)
+  )
+)
+# The declaration itself is verified by tools/generate-bloom-sorting-fixture.py
+# and by pyarrow, which exposes row_group.sorting_columns; the arrow R package
+# does not. What is checked here is that declaring an order does not disturb
+# the data.
+check("a sorted file still reads back its values", isTRUE(all.equal(
+  as.data.frame(arrow::read_parquet(sorted_path)),
+  data.frame(a = 1:100, b = rev(1:100))
+)))
+
 cat("\n")
 if (failures > 0L) {
   cat(sprintf("%d disagreement(s)\n", failures))

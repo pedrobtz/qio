@@ -25,6 +25,11 @@ unwind-safe, workers do not call the R API, and handle guards prevent re-entry.
 | `schema()` | Report leaf paths, physical/logical types, repetition, and levels |
 | `row_groups()` | Report row counts and compressed/uncompressed sizes |
 | `metadata()` | Return footer metadata while preserving duplicate keys and order |
+| `column_chunks()` | Report per-chunk type, codec, sizes, encodings, and optional structures |
+| `column_statistics()` | Report per-chunk value/null counts and min/max bounds |
+| `page_index()` | Report per-page bounds, null counts, offsets, and starting rows |
+| `bloom_filter_may_contain()` | Test values against a chunk's bloom filter |
+| `parquet_validate()` | Check structural validity and report what is wrong |
 | `read_plan()` | Show each leaf's resolved R type and collectibility |
 | `parquet_type_mapping()` | Report physical fallback mappings |
 
@@ -38,6 +43,10 @@ materializing reads share one R conversion plan. Current type support is in
 | API | Behavior |
 |---|---|
 | `write_parquet()` | Write data frames or equal-length atomic lists |
+| `write_parquet(row_group_size =)` | Split output into row groups by row count |
+| `write_parquet(metadata =)` | Record footer key/value metadata |
+| `write_parquet(sorted_by =)` | Declare a sort order without sorting or verifying |
+| `write_parquet(append =)` | Add row groups to an existing file, after a full schema check |
 | `parquet_schema()` | Create reusable partial type overrides |
 | `infer_parquet_schema()` | Show the inferred schema |
 
@@ -104,15 +113,14 @@ sanitizers, Valgrind, LTO, gctorture, and rchk.
 
 ### 5. API and release
 
-- [ ] Required for v0.1.0: expose column statistics, column-chunk metadata,
+- [x] Required for v0.1.0: expose column statistics, column-chunk metadata,
   explicit row-group boundaries, writer key/value metadata, and file
   validation.
-- [ ] Deferrable within v0.1.0, in reverse cut order: page indexes, sorting
-  declarations, bloom filters, append mode. These ship only if they land
-  complete and tested before release documentation begins; otherwise they move
-  to v0.2.0. Append is cut first despite being the most useful, because it is
-  the only one that can corrupt a file the user already has; see
-  [`plan.md`](plan.md#descope-order).
+- [x] Deferrable within v0.1.0: page indexes, sorting declarations, bloom
+  filters, append mode. All four shipped, so nothing was cut. Append carries
+  the qio-side schema check that makes it safe; carquet's own check is not
+  sufficient, and the evidence is recorded in
+  [`plan.md`](plan.md#phase-6-expose-the-remaining-inspection-and-writer-controls).
 - [ ] Replace `url: ~` in `_pkgdown.yml`, validate the reference index, and
   publish pkgdown.
 - [ ] Add an honest README feature matrix and reproducible benchmarks.

@@ -22,6 +22,8 @@ reference:
       - row_groups
       - column_chunks
       - column_statistics
+      - page_index
+      - bloom_filter_may_contain
       - metadata
       - read_plan
       - parquet_validate
