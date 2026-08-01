@@ -1,4 +1,5 @@
 #include "qio_file.h"
+#include "qio_path.h"
 
 #include <R.h>
 #include <R_ext/Utils.h>
@@ -21,10 +22,15 @@
 
 typedef struct {
     carquet_reader_t *reader;
+    /* Non-NULL when qio opened the stream itself rather than handing carquet a
+     * path, which is how a path outside Windows' active code page stays
+     * readable; see qio_path.h. carquet does not own it, so this closes it. */
+    FILE *file;
     int32_t threads;
     /* How this handle was opened. Needed to reopen an identical private reader
      * per worker for parallel buffered collects: the buffered path shares
-     * FILE* and prebuffer state, so workers cannot share one reader. */
+     * FILE* and prebuffer state, so workers cannot share one reader.
+     * `use_mmap` records what actually happened, not what was asked for. */
     int use_mmap;
     int verify_checksums;
     int busy;
@@ -81,6 +87,7 @@ typedef struct {
     carquet_column_reader_t *column;  /* in-flight direct-read column reader */
     carquet_worker_pool_t *pool;      /* in-flight parallel-collect pool */
     carquet_reader_t **private_readers; /* one per lane, buffered reads only */
+    FILE **private_streams;             /* what those readers read through */
     int32_t num_private_readers;
     SEXP file;
     SEXP callback;
@@ -121,6 +128,11 @@ static void qio_finalize_file(SEXP file) {
     if (handle->reader) {
         carquet_reader_close(handle->reader);
         handle->reader = NULL;
+    }
+    /* After the reader, which reads through it until closed. */
+    if (handle->file) {
+        fclose(handle->file);
+        handle->file = NULL;
     }
     free(handle);
     R_ClearExternalPtr(file);
@@ -1622,8 +1634,8 @@ static SEXP qio_collect_body(void *data) {
 
     qio_lane_t *lanes = NULL;
     if (use_lanes) {
-        const char *path = Rf_translateChar(
-            STRING_ELT(R_ExternalPtrProtected(context->file), 0));
+        qio_path_t path;
+        qio_path_resolve(R_ExternalPtrProtected(context->file), &path);
         carquet_reader_options_t options;
         carquet_reader_options_init(&options);
         options.use_mmap = 0;
@@ -1633,15 +1645,28 @@ static SEXP qio_collect_body(void *data) {
         carquet_reader_t **readers = (carquet_reader_t **)R_alloc(
             (size_t)threads, sizeof(carquet_reader_t *));
         memset(readers, 0, (size_t)threads * sizeof(carquet_reader_t *));
+        /* One stream per lane, opened here for the same reason the handle's is:
+         * carquet's own path entry point cannot reach a path outside Windows'
+         * active code page, and a lane that failed to open would silently cost
+         * the read its parallelism. */
+        FILE **streams = (FILE **)R_alloc((size_t)threads, sizeof(FILE *));
+        memset(streams, 0, (size_t)threads * sizeof(FILE *));
         int32_t opened = 0;
         for (int32_t i = 0; i < threads; i++) {
             carquet_error_t err = CARQUET_ERROR_INIT;
-            readers[i] = carquet_reader_open(path, &options, &err);
-            if (!readers[i]) break; /* fall back to fewer lanes, or to serial */
+            streams[i] = qio_path_fopen(&path, "rb");
+            if (!streams[i]) break; /* fall back to fewer lanes, or to serial */
+            readers[i] = carquet_reader_open_file(streams[i], &options, &err);
+            if (!readers[i]) {
+                fclose(streams[i]);
+                streams[i] = NULL;
+                break;
+            }
             opened++;
         }
         /* Registered before use so an unwind from here on closes them. */
         context->private_readers = readers;
+        context->private_streams = streams;
         context->num_private_readers = opened;
 
         if (opened > 1) {
@@ -1952,8 +1977,14 @@ static void qio_batch_cleanup(void *data, Rboolean jump) {
                 carquet_reader_close(context->private_readers[i]);
                 context->private_readers[i] = NULL;
             }
+            /* After its reader, which reads through it until closed. */
+            if (context->private_streams && context->private_streams[i]) {
+                fclose(context->private_streams[i]);
+                context->private_streams[i] = NULL;
+            }
         }
         context->private_readers = NULL;
+        context->private_streams = NULL;
         context->num_private_readers = 0;
     }
     context->handle->busy = 0;
@@ -1996,23 +2027,49 @@ SEXP qio_parquet_open(SEXP path, SEXP use_mmap, SEXP verify_checksums,
     options.verify_checksums = Rf_asLogical(verify_checksums) == TRUE;
     options.num_threads = num_threads;
 
-    const char *file_path = Rf_translateChar(STRING_ELT(path, 0));
+    qio_path_t file_path;
+    qio_path_resolve(path, &file_path);
+
+    /* Mapping is the one thing qio cannot do through a stream, because carquet
+     * maps from a path. So a mapped read keeps the path entry point, and only
+     * falls back to buffered I/O when the path cannot survive the active code
+     * page -- Windows only, and preferable to refusing the file. Buffered reads
+     * always go through the stream, which keeps this code on the common path
+     * for every platform rather than only the one that needs it.
+     *
+     * The fallback costs little: buffered collects have been parallel since the
+     * private-reader work, so the two paths are close in speed. */
+    int mapped = options.use_mmap && qio_path_opens_natively(&file_path);
+    options.use_mmap = mapped;
+
+    FILE *stream = NULL;
+    if (!mapped) {
+        stream = qio_path_fopen(&file_path, "rb");
+        if (!stream) {
+            Rf_error("qio: cannot open '%s'", file_path.display);
+        }
+    }
+
     carquet_error_t native_error = CARQUET_ERROR_INIT;
-    carquet_reader_t *reader = carquet_reader_open(
-        file_path, &options, &native_error);
+    carquet_reader_t *reader =
+        mapped ? carquet_reader_open(file_path.native, &options, &native_error)
+               : carquet_reader_open_file(stream, &options, &native_error);
     if (!reader) {
         char message[512];
         carquet_error_format(&native_error, message, sizeof(message));
-        Rf_error("qio: cannot open '%s': %s", file_path, message);
+        if (stream) fclose(stream);
+        Rf_error("qio: cannot open '%s': %s", file_path.display, message);
     }
 
     qio_parquet_handle_t *handle =
         (qio_parquet_handle_t *)calloc(1, sizeof(qio_parquet_handle_t));
     if (!handle) {
         carquet_reader_close(reader);
+        if (stream) fclose(stream);
         Rf_error("qio: cannot allocate parquet file handle");
     }
     handle->reader = reader;
+    handle->file = stream;
     handle->threads = options.num_threads;
     handle->use_mmap = options.use_mmap;
     handle->verify_checksums = options.verify_checksums;

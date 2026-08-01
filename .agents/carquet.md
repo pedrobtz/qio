@@ -122,10 +122,28 @@ submits the remainder afterwards rather than submitting everything up front.
 
 ## File paths
 
-Readers and writers take a byte path and open it with `fopen()`. qio passes
-`Rf_translateChar()` output, which is the native encoding, so on Windows a path
-outside the active ANSI code page cannot be opened. Supporting those paths needs
-wide-character entry points upstream; until then it is a documented limitation.
+Readers and writers take a byte path and open it with `fopen()`, which on
+Windows reads those bytes in the active code page. A path outside that page
+cannot be opened at all, whatever the caller passes.
+
+qio therefore does not use the path entry points for I/O it can own. It opens
+the file itself, with `_wfopen()` on Windows, and passes the stream to
+`carquet_reader_open_file()` or `carquet_writer_create_file()`. Both leave the
+stream to the caller, so qio closes it after the reader or writer.
+
+Mapping is the exception: `carquet_mmap_open()` takes a path, so a mapped read
+of a path the code page cannot represent falls back to buffered I/O instead of
+failing. Since buffered collects became parallel, that costs little.
+
+Two consequences follow from owning the stream:
+
+- `carquet_writer_abort()` deletes only a file it opened itself, so qio removes
+  a partial write, with `_wremove()` on Windows.
+- The writer's unwind cleanup cannot translate a path, because calling back
+  into R during an unwind could jump again. `qio_path_resolve()` computes every
+  form the cleanup might need before the protected window opens.
+
+See `src/qio_path.h`.
 
 ## Reader performance controls
 

@@ -29,6 +29,7 @@
 #include <R_ext/Rdynload.h>
 
 #include "qio_file.h"
+#include "qio_path.h"
 
 #include <limits.h>
 #include <math.h>
@@ -64,10 +65,15 @@ static int qio_codec_from_string(const char *s, carquet_compression_t *out) {
 typedef struct {
     carquet_schema_t *schema;
     carquet_writer_t *writer;  /* NULL once close() has consumed it */
+    /* qio opens the output itself so a path outside Windows' active code page
+     * still works; see qio_path.h. That makes qio, not carquet, responsible
+     * for closing the stream and for removing a half-written file. */
+    FILE *file;
+    int finished; /* the file is complete and must survive cleanup */
     SEXP x;
     SEXP path_sexp;
     SEXP nms;
-    const char *path;
+    qio_path_t path;
     carquet_compression_t codec;
     int ncol;
     R_xlen_t nrow;
@@ -89,6 +95,17 @@ static void qio_write_cleanup(void *data, Rboolean jump) {
     if (ctx->schema) {
         carquet_schema_free(ctx->schema);
         ctx->schema = NULL;
+    }
+    /* abort() only deletes a file it opened itself, and this one was opened
+     * here, so removing a partial write is qio's job. Nothing below calls back
+     * into R: the path was resolved into every form it needs before the
+     * protected window began, precisely so an unwind cannot longjmp again. */
+    if (ctx->file) {
+        fclose(ctx->file);
+        ctx->file = NULL;
+    }
+    if (!ctx->finished) {
+        qio_path_remove(&ctx->path);
     }
 }
 
@@ -152,9 +169,16 @@ static SEXP qio_write_body(void *data) {
     carquet_writer_options_init(&wopts);
     wopts.compression = ctx->codec;
 
-    ctx->writer = carquet_writer_create(ctx->path, ctx->schema, &wopts, &err);
+    /* Opened here rather than by carquet so that a path outside Windows'
+     * active code page still works; see qio_path.h. */
+    ctx->file = qio_path_fopen(&ctx->path, "wb");
+    if (!ctx->file) {
+        Rf_error("qio: cannot create '%s'", ctx->path.display);
+    }
+    ctx->writer =
+        carquet_writer_create_file(ctx->file, ctx->schema, &wopts, &err);
     if (!ctx->writer) {
-        Rf_error("qio: cannot create '%s': %s", ctx->path, err.message);
+        Rf_error("qio: cannot create '%s': %s", ctx->path.display, err.message);
     }
 
     /* Rows moved per carquet_writer_write_batch() call. Bounds the scratch a
@@ -333,8 +357,18 @@ static SEXP qio_write_body(void *data) {
     carquet_writer_t *writer = ctx->writer;
     ctx->writer = NULL;  /* close consumes the handle; never abort it after */
     if (carquet_writer_close(writer) != CARQUET_OK) {
-        Rf_error("qio: failed to finalize '%s'", ctx->path);
+        Rf_error("qio: failed to finalize '%s'", ctx->path.display);
     }
+
+    /* The footer is written, so the file is complete: flush it and tell the
+     * cleanup to leave it alone. A failure to flush still counts as a failed
+     * write, and the cleanup then removes the file as it would for any other. */
+    FILE *file = ctx->file;
+    ctx->file = NULL;
+    if (fclose(file) != 0) {
+        Rf_error("qio: failed to finalize '%s'", ctx->path.display);
+    }
+    ctx->finished = 1;
 
     carquet_schema_free(ctx->schema);
     ctx->schema = NULL;
@@ -351,7 +385,11 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp) 
     if (TYPEOF(spec_sexp) != VECSXP || LENGTH(spec_sexp) != 4)
         Rf_error("qio: invalid writer schema");
 
-    const char *path = Rf_translateChar(STRING_ELT(path_sexp, 0));
+    /* Resolved here, before the protected window: it calls into R, which the
+     * cleanup running under an unwind must not. */
+    qio_path_t path;
+    qio_path_resolve(path_sexp, &path);
+
     carquet_compression_t codec;
     if (!qio_codec_from_string(CHAR(STRING_ELT(codec_sexp, 0)), &codec))
         Rf_error("qio: unknown compression '%s'", CHAR(STRING_ELT(codec_sexp, 0)));

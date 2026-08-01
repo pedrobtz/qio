@@ -4,12 +4,14 @@
 #' batched reading. The returned handle is valid only in the current R session.
 #'
 #' @param file Path to a Parquet file.
-#' @param mmap Use memory-mapped input.
+#' @param mmap Use memory-mapped input. On Windows a path the active code page
+#'   cannot represent is read with buffered input instead, because only the
+#'   mapped path needs a name that page can express. The result is the same.
 #' @param verify_checksums Verify Parquet page checksums when present.
 #' @param threads Number of reader threads. Zero picks the machine's core
-#'   count. [collect()] decodes columns in parallel only when the file is
-#'   opened with `mmap = TRUE` (buffered reads share file state and stay
-#'   single-threaded); pass `threads = 1` to force serial reads.
+#'   count. [collect()] decodes columns in parallel either way: a mapped file
+#'   shares one reader, and a buffered one gives each worker its own. Pass
+#'   `threads = 1` to force serial reads.
 #'
 #' @return A `qio_parquet_file` object. Close it with [parquet_close()].
 #' @export

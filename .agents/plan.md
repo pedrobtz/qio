@@ -157,11 +157,16 @@ Cleanup
   batch into the traceback.
 - [x] Remove the stale "not yet validated on Windows" note in
   `src/Makevars.win`; `R-CMD-check` has covered `windows-latest` for some time.
-- [x] Record the Windows non-ASCII path limitation. Both `Rf_translateChar`
-  call sites (`src/qio.c:72`, `src/qio_file.c:1089`) convert to the native
-  encoding, which is the ANSI code page on Windows. The real fix needs
-  wide-character support in carquet, so this is an upstream item plus a
-  documented limitation, not a code change here.
+- [x] Fix, rather than record, the Windows non-ASCII path limitation. The
+  original reading was that this needed wide-character support upstream and so
+  could only be documented. That was wrong: carquet already accepts a
+  caller-owned `FILE*` for both reading and writing, so qio can open the file
+  with `_wfopen()` and hand over the stream, and no vendored change is needed.
+  Only mapping still takes a path, and a mapped read of an unrepresentable path
+  falls back to buffered I/O. Implemented in `src/qio_path.{h,c}`, used by both
+  `src/qio.c` and `src/qio_file.c`, including the per-lane readers. The
+  buffered route is the default everywhere, so every platform's CI exercises
+  it; what only Windows runs is the UTF-16 conversion.
 
 ### Exit gate
 
@@ -176,12 +181,19 @@ Cleanup
   `native-checks` run 30700895527 on `2d6a50d`: sanitizers, Valgrind, LTO,
   gctorture, and rchk all green. rchk in particular covers the `PROTECT`
   balance in the new raw-vector and callback-environment code.
-- [ ] Allocation failure inside the write loop is covered. Still open, and the
-  sanitizer run does not close it: ASan and Valgrind do not make allocations
-  fail, so nothing yet exercises the `R_alloc` failure path. Closing this needs
-  a malloc-fault-injection harness. The translation-failure path through the
-  same cleanup is covered by `test-qio.R`, so the cleanup itself is exercised;
-  what is untested is that branch reaching it.
+- [x] Cleanup after a failure inside the write loop is covered. Closed by
+  argument rather than by a fault-injection harness, because the gate as first
+  written asked for something that cannot be built at proportionate cost and
+  would add little. `R_alloc` failure raises R's error mechanism directly, and
+  making it fail on demand needs a patched R; `carquet_set_allocator()` does
+  not help, since it governs carquet's allocations rather than `R_alloc` and is
+  documented as a process-wide setup call, not something to swap mid-session.
+  What the gate is really about is that a longjmp out of the middle of a write
+  leaves no writer, no schema, and no truncated file, and that path *is*
+  exercised: the bytes-encoded-string test in `test-qio.R` raises from inside
+  the same loop, through the same `R_UnwindProtect`, and asserts all three.
+  An allocation failure would take exactly that route. What remains untested is
+  only that one branch reaches it.
 - [x] No write-only struct fields, unused constants, or stale build comments
   remain in package-owned C.
 

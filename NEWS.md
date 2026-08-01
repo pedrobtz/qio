@@ -1,5 +1,13 @@
 # qio 0.0.0.9000
 
+* File paths that the active Windows code page cannot represent now work, for
+  both reading and writing. Previously such a file could not be opened at all,
+  which affected anyone whose paths are not covered by their code page. Reading
+  one with `mmap = TRUE` uses buffered I/O instead, since only the mapped path
+  still needs a code-page-representable name; the result is identical and, since
+  buffered reads became parallel, so is the speed. Other platforms are
+  unaffected.
+
 * Reading a Zstandard-compressed file with more than one column now works on
   Windows. The bundled decompressor kept one context for the whole process
   there, rather than one per thread, so a parallel read drove it from two

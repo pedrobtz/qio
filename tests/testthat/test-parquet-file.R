@@ -643,3 +643,98 @@ test_that("buffered and mapped reads agree at every thread count", {
     expect_identical(collect(mapped), expected)
   }
 })
+
+# --- Paths outside the active code page -------------------------------------
+# carquet opens paths with fopen(), which on Windows reads its bytes in the
+# active code page, so a path outside that page cannot be opened at all. qio
+# opens the stream itself and hands carquet the FILE*; mapping is the exception,
+# because carquet maps from a path, and it falls back to buffered I/O rather
+# than refusing the file. See src/qio_path.h.
+#
+# The mechanism only bites on Windows, but the code runs everywhere, so the
+# test does too: on POSIX it guards the same round trip against a regression in
+# the shared path handling.
+
+test_that("a non-ASCII path round-trips", {
+  # Accented Latin, CJK, and Cyrillic: the first survives most European code
+  # pages, the others do not survive any single one.
+  name <- "café-数据-файл.parquet"
+  directory <- withr::local_tempdir()
+  path <- file.path(directory, name)
+
+  # A filesystem that cannot store the name at all is not what is under test.
+  skip_if(
+    inherits(try(file.create(path), silent = TRUE), "try-error") ||
+      !file.exists(path),
+    "the filesystem cannot represent a non-ASCII filename"
+  )
+
+  data <- data.frame(
+    n = 1:100,
+    x = as.numeric(1:100),
+    s = paste0("v", 1:100),
+    stringsAsFactors = FALSE
+  )
+  expect_identical(write_parquet(data, path), path)
+  expect_true(file.exists(path))
+  expect_identical(read_parquet(path), data)
+
+  # Both read paths, since only the buffered one goes through the stream.
+  for (mapped in c(TRUE, FALSE)) {
+    file <- local_parquet_file(path, mmap = mapped)
+    expect_identical(collect(file), data)
+    expect_equal(nrow(file), 100)
+  }
+})
+
+test_that("a failed write to a non-ASCII path leaves nothing behind", {
+  # The writer removes a partial file itself now that it owns the stream:
+  # carquet's abort only deletes a file it opened. Without the wide-character
+  # remove, the file would survive on Windows.
+  name <- "数据-файл.parquet"
+  directory <- withr::local_tempdir()
+  path <- file.path(directory, name)
+  skip_if(
+    inherits(try(file.create(path), silent = TRUE), "try-error") ||
+      !file.exists(path),
+    "the filesystem cannot represent a non-ASCII filename"
+  )
+  unlink(path)
+
+  value <- rawToChar(as.raw(c(0xff, 0xfe)))
+  Encoding(value) <- "bytes"
+  x <- data.frame(ok = 1:3, bad = c("a", "b", "c"), stringsAsFactors = FALSE)
+  x$bad[3] <- value
+
+  expect_error(write_parquet(x, path), "bytes")
+  expect_false(file.exists(path))
+})
+
+test_that("a parallel read of a non-ASCII path keeps its lanes", {
+  # Each lane opens its own stream. If that had been left on carquet's path
+  # entry point, every lane would fail to open on Windows and the read would
+  # silently serialize rather than fail, which no other test would notice.
+  name <- "файл-lanes.parquet"
+  directory <- withr::local_tempdir()
+  path <- file.path(directory, name)
+  skip_if(
+    inherits(try(file.create(path), silent = TRUE), "try-error") ||
+      !file.exists(path),
+    "the filesystem cannot represent a non-ASCII filename"
+  )
+
+  set.seed(46)
+  n <- 60000L
+  data <- data.frame(
+    a = seq_len(n),
+    b = stats::rnorm(n),
+    c = as.numeric(seq_len(n)),
+    s = paste0("v", seq_len(n)),
+    stringsAsFactors = FALSE
+  )
+  write_parquet(data, path)
+
+  serial <- collect(local_parquet_file(path, threads = 1L))
+  expect_equal(serial, data)
+  expect_equal(collect(local_parquet_file(path, threads = 4L)), data)
+})
