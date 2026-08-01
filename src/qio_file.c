@@ -25,9 +25,26 @@ typedef struct {
     int busy;
 } qio_parquet_handle_t;
 
+/* How a 64-bit integer column reaches R. Chosen once per read by the `int64`
+ * option and applied to every INT64 column; see .agents/TYPES.md. */
+#define QIO_INT64_DOUBLE 0
+#define QIO_INT64_BIT64 1
+
+/* R's exact integer range in a double. Both bounds are representable. */
+#define QIO_DOUBLE_EXACT_MAX 9007199254740992LL /* 2^53 */
+
 typedef struct {
     int32_t *columns;
     int32_t num_columns;
+    /* Per selected column: 1 when the leaf is an unsigned 64-bit integer.
+     * Resolved once from the schema so the decode loops never re-walk it. */
+    uint8_t *unsigned64;
+    /* Per selected column: 1 when the read plan maps this INT64 leaf as a
+     * plain 64-bit integer, so `int64` range rules apply. A TIMESTAMP is also
+     * physically INT64 but is a count of sub-second units that R converts
+     * later, and range-checking it against 2^53 would destroy nanosecond
+     * timestamps. The plan decides; C never infers this. */
+    uint8_t *int64_semantics;
     uint8_t *row_group_mask;
     int32_t num_row_groups;
     int filter_row_groups;
@@ -49,7 +66,9 @@ typedef struct {
     carquet_worker_pool_t *pool;      /* in-flight parallel-collect pool */
     SEXP file;
     SEXP callback;
+    int int64_mode;                   /* QIO_INT64_DOUBLE or QIO_INT64_BIT64 */
     int int32_sentinel;               /* an INT32 -2147483648 became NA */
+    int int64_coerced;                /* a 64-bit value could not be kept */
 } qio_batch_context_t;
 
 static SEXP qio_file_tag(void) {
@@ -383,11 +402,93 @@ static SEXP qio_allocate_column(carquet_physical_type_t type,
     return R_NilValue;
 }
 
+/* Place one 64-bit value into an R double, per the read's `int64` mode.
+ *
+ * Range checks read the original 64-bit payload, never a converted double: by
+ * the time a value has been through `(double)` the information needed to know
+ * whether it survived is gone. Returns 1 when the value could not be kept, so
+ * the caller can raise a single warning per read instead of one per value.
+ *
+ * In "double" mode the exact range is [-2^53, 2^53] signed and [0, 2^53]
+ * unsigned. In "integer64" mode the destination holds raw int64 bits for
+ * bit64, whose NA is INT64_MIN; a stored INT64_MIN and any unsigned value
+ * above INT64_MAX therefore both become NA. See .agents/TYPES.md. */
+static int qio_place_int64(double *dst, int64_t raw, int mode,
+                           int is_unsigned) {
+    if (mode == QIO_INT64_BIT64) {
+        int64_t out;
+        if (is_unsigned && raw < 0) {
+            /* Above INT64_MAX once read as unsigned; bit64 cannot hold it. */
+            out = INT64_MIN;
+            memcpy(dst, &out, sizeof(out));
+            return 1;
+        }
+        if (!is_unsigned && raw == INT64_MIN) {
+            /* Indistinguishable from bit64's own NA once stored. */
+            memcpy(dst, &raw, sizeof(raw));
+            return 1;
+        }
+        memcpy(dst, &raw, sizeof(raw));
+        return 0;
+    }
+
+    if (is_unsigned) {
+        uint64_t value = (uint64_t)raw;
+        if (value > (uint64_t)QIO_DOUBLE_EXACT_MAX) {
+            *dst = NA_REAL;
+            return 1;
+        }
+        *dst = (double)value;
+        return 0;
+    }
+
+    if (raw < -QIO_DOUBLE_EXACT_MAX || raw > QIO_DOUBLE_EXACT_MAX) {
+        *dst = NA_REAL;
+        return 1;
+    }
+    *dst = (double)raw;
+    return 0;
+}
+
+/* NA for a 64-bit destination: bit64 spells it INT64_MIN, not NaN. */
+static void qio_place_int64_na(double *dst, int mode) {
+    if (mode == QIO_INT64_BIT64) {
+        int64_t na = INT64_MIN;
+        memcpy(dst, &na, sizeof(na));
+    } else {
+        *dst = NA_REAL;
+    }
+}
+
+static void qio_scatter_int64(double *dst, const void *values,
+                              const int16_t *def_levels, int16_t max_def,
+                              int64_t length, int mode, int is_unsigned,
+                              int *coerced) {
+    const int64_t *src = (const int64_t *)values;
+    int any = 0;
+    if (def_levels == NULL) {
+        for (int64_t i = 0; i < length; i++) {
+            any |= qio_place_int64(&dst[i], src[i], mode, is_unsigned);
+        }
+    } else {
+        int64_t j = 0;
+        for (int64_t i = 0; i < length; i++) {
+            if (def_levels[i] == max_def) {
+                any |= qio_place_int64(&dst[i], src[j++], mode, is_unsigned);
+            } else {
+                qio_place_int64_na(&dst[i], mode);
+            }
+        }
+    }
+    if (any && coerced) *coerced = 1;
+}
+
 static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                                   carquet_physical_type_t type,
                                   const void *data, const uint8_t *bitmap,
                                   int64_t length, const char *column,
-                                  int *sentinel) {
+                                  int *sentinel, int int64_mode,
+                                  int is_unsigned64, int *int64_coerced) {
     for (int64_t i = 0; i < length; i++) {
         R_xlen_t out = offset + (R_xlen_t)i;
         if (!qio_value_present(bitmap, i)) {
@@ -399,6 +500,13 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                 INTEGER(destination)[out] = NA_INTEGER;
                 break;
             case CARQUET_PHYSICAL_INT64:
+                /* bit64 spells NA as INT64_MIN, not NaN. */
+                if (int64_mode < 0) {
+                    REAL(destination)[out] = NA_REAL;
+                } else {
+                    qio_place_int64_na(&REAL(destination)[out], int64_mode);
+                }
+                break;
             case CARQUET_PHYSICAL_INT96:
             case CARQUET_PHYSICAL_FLOAT:
             case CARQUET_PHYSICAL_DOUBLE:
@@ -428,7 +536,14 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
             break;
         }
         case CARQUET_PHYSICAL_INT64:
-            REAL(destination)[out] = (double)((const int64_t *)data)[i];
+            if (int64_mode < 0) {
+                REAL(destination)[out] = (double)((const int64_t *)data)[i];
+            } else if (qio_place_int64(&REAL(destination)[out],
+                                       ((const int64_t *)data)[i], int64_mode,
+                                       is_unsigned64) &&
+                       int64_coerced) {
+                *int64_coerced = 1;
+            }
             break;
         case CARQUET_PHYSICAL_INT96:
             REAL(destination)[out] =
@@ -498,7 +613,8 @@ static void qio_scatter_numeric_raw(void *dst_base, R_xlen_t dst_offset,
                                     const void *values,
                                     const int16_t *def_levels,
                                     int16_t max_def, int64_t length,
-                                    int *sentinel) {
+                                    int *sentinel, int int64_mode,
+                                    int is_unsigned64, int *int64_coerced) {
     switch (type) {
     case CARQUET_PHYSICAL_BOOLEAN: {
         int *dst = (int *)dst_base + dst_offset;
@@ -535,7 +651,14 @@ static void qio_scatter_numeric_raw(void *dst_base, R_xlen_t dst_offset,
     }
     case CARQUET_PHYSICAL_INT64: {
         double *dst = (double *)dst_base + dst_offset;
-        QIO_SCATTER_LOOP(int64_t, dst, NA_REAL, QIO_CONVERT_DOUBLE);
+        if (int64_mode < 0) {
+            /* Not a plain integer column (a TIMESTAMP, say). Keep the plain
+             * widening; the read plan converts it afterwards. */
+            QIO_SCATTER_LOOP(int64_t, dst, NA_REAL, QIO_CONVERT_DOUBLE);
+        } else {
+            qio_scatter_int64(dst, values, def_levels, max_def, length,
+                              int64_mode, is_unsigned64, int64_coerced);
+        }
         break;
     }
     case CARQUET_PHYSICAL_INT96: {
@@ -580,7 +703,9 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
                                      const void *values,
                                      const int16_t *def_levels,
                                      int16_t max_def, int64_t length,
-                                     const char *column, int *sentinel) {
+                                     const char *column, int *sentinel,
+                                     int int64_mode, int is_unsigned64,
+                                     int *int64_coerced) {
     switch (type) {
     case CARQUET_PHYSICAL_BYTE_ARRAY: {
         /* Strings must go through SET_STRING_ELT (write barrier) and
@@ -607,7 +732,8 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
     default:
         qio_scatter_numeric_raw(qio_column_data_pointer(destination, type),
                                 offset, type, values, def_levels, max_def,
-                                length, sentinel);
+                                length, sentinel, int64_mode, is_unsigned64,
+                                int64_coerced);
         break;
     }
 }
@@ -639,6 +765,9 @@ typedef struct {
     int64_t rows;        /* rows in this row group */
     int status;          /* 0 = ok; set to 1 on failure */
     int int32_sentinel;  /* task-local; merged on the main thread after wait */
+    int int64_mode;
+    int is_unsigned64;
+    int int64_coerced;   /* task-local; merged with int32_sentinel */
     char message[256];
 } qio_column_task_t;
 
@@ -684,7 +813,8 @@ static void qio_column_task_run(void *arg) {
         }
         qio_scatter_numeric_raw(task->dst, task->dst_offset + read,
                                 task->type, values, defs, task->max_def, n,
-                                &task->int32_sentinel);
+                                &task->int32_sentinel, task->int64_mode,
+                                task->is_unsigned64, &task->int64_coerced);
         read += n;
     }
 
@@ -719,6 +849,7 @@ static bool qio_row_group_filter(const carquet_reader_t *reader,
 
 static void qio_prepare_selection(qio_parquet_handle_t *handle,
                                   SEXP columns, SEXP row_groups,
+                                  SEXP int64_columns,
                                   qio_selection_t *selection) {
     const carquet_schema_t *schema =
         carquet_reader_schema(handle->reader);
@@ -758,11 +889,40 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
         }
     }
 
+    size_t flags = (size_t)(selection->num_columns > 0
+                                ? selection->num_columns
+                                : 1);
+    selection->unsigned64 = (uint8_t *)R_alloc(flags, sizeof(uint8_t));
+    memset(selection->unsigned64, 0, flags);
+    selection->int64_semantics = (uint8_t *)R_alloc(flags, sizeof(uint8_t));
+    memset(selection->int64_semantics, 0, flags);
+
+    /* One flag per selected column, produced by the read plan. */
+    if (TYPEOF(int64_columns) != INTSXP ||
+        Rf_length(int64_columns) != selection->num_columns) {
+        Rf_error("qio: `int64_columns` must have one entry per selected "
+                 "column");
+    }
+    for (int32_t i = 0; i < selection->num_columns; i++) {
+        selection->int64_semantics[i] = INTEGER(int64_columns)[i] ? 1 : 0;
+    }
+
     for (int32_t i = 0; i < selection->num_columns; i++) {
         int32_t column = selection->columns[i];
         const char **parts = NULL;
         int32_t depth = qio_column_path_parts(schema, column, &parts);
         (void)parts;
+
+        /* An unsigned 64-bit annotation changes how the same bits are read, so
+         * resolve it once here rather than per value or per row group. */
+        const carquet_schema_node_t *node = qio_leaf_node_at(schema, column);
+        const carquet_logical_type_t *logical =
+            node ? carquet_schema_node_logical_type(node) : NULL;
+        if (logical && logical->id == CARQUET_LOGICAL_INTEGER &&
+            logical->params.integer.bit_width == 64 &&
+            !logical->params.integer.is_signed) {
+            selection->unsigned64[i] = 1;
+        }
         carquet_physical_type_t type =
             carquet_schema_column_type(schema, column);
         /* R drops nested leaves before selecting, so this is a backstop. */
@@ -908,7 +1068,9 @@ static void qio_copy_batch(qio_batch_context_t *context, SEXP result,
         qio_copy_batch_column(
             VECTOR_ELT(result, i), offset, type, data, bitmap, rows,
             carquet_schema_column_name(schema, context->selection.columns[i]),
-            &context->int32_sentinel);
+            &context->int32_sentinel,
+            context->selection.int64_semantics[i] ? context->int64_mode : -1,
+            context->selection.unsigned64[i], &context->int64_coerced);
     }
 }
 
@@ -919,6 +1081,21 @@ static void qio_warn_int32_sentinel(const qio_batch_context_t *context) {
     if (!context->int32_sentinel) return;
     Rf_warning("Some INT32 values were coerced to NA because R's integer type "
                "reserves -2147483648 as its missing value.");
+}
+
+/* One warning per operation, aggregated across signed and unsigned columns.
+ * The two messages are fixed by .agents/TYPES.md. */
+static void qio_warn_int64_coerced(const qio_batch_context_t *context) {
+    if (!context->int64_coerced) return;
+    if (context->int64_mode == QIO_INT64_BIT64) {
+        Rf_warning("Some INT64 or UINT64 values were coerced to NA because "
+                   "they cannot be represented by bit64::integer64.");
+    } else {
+        Rf_warning("Some INT64 or UINT64 values were coerced to NA because "
+                   "they cannot be represented exactly as R doubles; use "
+                   "int64 = \"integer64\" to preserve the supported 64-bit "
+                   "range.");
+    }
 }
 
 /* Call FUN(batch, index) with both arguments bound in a child of the base
@@ -1028,6 +1205,10 @@ static SEXP qio_collect_body(void *data) {
             task->dst = qio_column_data_pointer(VECTOR_ELT(result, i), type);
             task->dst_offset = rg_offset[s];
             task->rows = rg_rows[s];
+            task->int64_mode = context->selection.int64_semantics[i]
+                                   ? context->int64_mode
+                                   : -1;
+            task->is_unsigned64 = context->selection.unsigned64[i];
         }
     }
 
@@ -1109,7 +1290,12 @@ static SEXP qio_collect_body(void *data) {
                     VECTOR_ELT(result, i), rg_offset[s], type, value_buf,
                     def_ptr, max_def, n,
                     carquet_schema_column_name(schema, file_col),
-                    &context->int32_sentinel);
+                    &context->int32_sentinel,
+                    context->selection.int64_semantics[i]
+                        ? context->int64_mode
+                        : -1,
+                    context->selection.unsigned64[i],
+                    &context->int64_coerced);
                 carquet_column_reader_free(col);
                 context->column = NULL;
             }
@@ -1140,6 +1326,7 @@ static SEXP qio_collect_body(void *data) {
             Rf_error("qio: %s", tasks[t].message);
         }
         if (tasks[t].int32_sentinel) context->int32_sentinel = 1;
+        if (tasks[t].int64_coerced) context->int64_coerced = 1;
     }
 
     UNPROTECT(1);
@@ -1252,6 +1439,15 @@ static int32_t qio_batch_size(SEXP batch_size) {
         Rf_error("qio: `batch_size` must be a positive whole number");
     }
     return (int32_t)value;
+}
+
+/* R passes the validated `int64` option as a small integer code. */
+static int qio_int64_mode(SEXP mode) {
+    int value = Rf_asInteger(mode);
+    if (value != QIO_INT64_DOUBLE && value != QIO_INT64_BIT64) {
+        Rf_error("qio: invalid `int64` mode");
+    }
+    return value;
 }
 
 SEXP qio_parquet_open(SEXP path, SEXP use_mmap, SEXP verify_checksums,
@@ -1473,7 +1669,8 @@ SEXP qio_parquet_metadata(SEXP file) {
 }
 
 SEXP qio_parquet_collect(SEXP file, SEXP columns, SEXP row_groups,
-                         SEXP batch_size) {
+                         SEXP batch_size, SEXP int64_mode,
+                         SEXP int64_columns) {
     qio_parquet_handle_t *handle = qio_get_handle(file, 0);
     if (handle->busy) {
         Rf_error("qio: parquet file already has an active read");
@@ -1484,7 +1681,9 @@ SEXP qio_parquet_collect(SEXP file, SEXP columns, SEXP row_groups,
     context.handle = handle;
     context.file = file;
     context.batch_size = qio_batch_size(batch_size);
-    qio_prepare_selection(handle, columns, row_groups, &context.selection);
+    context.int64_mode = qio_int64_mode(int64_mode);
+    qio_prepare_selection(handle, columns, row_groups, int64_columns,
+                          &context.selection);
 
     handle->busy = 1;
     SEXP continuation = PROTECT(R_MakeUnwindCont());
@@ -1492,12 +1691,14 @@ SEXP qio_parquet_collect(SEXP file, SEXP columns, SEXP row_groups,
                                           qio_batch_cleanup, &context,
                                           continuation));
     qio_warn_int32_sentinel(&context);
+    qio_warn_int64_coerced(&context);
     UNPROTECT(2);
     return result;
 }
 
 SEXP qio_parquet_walk(SEXP file, SEXP columns, SEXP row_groups,
-                      SEXP batch_size, SEXP callback) {
+                      SEXP batch_size, SEXP callback, SEXP int64_mode,
+                      SEXP int64_columns) {
     qio_parquet_handle_t *handle = qio_get_handle(file, 0);
     if (handle->busy) {
         Rf_error("qio: parquet file already has an active read");
@@ -1512,7 +1713,9 @@ SEXP qio_parquet_walk(SEXP file, SEXP columns, SEXP row_groups,
     context.file = file;
     context.callback = callback;
     context.batch_size = qio_batch_size(batch_size);
-    qio_prepare_selection(handle, columns, row_groups, &context.selection);
+    context.int64_mode = qio_int64_mode(int64_mode);
+    qio_prepare_selection(handle, columns, row_groups, int64_columns,
+                          &context.selection);
 
     handle->busy = 1;
     SEXP continuation = PROTECT(R_MakeUnwindCont());
@@ -1520,6 +1723,7 @@ SEXP qio_parquet_walk(SEXP file, SEXP columns, SEXP row_groups,
                                           qio_batch_cleanup, &context,
                                           continuation));
     qio_warn_int32_sentinel(&context);
+    qio_warn_int64_coerced(&context);
     UNPROTECT(2);
     return result;
 }

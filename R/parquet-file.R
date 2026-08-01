@@ -163,6 +163,12 @@ metadata.qio_parquet_file <- function(x, ...) {
 #' @param batch_size Positive batch size in rows. Currently unused by
 #'   `collect()` (see Details); [walk_batches()] decodes this many rows per
 #'   batch.
+#' @param int64 How 64-bit integer columns reach R. `"double"` (the default)
+#'   is exact from `-2^53` through `2^53` and returns `NA` outside it.
+#'   `"integer64"` returns [bit64::integer64], which covers the full signed
+#'   64-bit range, and needs the suggested `bit64` package. Either way values
+#'   that cannot be represented become `NA` and one warning is emitted per
+#'   read. Unsigned 64-bit columns are never returned as negative numbers.
 #'
 #' @return A data frame.
 #' @export
@@ -183,14 +189,24 @@ collect.qio_parquet_file <- function(
   ...,
   columns = NULL,
   row_groups = NULL,
-  batch_size = 65536L
+  batch_size = 65536L,
+  int64 = c("double", "integer64")
 ) {
   qio_empty_dots(...)
-  plan <- read_plan(x)
+  options <- qio_read_options(int64 = int64)
+  plan <- read_plan(x, int64 = options$int64)
   columns <- qio_select_columns(plan, qio_columns(columns))
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
-  result <- .Call(C_qio_parquet_collect, x, columns, row_groups, batch_size)
+  result <- .Call(
+    C_qio_parquet_collect,
+    x,
+    columns,
+    row_groups,
+    batch_size,
+    qio_int64_code(options),
+    qio_int64_columns(plan, columns)
+  )
   qio_apply_plan(result, plan)
 }
 
@@ -219,19 +235,30 @@ walk_batches <- function(
   ...,
   columns = NULL,
   row_groups = NULL,
-  batch_size = 65536L
+  batch_size = 65536L,
+  int64 = c("double", "integer64")
 ) {
   if (!is.function(FUN)) {
     stop("`FUN` must be a function.", call. = FALSE)
   }
-  plan <- read_plan(x)
+  options <- qio_read_options(int64 = int64)
+  plan <- read_plan(x, int64 = options$int64)
   columns <- qio_select_columns(plan, qio_columns(columns))
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
   callback <- function(batch, index) {
     FUN(qio_apply_plan(batch, plan), index, ...)
   }
-  .Call(C_qio_parquet_walk, x, columns, row_groups, batch_size, callback)
+  .Call(
+    C_qio_parquet_walk,
+    x,
+    columns,
+    row_groups,
+    batch_size,
+    callback,
+    qio_int64_code(options),
+    qio_int64_columns(plan, columns)
+  )
   invisible(x)
 }
 
@@ -368,6 +395,19 @@ qio_resolve_columns <- function(plan, columns) {
   }
 
   as.integer(unlist(matches))
+}
+
+# One flag per selected column: does the read plan treat this leaf as a plain
+# 64-bit integer?
+#
+# A TIMESTAMP is physically INT64 too, but it is a count of sub-second units
+# that the plan converts afterwards; applying the `int64` range rules to it
+# would turn every nanosecond timestamp past 2^53 into NA. The plan already
+# knows which is which, so the native layer is told rather than left to infer
+# it from the schema a second time.
+qio_int64_columns <- function(plan, columns) {
+  selected <- if (is.null(columns)) seq_len(nrow(plan)) else columns
+  as.integer(plan$converter[selected] %in% c("int64_double", "int64_bit64"))
 }
 
 # Resolve a selection and drop leaves qio cannot materialize yet, reporting the

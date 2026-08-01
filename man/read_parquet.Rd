@@ -4,10 +4,12 @@
 \alias{read_parquet}
 \title{Read a Parquet file}
 \usage{
-read_parquet(file)
+read_parquet(file, int64 = c("double", "integer64"))
 }
 \arguments{
 \item{file}{Path to a Parquet file.}
+
+\item{int64}{How 64-bit integer columns reach R; see \code{\link[=collect]{collect()}}.}
 }
 \value{
 A data frame.

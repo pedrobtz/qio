@@ -10,7 +10,8 @@ walk_batches(
   ...,
   columns = NULL,
   row_groups = NULL,
-  batch_size = 65536L
+  batch_size = 65536L,
+  int64 = c("double", "integer64")
 )
 }
 \arguments{
@@ -31,6 +32,13 @@ error, and so is a path matching more than one leaf.}
 row groups.}
 
 \item{batch_size}{Positive number of rows decoded per batch.}
+
+\item{int64}{How 64-bit integer columns reach R. \code{"double"} (the default)
+is exact from \code{-2^53} through \code{2^53} and returns \code{NA} outside it.
+\code{"integer64"} returns \link[bit64:integer64]{bit64::integer64}, which covers the full signed
+64-bit range, and needs the suggested \code{bit64} package. Either way values
+that cannot be represented become \code{NA} and one warning is emitted per
+read. Unsigned 64-bit columns are never returned as negative numbers.}
 }
 \value{
 \code{x}, invisibly.

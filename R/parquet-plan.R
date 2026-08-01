@@ -56,6 +56,29 @@ qio_type_registry <- function() {
   )
 }
 
+# Validate the options that change how a materializing read maps values to R.
+#
+# Every entry point that can materialize values calls this first, before any
+# allocation or native call, so `read_parquet()`, `collect()`, `walk_batches()`,
+# and `read_plan()` cannot diverge. See .agents/roadmap.md, "Read options".
+qio_read_options <- function(int64 = c("double", "integer64")) {
+  int64 <- match.arg(int64)
+  if (int64 == "integer64" && !requireNamespace("bit64", quietly = TRUE)) {
+    stop(
+      "`int64 = \"integer64\"` needs the bit64 package. ",
+      "Install it, or use `int64 = \"double\"`.",
+      call. = FALSE
+    )
+  }
+  list(int64 = int64)
+}
+
+# The native layer takes the mode as a small integer code; keep the mapping in
+# one place so C and R cannot disagree about which is which.
+qio_int64_code <- function(options) {
+  if (options$int64 == "integer64") 1L else 0L
+}
+
 # Logical-annotation overrides, keyed by (physical_type, logical_type).
 #
 # A matching row takes precedence over the physical fallback in
@@ -78,10 +101,17 @@ qio_logical_registry <- function() {
 # Resolve logical-annotation conversions for each schema row. Returns per-row
 # `r_type`, `converter`, and an `applied` flag. Rows left `NA`/`FALSE` keep the
 # physical fallback and are reported by `read_plan()` as a pending annotation.
-qio_resolve_logical <- function(schema) {
+qio_resolve_logical <- function(schema, options = qio_read_options()) {
   n <- nrow(schema)
   r_type <- rep(NA_character_, n)
   converter <- rep(NA_character_, n)
+
+  # A NULL-annotated column carries no values at all: every entry is null
+  # whatever its physical type. Materialize it as all-NA logical so the row
+  # count survives. TYPES.md, "Target mappings".
+  is_null_type <- !is.na(schema$logical_type) & schema$logical_type == "NULL"
+  r_type[is_null_type] <- "logical"
+  converter[is_null_type] <- "null_logical"
 
   # Static (physical_type, logical_type) overrides, e.g. DATE.
   reg <- qio_logical_registry()
@@ -106,6 +136,24 @@ qio_resolve_logical <- function(schema) {
     rows <- which(is_ts)[ok]
     r_type[rows] <- "POSIXct"
     converter[rows] <- paste0("timestamp_utc_", tolower(time$unit[ok]))
+  }
+
+  # 64-bit integers are selected by the read's `int64` mode, not by the file.
+  # Bare INT64 and an unsigned INTEGER(64) annotation both land here: C reads
+  # the same bits differently and reports anything it could not keep. This runs
+  # last and only fills rows no more specific annotation claimed, so a
+  # TIMESTAMP or DATE mapping always wins.
+  is_plain_int64 <- is.na(r_type) &
+    schema$physical_type == "INT64" &
+    (is.na(schema$logical_type) | schema$logical_type == "INTEGER")
+  if (any(is_plain_int64)) {
+    integer64 <- options$int64 == "integer64"
+    r_type[is_plain_int64] <- if (integer64) "integer64" else "double"
+    converter[is_plain_int64] <- if (integer64) {
+      "int64_bit64"
+    } else {
+      "int64_double"
+    }
   }
 
   list(r_type = r_type, converter = converter, applied = !is.na(r_type))
@@ -140,6 +188,9 @@ qio_parse_time_details <- function(details) {
 #' @param x A Parquet file path, a `qio_parquet_file` object, or the data frame
 #'   returned by [schema()].
 #' @param ... Reserved for future use.
+#' @param int64 How 64-bit integer columns reach R; see [collect()]. The plan
+#'   reports the resulting `r_type` and `converter`, so it can be inspected for
+#'   exactly the read that will follow.
 #'
 #' @return A `qio_read_plan` data frame with one row per physical leaf column
 #'   and the columns:
@@ -173,28 +224,32 @@ read_plan <- function(x, ...) {
 
 #' @rdname read_plan
 #' @export
-read_plan.qio_parquet_file <- function(x, ...) {
+read_plan.qio_parquet_file <- function(
+  x,
+  ...,
+  int64 = c("double", "integer64")
+) {
   qio_empty_dots(...)
-  read_plan(schema(x))
+  read_plan(schema(x), int64 = int64)
 }
 
 #' @rdname read_plan
 #' @export
-read_plan.character <- function(x, ...) {
+read_plan.character <- function(x, ..., int64 = c("double", "integer64")) {
   qio_empty_dots(...)
   if (length(x) != 1L || is.na(x)) {
     stop("`x` must be a single Parquet file path.", call. = FALSE)
   }
   pf <- parquet_open(x)
   on.exit(parquet_close(pf), add = TRUE)
-  read_plan(pf)
+  read_plan(pf, int64 = int64)
 }
 
 #' @rdname read_plan
 #' @export
-read_plan.data.frame <- function(x, ...) {
+read_plan.data.frame <- function(x, ..., int64 = c("double", "integer64")) {
   qio_empty_dots(...)
-  qio_build_plan(x)
+  qio_build_plan(x, qio_read_options(int64 = int64))
 }
 
 #' @export
@@ -208,7 +263,7 @@ read_plan.default <- function(x, ...) {
   )
 }
 
-qio_build_plan <- function(schema) {
+qio_build_plan <- function(schema, options = qio_read_options()) {
   required <- c(
     "name",
     "path",
@@ -233,7 +288,7 @@ qio_build_plan <- function(schema) {
   converter <- registry$converter[idx]
 
   # Logical annotations take precedence over the physical fallback.
-  logical <- qio_resolve_logical(schema)
+  logical <- qio_resolve_logical(schema, options)
   applied <- logical$applied
   r_type[applied] <- logical$r_type[applied]
   converter[applied] <- logical$converter[applied]
@@ -322,6 +377,14 @@ qio_apply_converter <- function(x, converter) {
     timestamp_utc_nanos = qio_as_posixct_utc(x, 1e9),
     # Legacy INT96 is already decoded to UTC seconds in C; just add the class.
     int96 = qio_as_posixct_utc(x, 1),
+    # C already range-checked against R's exact double range and substituted
+    # NA where a value could not survive, so the vector is final.
+    int64_double = x,
+    # C wrote raw int64 bits into the double payload, which is exactly
+    # bit64::integer64's storage; only the class is missing.
+    int64_bit64 = structure(x, class = "integer64"),
+    # A NULL-annotated column has no values; preserve only its length.
+    null_logical = rep(NA, length(x)),
     # Physical converters return their column unchanged.
     x
   )

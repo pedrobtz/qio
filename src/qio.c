@@ -432,8 +432,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"qio_parquet_schema", (DL_FUNC)&qio_parquet_schema, 1},
     {"qio_parquet_row_groups", (DL_FUNC)&qio_parquet_row_groups, 1},
     {"qio_parquet_metadata", (DL_FUNC)&qio_parquet_metadata, 1},
-    {"qio_parquet_collect", (DL_FUNC)&qio_parquet_collect, 4},
-    {"qio_parquet_walk", (DL_FUNC)&qio_parquet_walk, 5},
+    {"qio_parquet_collect", (DL_FUNC)&qio_parquet_collect, 6},
+    {"qio_parquet_walk", (DL_FUNC)&qio_parquet_walk, 7},
     {NULL, NULL, 0}
 };
 

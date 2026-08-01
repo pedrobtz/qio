@@ -14,8 +14,10 @@ SEXP qio_parquet_schema(SEXP file);
 SEXP qio_parquet_row_groups(SEXP file);
 SEXP qio_parquet_metadata(SEXP file);
 SEXP qio_parquet_collect(SEXP file, SEXP columns, SEXP row_groups,
-                         SEXP batch_size);
+                         SEXP batch_size, SEXP int64_mode,
+                         SEXP int64_columns);
 SEXP qio_parquet_walk(SEXP file, SEXP columns, SEXP row_groups,
-                      SEXP batch_size, SEXP callback);
+                      SEXP batch_size, SEXP callback, SEXP int64_mode,
+                      SEXP int64_columns);
 
 #endif

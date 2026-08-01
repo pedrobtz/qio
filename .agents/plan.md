@@ -347,21 +347,35 @@ silently. Selections now resolve to leaf indexes in R before any native call.
 
 ## Phase 3: complete v0.1.0 type coverage
 
-Status: not started
+Status: 3.1 complete; 3.2, 3.3, and 3.4 not started.
+
+### What 3.1 turned up
+
+Reading 64-bit integers was wrong in three distinct ways, not just imprecise.
+A stored `18446744073709551615` came back as `-1`, because an unsigned column
+was widened as if signed; values between `2^53` and `2^63 - 1` rounded
+silently; and `INT64_MAX` rounded *past* itself to `9223372036854775808`.
+
+The range check also has to be told which columns it applies to. A `TIMESTAMP`
+is physically INT64, and range-checking a nanosecond timestamp against `2^53`
+turns every instant after 1970-04-15 into `NA`. The read plan already knows
+which INT64 leaves are plain integers, so it passes a per-column flag rather
+than letting C infer it from the schema a second time.
 
 Implement the contracts in [`TYPES.md`](TYPES.md#conversion-contracts) in this
 order. All four groups depend on the phase 2 read-option surface.
 
-- [ ] Materialize the Parquet `NULL` logical type as all-`NA` logical while
+- [x] Materialize the Parquet `NULL` logical type as all-`NA` logical while
   preserving row count.
 
 ### 3.1 64-bit integers
 
-- [ ] Add signed and unsigned `double` and optional `bit64::integer64` modes.
-- [ ] Preserve original bits until range checks are complete and aggregate
+- [x] Add signed and unsigned `double` and optional `bit64::integer64` modes.
+- [x] Preserve original bits until range checks are complete and aggregate
   warnings once per operation.
-- [ ] Test `2^53`, signed `-2^63`, unsigned `2^63 - 1`, nulls, projection, row
-  groups, and batches.
+- [x] Test `2^53`, signed `-2^63`, unsigned `2^63 - 1`, nulls, projection, row
+  groups, and batches. Fixture `int64_boundaries.parquet`, written by Arrow
+  because qio has no unsigned 64-bit writer.
 
 ### 3.2 Text, binary, and exact identifiers
 

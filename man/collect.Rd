@@ -7,7 +7,14 @@
 \usage{
 collect(x, ...)
 
-\method{collect}{qio_parquet_file}(x, ..., columns = NULL, row_groups = NULL, batch_size = 65536L)
+\method{collect}{qio_parquet_file}(
+  x,
+  ...,
+  columns = NULL,
+  row_groups = NULL,
+  batch_size = 65536L,
+  int64 = c("double", "integer64")
+)
 }
 \arguments{
 \item{x}{A \code{qio_parquet_file} object.}
@@ -26,6 +33,13 @@ row groups.}
 \item{batch_size}{Positive batch size in rows. Currently unused by
 \code{collect()} (see Details); \code{\link[=walk_batches]{walk_batches()}} decodes this many rows per
 batch.}
+
+\item{int64}{How 64-bit integer columns reach R. \code{"double"} (the default)
+is exact from \code{-2^53} through \code{2^53} and returns \code{NA} outside it.
+\code{"integer64"} returns \link[bit64:integer64]{bit64::integer64}, which covers the full signed
+64-bit range, and needs the suggested \code{bit64} package. Either way values
+that cannot be represented become \code{NA} and one warning is emitted per
+read. Unsigned 64-bit columns are never returned as negative numbers.}
 }
 \value{
 A data frame.

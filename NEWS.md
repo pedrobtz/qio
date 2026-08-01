@@ -1,12 +1,22 @@
 # qio 0.0.0.9000
 
+* 64-bit integer columns are now read correctly. `read_parquet()`, `collect()`,
+  `walk_batches()`, and `read_plan()` gain `int64`, which selects `"double"`
+  (the default, exact from `-2^53` through `2^53`) or `"integer64"`
+  (`bit64::integer64`, covering the full signed 64-bit range). Values that
+  cannot be represented become `NA` and one warning is emitted per read.
+* Unsigned 64-bit columns are no longer returned as negative numbers. A stored
+  `18446744073709551615` previously read as `-1`; values above the selected
+  mode's range now become `NA` with a warning. Values between `2^53` and
+  `2^63 - 1` also no longer round silently.
+* Columns annotated with the Parquet `NULL` logical type now read as all-`NA`
+  logical, preserving the row count, instead of their physical fallback.
 * Column selection now resolves by complete schema path instead of by leaf
   name. A file with two leaves sharing a name under different parents could
   previously return the wrong column, or reject a flat column as nested. An
   unknown path and a path matching more than one leaf are both errors now.
 * Errors about unsupported columns name the complete path, physical type,
   logical annotation with its parameters, and fixed-width length.
-
 * `walk_batches(threads = 1)` is now genuinely single-threaded. The vendored
   batch pipeline raised any request below two threads up to two, so a serial
   read still started a worker.

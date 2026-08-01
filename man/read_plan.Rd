@@ -9,17 +9,21 @@
 \usage{
 read_plan(x, ...)
 
-\method{read_plan}{qio_parquet_file}(x, ...)
+\method{read_plan}{qio_parquet_file}(x, ..., int64 = c("double", "integer64"))
 
-\method{read_plan}{character}(x, ...)
+\method{read_plan}{character}(x, ..., int64 = c("double", "integer64"))
 
-\method{read_plan}{data.frame}(x, ...)
+\method{read_plan}{data.frame}(x, ..., int64 = c("double", "integer64"))
 }
 \arguments{
 \item{x}{A Parquet file path, a \code{qio_parquet_file} object, or the data frame
 returned by \code{\link[=schema]{schema()}}.}
 
 \item{...}{Reserved for future use.}
+
+\item{int64}{How 64-bit integer columns reach R; see \code{\link[=collect]{collect()}}. The plan
+reports the resulting \code{r_type} and \code{converter}, so it can be inspected for
+exactly the read that will follow.}
 }
 \value{
 A \code{qio_read_plan} data frame with one row per physical leaf column

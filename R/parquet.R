@@ -22,6 +22,7 @@
 #' [collect()] for control over `mmap` and `threads`.
 #'
 #' @param file Path to a Parquet file.
+#' @param int64 How 64-bit integer columns reach R; see [collect()].
 #'
 #' @return A data frame.
 #'
@@ -31,12 +32,12 @@
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(data.frame(x = 1:3, y = c("a", "b", NA)), path)
 #' read_parquet(path)
-read_parquet <- function(file) {
+read_parquet <- function(file, int64 = c("double", "integer64")) {
   # mmap enables parallel column decode in collect(); the handle is closed on
   # exit, so the mapping (and any Windows delete-lock) lives only for the read.
   file <- parquet_open(file, mmap = TRUE)
   on.exit(parquet_close(file), add = TRUE)
-  collect(file)
+  collect(file, int64 = int64)
 }
 
 #' Write a Parquet file

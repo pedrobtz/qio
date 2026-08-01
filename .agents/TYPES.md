@@ -25,7 +25,10 @@ precedence over physical fallbacks.
 
 ## Current behavior
 
-Nulls become the corresponding R `NA`.
+Nulls become the corresponding R `NA`. Materializing reads accept `int64`,
+which selects how 64-bit integer columns reach R; see
+[64-bit integers](#64-bit-integers). Unsigned 64-bit columns are never returned
+as negative values.
 
 ### Reads
 
@@ -33,7 +36,7 @@ Nulls become the corresponding R `NA`.
 |---|---|---|
 | `BOOLEAN` | logical | — |
 | `INT32` | integer or `Date` | Only `DATE` is interpreted; stored `-2147483648` becomes `NA` with a warning (see [INT32 sentinel values](#int32-sentinel-values)) |
-| `INT64` | numeric or `POSIXct` | Only UTC `TIMESTAMP` is interpreted; numeric integers may round beyond `2^53` |
+| `INT64` | numeric, `bit64::integer64`, or `POSIXct` | Selected by `int64`; unrepresentable values become `NA` with one warning per read |
 | `INT96` | UTC `POSIXct` | Read-only legacy timestamp |
 | `FLOAT`, `DOUBLE` | numeric | `FLOAT` is widened to double |
 | `BYTE_ARRAY` | character | All payloads are currently assumed to be UTF-8 |

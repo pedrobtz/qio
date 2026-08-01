@@ -90,3 +90,27 @@ Expected behavior: `collect(columns = "b")` returns the flat column, the nested
 other. `carquet_schema_find_column()` compares leaf names only and returns the
 nested leaf for `"b"`, which is why qio resolves selections to leaf indexes by
 complete path before calling carquet. See `.agents/carquet.md`.
+
+## 64-bit and NULL-type fixtures
+
+Both were written by the Apache Arrow R package, which can produce schemas qio
+cannot: qio's writer has no unsigned 64-bit type and no NULL logical type.
+
+`int64_boundaries.parquet`
+
+- Generator: `tools/generate-int64-boundary-fixture.R`, R `arrow` 24.0.0
+- Contents: a signed `INT64` column and an unsigned `INTEGER(64)` column, eight
+  rows each, covering `INT64_MIN`, the exact double bounds at `+/-2^53`,
+  `2^53 + 1`, `INT64_MAX`, `INT64_MAX + 1`, and `UINT64_MAX`.
+- Expected behavior: with `int64 = "double"` only `[-2^53, 2^53]` survives; with
+  `int64 = "integer64"` the full signed range survives, `INT64_MIN` becomes
+  bit64's reserved `NA`, and unsigned values above `INT64_MAX` become `NA`.
+  Either way the unsigned column never yields a negative number, and exactly
+  one warning is emitted per read. See `.agents/TYPES.md`.
+
+`null_type.parquet`
+
+- Generator: `tools/generate-null-type-fixture.R`, R `arrow` 24.0.0
+- Contents: a column of the Parquet `NULL` logical type plus an `INT32` column.
+- Expected behavior: the NULL-typed column reads as all-`NA` logical and the
+  row count is preserved.

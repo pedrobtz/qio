@@ -114,7 +114,7 @@ test_that("read_plan() maps physical types to R types", {
     c(
       "boolean",
       "int32",
-      "int64",
+      "int64_double",
       "float",
       "double",
       "byte_array",
