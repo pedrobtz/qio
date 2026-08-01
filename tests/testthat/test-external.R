@@ -450,3 +450,97 @@ test_that("the reference corpus's unannotated string columns are now bytes", {
   expect_type(df$string_col, "list")
   expect_type(df$string_col[[1]], "raw")
 })
+
+# --- UUID and UTF-8 validation ---------------------------------------------
+# Both fixtures come from tools/generate-type-fixtures.c: Arrow's R bindings
+# have no UUID type, and Arrow correctly refuses to build invalid UTF-8.
+
+test_that("a UUID column reads as canonical text", {
+  path <- ext("uuid.parquet")
+  plan <- read_plan(path)
+  expect_identical(plan$r_type, "character")
+  expect_identical(plan$converter, "uuid")
+
+  df <- read_parquet(path)
+  expect_type(df$id, "character")
+  expect_identical(
+    df$id,
+    c(
+      "12345678-9abc-def0-1122-334455667788",
+      NA,
+      "00000000-0000-0000-0000-000000000000",
+      "ffffffff-ffff-ffff-ffff-ffffffffffff",
+      "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+    )
+  )
+})
+
+test_that("UUID reads agree across all three APIs and survive batching", {
+  path <- ext("uuid.parquet")
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+
+  eager <- read_parquet(path)
+  expect_identical(collect(file), eager)
+
+  batches <- list()
+  walk_batches(
+    file,
+    function(batch, index) batches[[index]] <<- batch,
+    batch_size = 2L
+  )
+  expect_gt(length(batches), 1L)
+  expect_identical(do.call(rbind, batches), eager)
+})
+
+test_that("a text column of invalid UTF-8 fails with column, row, and offset", {
+  # Rf_mkCharLenCE does not validate, so without an explicit check qio would
+  # hand R a string claiming an encoding it does not have.
+  expect_error(
+    read_parquet(ext("invalid_utf8.parquet")),
+    "column 's' is annotated as text but row 2 is not valid UTF-8"
+  )
+})
+
+# --- Decimal (read as double in v0.1.0) ------------------------------------
+
+test_that("decimal columns read as double with the scale applied", {
+  path <- ext("decimal_types.parquet")
+  plan <- read_plan(path)
+  expect_true(all(plan$r_type == "double"))
+  expect_true(all(startsWith(plan$converter, "decimal_")))
+
+  expect_message(df <- read_parquet(path), "as double; values may be inexact")
+  expect_equal(df$small, c(12.30, 4.05, -0.07, NA))
+  expect_equal(df$wide, c(123456789.12, -1, 0, NA))
+})
+
+test_that("the decimal message is emitted once per read", {
+  messages <- character()
+  withCallingHandlers(
+    read_parquet(ext("decimal_types.parquet")),
+    message = function(m) {
+      messages <<- c(messages, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+  expect_length(messages, 1L)
+  expect_match(messages, "2 Parquet DECIMAL columns")
+})
+
+test_that("decimal values agree across all three read APIs", {
+  path <- ext("decimal_types.parquet")
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+
+  eager <- suppressMessages(read_parquet(path))
+  expect_equal(suppressMessages(collect(file)), eager)
+
+  batches <- list()
+  suppressMessages(walk_batches(
+    file,
+    function(batch, index) batches[[index]] <<- batch,
+    batch_size = 2L
+  ))
+  expect_equal(do.call(rbind, batches), eager)
+})

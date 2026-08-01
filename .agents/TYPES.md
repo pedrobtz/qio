@@ -112,10 +112,13 @@ define rounding. New `INT96` output will not be added.
 | unannotated `BYTE_ARRAY`, `BSON` | list-column of raw vectors |
 | `FIXED_LEN_BYTE_ARRAY` | list-column of fixed-length raw vectors |
 | `UUID` | canonical character UUID |
-| `DECIMAL` | exact fixed-point character |
+| `DECIMAL` | `double` in v0.1.0; exact fixed-point character in v0.2.0 |
 
-Variable binary, fixed binary, UUID, and decimal writes require explicit
-schemas. Ordinary character input continues to infer `STRING`.
+Ordinary character input continues to infer `STRING`. Writes of binary, fixed
+binary, `UUID`, `FLOAT16`, `ENUM`, `BSON`, and decimal are deferred to v0.2.0;
+`write_parquet()` rejects those R inputs with a clear error today. When they
+land they will require explicit schemas, since none of these is identified
+unambiguously by an ordinary R type.
 
 Extension types are deferred to v0.2.0, and v0.1.0 adds no code for them. What
 falls out of the rules above is the whole of their v0.1.0 behavior:
@@ -244,14 +247,27 @@ Materializing reads will accept `time = c("numeric", "hms")`; the default is
 
 ### Decimal
 
-- Read all valid physical representations as exact fixed-point character.
-  Preserve declared trailing zeroes: unscaled `1230`, scale 2 becomes
-  `"12.30"`.
-- Never convert the unscaled integer through double.
+v0.1.0 reads decimals as `double`; exact fixed-point character is v0.2.0.
+
+- Read every physical representation (`INT32`, `INT64`, `BYTE_ARRAY`,
+  `FIXED_LEN_BYTE_ARRAY`) and apply the declared scale, so unscaled `1230` with
+  scale 2 reads as `12.30`. Byte-array storage is a big-endian two's-complement
+  integer.
+- Emit one message per read naming how many decimal columns were read as
+  `double` and that the values may be inexact. A `double` holds a decimal
+  exactly only when the unscaled integer is within `[-2^53, 2^53]`; larger
+  precisions lose low-order digits.
 - Keep precision, scale, and storage visible in `schema()` and `read_plan()`.
-- Decimal writes require character input plus explicit precision and scale.
-  Parse exactly and reject malformed, inexact, or out-of-range values before
-  creating the output file.
+- Returning the unscaled integer, or the raw bytes, is not an option: both are
+  silently the wrong quantity rather than an approximation of the right one.
+
+For v0.2.0:
+
+- Return exact fixed-point character, preserving declared trailing zeroes, and
+  never route the unscaled integer through `double`.
+- Decimal writes take character input plus explicit precision and scale. Parse
+  exactly and reject malformed, inexact, or out-of-range values before creating
+  the output file.
 
 ### Nested release boundary
 

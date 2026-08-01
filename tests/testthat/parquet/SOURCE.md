@@ -126,22 +126,30 @@ cannot: qio's writer has no unsigned 64-bit type and no NULL logical type.
   columns are lists of raw vectors with `NULL` for nulls; `FLOAT16` widens to
   double. See `.agents/TYPES.md`.
 
-No `UUID` fixture exists yet: Apache Arrow's R bindings have no UUID type, and
-qio's writer cannot emit the annotation. `qio_format_uuid()` is unit-tested
-directly. A fixture needs a generator built on carquet's writer, like
-`tools/generate-lazy-fixture.c`.
 
-### Fixtures still needed
 
-Two cases have no fixture because neither Apache Arrow nor qio can produce
-them, and both need a generator built on carquet's writer along the lines of
-`tools/generate-lazy-fixture.c`:
+## Decimal fixture
 
-- a `UUID`-annotated `FIXED_LEN_BYTE_ARRAY(16)` column; Arrow's R bindings have
-  no UUID type; and
-- a `STRING`-annotated column holding invalid UTF-8; Arrow refuses to build one,
-  correctly, so qio's UTF-8 validation is currently only exercised by valid
-  input.
+`decimal_types.parquet` was written by the Apache Arrow R package.
 
-`qio_format_uuid()` and the malformed-width errors are unit-tested directly in
-the meantime.
+- Generator: `tools/generate-decimal-fixture.R`, R `arrow` 24.0.0
+- Contents: `DECIMAL(7,2)` and `DECIMAL(15,2)` columns, each with a null and a
+  negative value, both stored as `FIXED_LEN_BYTE_ARRAY`.
+- Expected behavior: both read as `double` with the scale applied, with one
+  message per read. See `.agents/TYPES.md`, "Decimal".
+
+## Fixtures from carquet's writer
+
+`uuid.parquet` and `invalid_utf8.parquet` are produced by
+`tools/generate-type-fixtures.c`, which links against qio's vendored carquet
+objects. Neither Apache Arrow nor qio's own writer can create them: Arrow's R
+bindings have no UUID type, qio's writer cannot emit the UUID annotation, and
+Arrow correctly refuses to build a string array holding invalid UTF-8. carquet
+performs no write-side UTF-8 validation, which is what makes the second file
+possible.
+
+- `uuid.parquet`: a `UUID`-annotated `FIXED_LEN_BYTE_ARRAY(16)` column of four
+  UUIDs plus a null. Expected to read as canonical hyphenated text.
+- `invalid_utf8.parquet`: a `STRING`-annotated `BYTE_ARRAY` column whose second
+  row is a truncated two-byte sequence. Expected to fail the read naming the
+  column, row, and byte offset.

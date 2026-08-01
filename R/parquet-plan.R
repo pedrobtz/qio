@@ -138,6 +138,23 @@ qio_resolve_logical <- function(schema, options = qio_read_options()) {
     converter[rows] <- paste0("timestamp_utc_", tolower(time$unit[ok]))
   }
 
+  # DECIMAL reads as double with its scale applied. Exact fixed-point character
+  # is v0.2.0; until then an approximate number beats the alternatives, which
+  # are the unscaled integer or the raw bytes -- both silently the wrong
+  # quantity. This runs before the binary rule so byte-array decimals are not
+  # swallowed by it. TYPES.md, "Decimal".
+  is_decimal <- !is.na(schema$logical_type) & schema$logical_type == "DECIMAL"
+  if (any(is_decimal)) {
+    scale <- qio_parse_decimal_details(schema$logical_details[is_decimal])$scale
+    binary_storage <- schema$physical_type[is_decimal] %in%
+      c("BYTE_ARRAY", "FIXED_LEN_BYTE_ARRAY")
+    r_type[is_decimal] <- "double"
+    converter[is_decimal] <- paste0(
+      ifelse(binary_storage, "decimal_binary_", "decimal_int_"),
+      scale
+    )
+  }
+
   # Byte arrays are text only when the file says so. An unannotated
   # BYTE_ARRAY is arbitrary bytes, and returning it as character would assume a
   # UTF-8 encoding the file never claimed. TYPES.md, "Text and binary".
@@ -192,6 +209,53 @@ qio_resolve_logical <- function(schema, options = qio_read_options()) {
 # Parse a TIMESTAMP/TIME `logical_details` string of the form
 # "unit=MICROS, adjusted_to_utc=true" into its components. `unit` is NA when the
 # string carries no unit.
+# Parse a DECIMAL `logical_details` string of the form "precision=9, scale=2".
+# A missing scale is 0, which is what the Parquet default means.
+qio_parse_decimal_details <- function(details) {
+  details[is.na(details)] <- ""
+  number <- function(field) {
+    text <- sub(paste0("^.*", field, "=(-?[0-9]+).*$"), "\\1", details)
+    value <- suppressWarnings(as.integer(text))
+    value[!grepl(paste0(field, "="), details, fixed = TRUE)] <- 0L
+    value[is.na(value)] <- 0L
+    value
+  }
+  list(precision = number("precision"), scale = number("scale"))
+}
+
+# Unscaled integer to the decimal it represents. The scale is a count of
+# decimal digits, so dividing is exact whenever the unscaled value is; a double
+# holds that only within [-2^53, 2^53], which is why reads message.
+qio_apply_decimal_scale <- function(x, scale) {
+  as.double(x) / 10^scale
+}
+
+# Big-endian two's-complement bytes to double. Parquet stores byte-array
+# decimals this way, most significant byte first, with the sign in the top bit.
+qio_decimal_from_binary <- function(x, scale) {
+  values <- vapply(
+    x,
+    function(bytes) {
+      if (is.null(bytes) || length(bytes) == 0L) {
+        return(NA_real_)
+      }
+      digits <- as.integer(bytes)
+      negative <- digits[[1L]] >= 128L
+      if (negative) {
+        digits <- 255L - digits # one's complement; add one after accumulating
+      }
+      value <- 0
+      for (digit in digits) {
+        value <- value * 256 + digit
+      }
+      if (negative) -(value + 1) else value
+    },
+    numeric(1),
+    USE.NAMES = FALSE
+  )
+  qio_apply_decimal_scale(values, scale)
+}
+
 qio_parse_time_details <- function(details) {
   details[is.na(details)] <- ""
   unit <- sub("^.*unit=([A-Za-z]+).*$", "\\1", details)
@@ -396,6 +460,20 @@ qio_apply_plan <- function(df, plan) {
 qio_apply_converter <- function(x, converter) {
   if (is.na(converter)) {
     return(x)
+  }
+  # Decimal converters carry their scale in the name, so they are matched by
+  # prefix rather than listed in the switch below.
+  if (startsWith(converter, "decimal_int_")) {
+    return(qio_apply_decimal_scale(
+      x,
+      as.integer(sub("^decimal_int_", "", converter))
+    ))
+  }
+  if (startsWith(converter, "decimal_binary_")) {
+    return(qio_decimal_from_binary(
+      x,
+      as.integer(sub("^decimal_binary_", "", converter))
+    ))
   }
   switch(
     converter,

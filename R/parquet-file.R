@@ -196,6 +196,7 @@ collect.qio_parquet_file <- function(
   options <- qio_read_options(int64 = int64)
   plan <- read_plan(x, int64 = options$int64)
   columns <- qio_select_columns(plan, qio_columns(columns))
+  qio_message_decimal(plan, columns)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
   result <- .Call(
@@ -244,6 +245,7 @@ walk_batches <- function(
   options <- qio_read_options(int64 = int64)
   plan <- read_plan(x, int64 = options$int64)
   columns <- qio_select_columns(plan, qio_columns(columns))
+  qio_message_decimal(plan, columns)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
   callback <- function(batch, index) {
@@ -413,7 +415,29 @@ qio_column_kinds <- function(plan, columns) {
   kind[converter == "text"] <- 2L # TEXT
   # UUID and FLOAT16 are decoded as raw bytes and converted by the plan.
   kind[converter %in% c("binary", "uuid", "float16")] <- 3L # BINARY
+  # Byte-array decimals need their raw bytes; integer-backed ones decode as
+  # ordinary numbers and are scaled by the plan.
+  kind[startsWith(converter, "decimal_binary_")] <- 3L # BINARY
   kind
+}
+
+# One message per read when decimal columns are present. v0.1.0 reads them as
+# double with the scale applied; exact fixed-point character is v0.2.0, so the
+# values may be inexact and the user is told once. See .agents/TYPES.md.
+qio_message_decimal <- function(plan, columns) {
+  selected <- if (is.null(columns)) seq_len(nrow(plan)) else columns
+  n <- sum(startsWith(plan$converter[selected], "decimal_"), na.rm = TRUE)
+  if (n > 0L) {
+    message(
+      "Reading ",
+      n,
+      " Parquet DECIMAL column",
+      if (n == 1L) "" else "s",
+      " as double; values may be inexact. Exact decimals are deferred to ",
+      "qio 0.2.0."
+    )
+  }
+  invisible(NULL)
 }
 
 # Resolve a selection and drop leaves qio cannot materialize yet, reporting the

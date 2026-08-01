@@ -1,5 +1,14 @@
 # qio 0.0.0.9000
 
+* `DECIMAL` columns are now readable. They return `double` with the declared
+  scale applied, so a price stored as unscaled `1230` with scale 2 reads as
+  `12.30`, and one message per read notes that values may be inexact. All four
+  physical storages are supported. Previously an integer-backed decimal
+  returned the unscaled integer and a byte-array-backed one returned raw bytes,
+  both silently the wrong quantity. Exact fixed-point reads are planned for
+  0.2.0.
+* `UUID` columns read as canonical hyphenated text.
+
 * **Breaking:** a `BYTE_ARRAY` column now reads as character only when it
   carries a `STRING`, `ENUM`, or `JSON` annotation. An unannotated column is
   arbitrary bytes and reads as a list of raw vectors, with `NULL` for nulls.

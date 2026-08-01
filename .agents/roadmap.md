@@ -184,6 +184,19 @@ For v0.1.0:
 - Reads and writes are flat-only as specified in
   [`TYPES.md`](TYPES.md#nested-release-boundary); nested reading targets v0.2.0.
 
+- Writes of types with no unambiguous R representation are v0.2.0: binary,
+  fixed binary, `UUID`, `FLOAT16`, `ENUM`, `BSON`, and decimal. Reads carry the
+  interop value, because a user must read whatever another tool wrote but
+  rarely must write these types; `write_parquet()` already rejects them with a
+  clear error. Deferring also leaves open, rather than guessing, how a raw
+  list-column infers binary, where a fixed width comes from, how `FLOAT16`
+  rounds, whether `ENUM` comes from a factor, and what `parquet_schema()` calls
+  these types.
+- Exact fixed-point decimal is v0.2.0. In v0.1.0 a `DECIMAL` column reads as
+  `double` with its scale applied, so a price stored as unscaled `1230` with
+  scale 2 reads as `12.30`, and one message per read says the values may be
+  inexact. Returning the unscaled integer or the raw bytes, as v0.0.x did, is
+  worse than an approximate number: it is silently the wrong quantity.
 - `INTERVAL` ships as exact bytes, not as a class. It is a fixed 12-byte
   binary leaf, so the v0.1.0 binary mapping already returns it losslessly. A
   dedicated interval class needs print, format, subset, comparison, and `NA`

@@ -347,8 +347,9 @@ silently. Selections now resolve to leaf indexes in R before any native call.
 
 ## Phase 3: complete v0.1.0 type coverage
 
-Status: 3.1 complete; 3.2 reads complete (writes and two fixtures
-outstanding); 3.3 and 3.4 not started.
+Status: 3.1, 3.2, and 3.3 complete for reads. Writes of types with no
+unambiguous R representation, and exact fixed-point decimal, are deferred to
+v0.2.0 by a recorded scope decision. 3.4 not started.
 
 ### What 3.1 turned up
 
@@ -386,23 +387,26 @@ order. All four groups depend on the phase 2 read-option surface.
 - [x] Materialize variable and fixed binary as raw-vector list-columns, with
   `NULL` for null values. `FIXED_LEN_BYTE_ARRAY` is now readable.
 - [x] Add JSON, BSON, ENUM, UUID, and FLOAT16 read mappings.
-- [ ] Symmetric writes where the R representation is unambiguous: a raw
-  list-column identifies binary, and canonical text identifies `UUID`. Reads
-  land first because they are what breaks on existing files.
+- [x] Symmetric writes: deferred to v0.2.0 with the other exotic writes; see
+  `roadmap.md`. `write_parquet()` already rejects these R inputs clearly.
 - [x] Validate UTF-8 and fixed widths, and reject malformed UUID and FLOAT16
   widths.
-- [ ] Add fixtures for a `UUID` column and for a text column holding invalid
-  UTF-8. Neither Arrow nor qio can write them, so both need a generator on
-  carquet's writer; `tools/generate-lazy-fixture.c` is the model. Tracked in
-  `tests/testthat/parquet/SOURCE.md`.
+- [x] Add fixtures for a `UUID` column and for a text column holding invalid
+  UTF-8, via `tools/generate-type-fixtures.c` built on carquet's writer.
+  Neither Arrow nor qio's writer can produce them.
 
 ### 3.3 Decimal
 
-- [ ] Decode `INT32`, `INT64`, `BYTE_ARRAY`, and `FIXED_LEN_BYTE_ARRAY`
-  decimals without passing through double.
-- [ ] Return exact fixed-point character and expose precision, scale, and
-  storage through schema and plan inspection.
-- [ ] Add explicit decimal writes with exact parsing and pre-write validation.
+- [x] Decode `INT32`, `INT64`, `BYTE_ARRAY`, and `FIXED_LEN_BYTE_ARRAY`
+  decimals, applying the declared scale. Byte-array storage is big-endian
+  two's complement.
+- [x] Emit one message per read that decimal columns were read as `double` and
+  may be inexact, and expose precision, scale, and storage through `schema()`
+  and `read_plan()`.
+- [x] Deferred to v0.2.0: exact fixed-point character, and explicit decimal
+  writes with exact parsing and pre-write validation. Reading as `double`
+  replaces returning the unscaled integer or the raw bytes, both of which were
+  silently the wrong quantity.
 
 ### 3.4 Temporal and annotated integers
 
