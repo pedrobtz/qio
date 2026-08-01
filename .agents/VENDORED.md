@@ -76,16 +76,65 @@ them.
 - **Correct SSE4.2 guard** (`simd/x86/sse_ops.c`). Outside MSVC, require
   `__SSE4_2__`; MinGW's `_M_X64` does not legalize SSE4.2 intrinsics without
   `-msse4.2`.
+- **Honor a single-threaded batch read** (`reader/batch_reader.c`). Upstream
+  raised any `num_threads` below two up to two, so `walk_batches(threads = 1)`
+  still started a worker. Create no pool below two threads, which leaves
+  `pipeline_active` false and takes the serial path an uncompressed file
+  already uses. The public `carquet_thread_pool_create()` still forces two and
+  is left alone; qio does not call it. Covered by a thread-count test in
+  `tests/testthat/test-parquet-file.R`.
 
-`reader_internal.h` defines structs shared by multiple translation units, while
-R builds do not track header dependencies. After changing any vendored header,
-clean before rebuilding:
+`reader_internal.h` defines structs shared by multiple translation units. R's
+own build rules do not track header dependencies, so `src/Makevars` and
+`src/Makevars.win` declare one explicitly: every object depends on every
+vendored and package header. Without it, `R CMD INSTALL` reuses stale objects
+after a header edit and relinks them against a changed struct layout, with no
+linker error and memory corruption at runtime.
+
+The dependency is deliberately coarse: any header edit rebuilds everything.
+Per-file dependency generation needs compiler-specific flags that are not
+portable across the compilers R is built with.
+
+Two consequences worth knowing:
+
+- Makevars is read before R's own makefiles, so the first rule in it becomes
+  make's default goal. Both files declare `all: $(SHLIB)` first; removing that
+  line makes the build stop after one object instead of linking.
+- `devtools::load_all()` and `pkgbuild::compile_dll()` preclean, so they
+  rebuild everything regardless and cannot demonstrate this. Verify with
+  `tools/check-header-deps.sh`, which uses `R CMD INSTALL`.
+
+`find src -name '*.o' -delete` is still a valid reset, but is no longer
+required after a header change.
+
+## Patch record
+
+`.agents/carquet-changes.patch` is the mechanical record of every local carquet
+change: applying it to pristine upstream at the pin reproduces `src/carquet`
+exactly, and reversing it recovers pristine upstream. The ledger above is the
+rationale; the patch is the content.
+
+Verify with:
 
 ```sh
-find src -name '*.o' -delete
+tools/check-vendor-drift.sh
 ```
 
-Failing to clean can mix old and new layouts and corrupt memory at runtime.
+It clones upstream at the pin recorded in the table above, reverse-applies the
+patch to a copy of the vendored tree, and fails if anything differs. The
+`vendor` workflow runs it on every push and pull request, so a vendored file
+edited without updating the patch fails CI.
+
+Regenerate the patch after deliberately changing a vendored file:
+
+```sh
+# with pristine upstream at the pin staged in the vendored layout as a/carquet,
+# and the vendored tree (minus build products) as b/carquet:
+diff -ruN a b > .agents/carquet-changes.patch
+```
+
+The patch is excluded from the source package along with the rest of
+`.agents/`; `tools/check-vendor-drift.sh` asserts that exclusion.
 
 ## Re-vendoring
 
@@ -98,5 +147,8 @@ Failing to clean can mix old and new layouts and corrupt memory at runtime.
 6. Build, run the focused native/interoperability tests, then run the complete
    test suite and R CMD check.
 
-When the planned `carquet-changes.patch` is added, it becomes the mechanical
-patch record; this section remains the rationale and review checklist.
+7. Regenerate `.agents/carquet-changes.patch` and confirm
+   `tools/check-vendor-drift.sh` passes against the new pin.
+
+The ledger above remains the rationale and review checklist; the patch is the
+mechanical record.

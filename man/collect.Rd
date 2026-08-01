@@ -14,8 +14,11 @@ collect(x, ...)
 
 \item{...}{Reserved for future use.}
 
-\item{columns}{Character vector of exact column paths, or \code{NULL} for all
-columns.}
+\item{columns}{Character vector of complete column paths, or \code{NULL} for all
+columns. Paths are matched exactly as \code{\link[=schema]{schema()}} and \code{\link[=names]{names()}} report
+them, dot-separated for nested leaves, and never by leaf name alone: two
+leaves may share a name under different parents. An unknown path is an
+error, and so is a path matching more than one leaf.}
 
 \item{row_groups}{Integer vector of 1-based row-group IDs, or \code{NULL} for all
 row groups.}

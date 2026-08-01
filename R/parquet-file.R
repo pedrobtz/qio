@@ -153,8 +153,11 @@ metadata.qio_parquet_file <- function(x, ...) {
 #'
 #' @param x A `qio_parquet_file` object.
 #' @param ... Reserved for future use.
-#' @param columns Character vector of exact column paths, or `NULL` for all
-#'   columns.
+#' @param columns Character vector of complete column paths, or `NULL` for all
+#'   columns. Paths are matched exactly as [schema()] and [names()] report
+#'   them, dot-separated for nested leaves, and never by leaf name alone: two
+#'   leaves may share a name under different parents. An unknown path is an
+#'   error, and so is a path matching more than one leaf.
 #' @param row_groups Integer vector of 1-based row-group IDs, or `NULL` for all
 #'   row groups.
 #' @param batch_size Positive batch size in rows. Currently unused by
@@ -184,8 +187,7 @@ collect.qio_parquet_file <- function(
 ) {
   qio_empty_dots(...)
   plan <- read_plan(x)
-  columns <- qio_columns(columns)
-  columns <- qio_skip_nested_columns(plan, columns)
+  columns <- qio_select_columns(plan, qio_columns(columns))
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
   result <- .Call(C_qio_parquet_collect, x, columns, row_groups, batch_size)
@@ -223,8 +225,7 @@ walk_batches <- function(
     stop("`FUN` must be a function.", call. = FALSE)
   }
   plan <- read_plan(x)
-  columns <- qio_columns(columns)
-  columns <- qio_skip_nested_columns(plan, columns)
+  columns <- qio_select_columns(plan, qio_columns(columns))
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
   callback <- function(batch, index) {
@@ -328,18 +329,60 @@ qio_columns <- function(columns) {
   columns
 }
 
-qio_skip_nested_columns <- function(plan, columns) {
+# Resolve requested column paths to 1-based physical leaf indexes.
+#
+# Selection is by complete schema path, never by leaf name. Two leaves can
+# share a name under different parents, and carquet's own lookup compares leaf
+# names only, so passing a name to it can silently resolve to the wrong column.
+# Resolving here means the native layer only ever receives unambiguous indexes.
+qio_resolve_columns <- function(plan, columns) {
   if (is.null(columns)) {
+    return(NULL)
+  }
+  matches <- lapply(columns, function(path) which(plan$path == path))
+
+  unknown <- columns[lengths(matches) == 0L]
+  if (length(unknown)) {
+    stop(
+      "Unknown Parquet column",
+      if (length(unknown) == 1L) "" else "s",
+      ": ",
+      paste0("`", unknown, "`", collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+
+  # A flat column literally named "a.b" and a nested leaf b under group a both
+  # render as the path "a.b". Refuse to guess which one was meant.
+  ambiguous <- columns[lengths(matches) > 1L]
+  if (length(ambiguous)) {
+    stop(
+      "Ambiguous Parquet column",
+      if (length(ambiguous) == 1L) "" else "s",
+      ": ",
+      paste0("`", ambiguous, "`", collapse = ", "),
+      ". More than one leaf has that path.",
+      call. = FALSE
+    )
+  }
+
+  as.integer(unlist(matches))
+}
+
+# Resolve a selection and drop leaves qio cannot materialize yet, reporting the
+# count once. Returns NULL for "every column", which lets the native layer take
+# its own all-columns path, or an integer vector of 1-based leaf indexes.
+qio_select_columns <- function(plan, columns) {
+  indexes <- qio_resolve_columns(plan, columns)
+  if (is.null(indexes)) {
     if (!any(plan$nested)) {
       return(NULL)
     }
-    columns <- plan$path
-    selected <- seq_len(nrow(plan))
-  } else {
-    selected <- match(columns, plan$path)
+    indexes <- seq_len(nrow(plan))
   }
 
-  nested <- !is.na(selected) & plan$nested[selected]
+  nested <- plan$nested[indexes]
   n <- sum(nested)
   if (n > 0L) {
     message(
@@ -350,7 +393,7 @@ qio_skip_nested_columns <- function(plan, columns) {
       "; nested reading is deferred to qio 0.2.0."
     )
   }
-  columns[!nested]
+  indexes[!nested]
 }
 
 qio_row_groups <- function(row_groups) {

@@ -263,3 +263,123 @@ test_that("print.qio_read_plan() returns its input invisibly", {
   plan <- read_plan(fake_schema())
   expect_output(expect_invisible(print(plan)), "qio_read_plan")
 })
+
+# --- Phase 2: registry is authoritative ------------------------------------
+
+test_that("parquet_type_mapping() is generated from the registry", {
+  # The registry is the single source of truth for physical fallbacks. If the
+  # mapping table is ever hand-edited, or a registry row is added without the
+  # mapping following, this fails rather than letting documentation drift from
+  # native behavior. See .agents/TYPES.md rule 8.
+  registry <- qio_type_registry()
+  mapping <- parquet_type_mapping()
+
+  expect_identical(mapping$parquet_type, registry$physical_type)
+  expect_identical(mapping$read_as, registry$r_type)
+  expect_identical(mapping$written_from, registry$written_from)
+  expect_identical(nrow(mapping), nrow(registry))
+  expect_identical(names(mapping), c("parquet_type", "read_as", "written_from"))
+})
+
+test_that("the registry covers every physical type carquet can report", {
+  # A physical type missing from the registry would silently become an
+  # unsupported column with no mapping row to explain it.
+  expect_setequal(
+    qio_type_registry()$physical_type,
+    c(
+      "BOOLEAN",
+      "INT32",
+      "INT64",
+      "INT96",
+      "FLOAT",
+      "DOUBLE",
+      "BYTE_ARRAY",
+      "FIXED_LEN_BYTE_ARRAY"
+    )
+  )
+})
+
+test_that("every registry converter is handled by qio_apply_converter()", {
+  # An unhandled converter would fall through to the identity branch and
+  # silently return the physical vector instead of the intended R type.
+  converters <- c(
+    qio_type_registry()$converter,
+    qio_logical_registry()$converter,
+    "timestamp_utc_millis",
+    "timestamp_utc_micros",
+    "timestamp_utc_nanos"
+  )
+  converters <- unique(converters[!is.na(converters)])
+
+  for (converter in converters) {
+    result <- qio_apply_converter(1, converter)
+    expect_length(result, 1L)
+  }
+})
+
+# --- Phase 2: complete-path selection --------------------------------------
+
+test_that("qio_resolve_columns() maps paths to leaf indexes", {
+  plan <- data.frame(
+    path = c("s.b", "b", "label"),
+    nested = c(TRUE, FALSE, FALSE),
+    stringsAsFactors = FALSE
+  )
+
+  expect_null(qio_resolve_columns(plan, NULL))
+  expect_identical(qio_resolve_columns(plan, "b"), 2L)
+  expect_identical(qio_resolve_columns(plan, c("label", "s.b")), c(3L, 1L))
+})
+
+test_that("qio_resolve_columns() rejects unknown and ambiguous paths", {
+  plan <- data.frame(
+    path = c("a.b", "a.b", "c"),
+    nested = c(TRUE, FALSE, FALSE),
+    stringsAsFactors = FALSE
+  )
+
+  expect_error(qio_resolve_columns(plan, "nope"), "Unknown Parquet column")
+  expect_error(
+    qio_resolve_columns(plan, c("nope", "nah")),
+    "Unknown Parquet columns"
+  )
+  # A flat column named "a.b" and a nested leaf b under group a render the same
+  # path; qio refuses to guess which was meant.
+  expect_error(qio_resolve_columns(plan, "a.b"), "Ambiguous Parquet column")
+})
+
+test_that("qio_select_columns() drops nested leaves and reports the count", {
+  plan <- data.frame(
+    path = c("s.b", "b", "label"),
+    nested = c(TRUE, FALSE, FALSE),
+    stringsAsFactors = FALSE
+  )
+
+  expect_message(
+    selected <- qio_select_columns(plan, NULL),
+    "Skipping 1 nested Parquet column"
+  )
+  expect_identical(selected, c(2L, 3L))
+
+  # Nothing nested selected means no message at all.
+  expect_message(qio_select_columns(plan, c("b", "label")), NA)
+  expect_identical(qio_select_columns(plan, c("b", "label")), c(2L, 3L))
+
+  # Selecting only nested leaves yields an empty selection, not an error.
+  expect_message(
+    empty <- qio_select_columns(plan, "s.b"),
+    "Skipping 1 nested Parquet column"
+  )
+  expect_identical(empty, integer(0))
+})
+
+test_that("qio_select_columns() returns NULL when every column is selectable", {
+  # NULL lets the native layer take its own all-columns path instead of
+  # building an index vector for a wide file.
+  plan <- data.frame(
+    path = c("a", "b"),
+    nested = c(FALSE, FALSE),
+    stringsAsFactors = FALSE
+  )
+  expect_null(qio_select_columns(plan, NULL))
+})

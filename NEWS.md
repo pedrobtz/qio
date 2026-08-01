@@ -1,5 +1,16 @@
 # qio 0.0.0.9000
 
+* Column selection now resolves by complete schema path instead of by leaf
+  name. A file with two leaves sharing a name under different parents could
+  previously return the wrong column, or reject a flat column as nested. An
+  unknown path and a path matching more than one leaf are both errors now.
+* Errors about unsupported columns name the complete path, physical type,
+  logical annotation with its parameters, and fixed-width length.
+
+* `walk_batches(threads = 1)` is now genuinely single-threaded. The vendored
+  batch pipeline raised any request below two threads up to two, so a serial
+  read still started a worker.
+
 * Reading an `INT32` column containing `-2147483648` now warns once per read
   instead of returning `NA` silently. R's `integer` reserves that value as
   `NA_integer_`, so it cannot be represented; the column keeps its `integer`

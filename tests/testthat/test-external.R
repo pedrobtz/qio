@@ -124,3 +124,63 @@ test_that("the sentinel does not change the column type", {
   expect_warning(collected <- collect(file), "reserves -2147483648")
   expect_type(collected$value, "integer")
 })
+
+# --- Complete-path column identity -----------------------------------------
+# name_collision.parquet has two leaves named "b" at different paths ("s.b" and
+# "b"). carquet's own lookup compares leaf names only, so qio resolves
+# selections to leaf indexes by complete path first. See .agents/carquet.md.
+
+test_that("selection resolves by complete path, not by leaf name", {
+  path <- ext("name_collision.parquet")
+
+  # "b" must be the flat leaf, never the nested s.b that shares its name.
+  expect_message(
+    flat <- collect(parquet_open(path), columns = "b"),
+    NA
+  )
+  expect_identical(flat$b, c(1L, 2L, 3L))
+})
+
+test_that("a nested leaf sharing a flat leaf's name is skipped, not selected", {
+  path <- ext("name_collision.parquet")
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+
+  expect_message(result <- collect(file), "Skipping 1 nested Parquet column")
+  expect_identical(names(result), c("b", "label"))
+  expect_identical(result$b, c(1L, 2L, 3L))
+})
+
+test_that("read_plan marks the colliding leaves by path", {
+  plan <- read_plan(ext("name_collision.parquet"))
+
+  expect_identical(plan$path, c("s.b", "b", "label"))
+  expect_identical(plan$name, c("b", "b", "label"))
+  expect_identical(plan$nested, c(TRUE, FALSE, FALSE))
+  expect_identical(plan$collectible, c(FALSE, TRUE, TRUE))
+})
+
+test_that("selecting a nested path by its complete path is skipped cleanly", {
+  path <- ext("name_collision.parquet")
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+
+  expect_message(result <- collect(file, columns = "s.b"), "Skipping 1 nested")
+  expect_identical(ncol(result), 0L)
+  expect_identical(nrow(result), 3L)
+})
+
+test_that("all three read APIs agree on the colliding file", {
+  path <- ext("name_collision.parquet")
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+
+  eager <- suppressMessages(read_parquet(path))
+  collected <- suppressMessages(collect(file))
+  batches <- list()
+  suppressMessages(
+    walk_batches(file, function(batch, index) batches[[index]] <<- batch)
+  )
+  expect_identical(collected, eager)
+  expect_identical(do.call(rbind, batches), eager)
+})

@@ -226,6 +226,70 @@ static int32_t qio_column_path_parts(const carquet_schema_t *schema,
     return depth;
 }
 
+/* Complete dotted schema path as a C string, for diagnostics. */
+static const char *qio_column_path_cstr(const carquet_schema_t *schema,
+                                        int32_t leaf_index) {
+    const char **parts = NULL;
+    int32_t depth = qio_column_path_parts(schema, leaf_index, &parts);
+    if (depth <= 0) {
+        const char *name = carquet_schema_column_name(schema, leaf_index);
+        return name ? name : "";
+    }
+    size_t length = 1;
+    for (int32_t i = 0; i < depth; i++) {
+        length += strlen(parts[i]);
+        if (i + 1 < depth) length++;
+    }
+    char *path = (char *)R_alloc(length, sizeof(char));
+    char *at = path;
+    for (int32_t i = 0; i < depth; i++) {
+        size_t n = strlen(parts[i]);
+        memcpy(at, parts[i], n);
+        at += n;
+        if (i + 1 < depth) *at++ = '.';
+    }
+    *at = '\0';
+    return path;
+}
+
+/* Leaf node by index. Linear in schema size, so diagnostics only; bulk callers
+ * use qio_leaf_nodes(). */
+static const carquet_schema_node_t *qio_leaf_node_at(
+    const carquet_schema_t *schema, int32_t leaf_index) {
+    int32_t seen = 0;
+    int32_t elements = carquet_schema_num_elements(schema);
+    for (int32_t i = 0; i < elements; i++) {
+        const carquet_schema_node_t *node =
+            carquet_schema_get_element(schema, i);
+        if (node && carquet_schema_node_is_leaf(node)) {
+            if (seen == leaf_index) return node;
+            seen++;
+        }
+    }
+    return NULL;
+}
+
+/* Describe a leaf's logical annotation for an error message: the annotation
+ * name plus its parameters, or "none". */
+static const char *qio_logical_description(const carquet_schema_t *schema,
+                                           int32_t leaf_index) {
+    const carquet_schema_node_t *node = qio_leaf_node_at(schema, leaf_index);
+    if (!node) return "none";
+    const carquet_logical_type_t *logical =
+        carquet_schema_node_logical_type(node);
+    if (!logical) return "none";
+
+    const char *name = qio_logical_type_name(logical->id);
+    char details[256];
+    if (!qio_logical_type_details(logical, details, sizeof(details))) {
+        return name;
+    }
+    size_t size = strlen(name) + strlen(details) + 4;
+    char *out = (char *)R_alloc(size, sizeof(char));
+    snprintf(out, size, "%s(%s)", name, details);
+    return out;
+}
+
 static SEXP qio_column_path_string(const carquet_schema_t *schema,
                                    int32_t leaf_index) {
     const char **parts = NULL;
@@ -663,8 +727,8 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
     /* R validates these before calling, but every other entry point re-checks
      * what it dereferences; INTEGER() on a REALSXP would silently reinterpret
      * memory rather than fail. */
-    if (columns != R_NilValue && TYPEOF(columns) != STRSXP) {
-        Rf_error("qio: `columns` must be a character vector or NULL");
+    if (columns != R_NilValue && TYPEOF(columns) != INTSXP) {
+        Rf_error("qio: `columns` must be an integer vector or NULL");
     }
     if (row_groups != R_NilValue && TYPEOF(row_groups) != INTSXP) {
         Rf_error("qio: `row_groups` must be an integer vector or NULL");
@@ -676,20 +740,21 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
             (size_t)(file_columns > 0 ? file_columns : 1), sizeof(int32_t));
         for (int32_t i = 0; i < file_columns; i++) selection->columns[i] = i;
     } else {
+        /* Already resolved from complete schema paths by qio_resolve_columns().
+         * carquet_schema_find_column() is deliberately not used: it compares
+         * leaf names only, so a name shared by two leaves under different
+         * parents resolves to whichever comes first. */
         selection->num_columns = Rf_length(columns);
         selection->columns = (int32_t *)R_alloc(
             (size_t)(selection->num_columns > 0 ? selection->num_columns : 1),
             sizeof(int32_t));
         for (int32_t i = 0; i < selection->num_columns; i++) {
-            if (STRING_ELT(columns, i) == NA_STRING) {
-                Rf_error("qio: `columns` must not contain missing values");
+            int index = INTEGER(columns)[i];
+            if (index == NA_INTEGER || index < 1 || index > file_columns) {
+                Rf_error("qio: column index %d is out of range [1, %d]",
+                         index, file_columns);
             }
-            const char *name = Rf_translateCharUTF8(STRING_ELT(columns, i));
-            int32_t index = carquet_schema_find_column(schema, name);
-            if (index < 0) {
-                Rf_error("qio: unknown parquet column '%s'", name);
-            }
-            selection->columns[i] = index;
+            selection->columns[i] = index - 1;
         }
     }
 
@@ -700,9 +765,11 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
         (void)parts;
         carquet_physical_type_t type =
             carquet_schema_column_type(schema, column);
+        /* R drops nested leaves before selecting, so this is a backstop. */
         if (depth > 1 || carquet_schema_max_rep_level(schema, column) > 0) {
-            Rf_error("qio: nested parquet column '%s' is not supported",
-                     carquet_schema_column_name(schema, column));
+            Rf_error("qio: column '%s' is nested or repeated; nested reading "
+                     "is deferred to qio 0.2.0",
+                     qio_column_path_cstr(schema, column));
         }
         switch (type) {
         case CARQUET_PHYSICAL_BOOLEAN:
@@ -714,9 +781,13 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
         case CARQUET_PHYSICAL_BYTE_ARRAY:
             break;
         default:
-            Rf_error("qio: column '%s' has unsupported physical type '%s'",
-                     carquet_schema_column_name(schema, column),
-                     carquet_physical_type_name(type));
+            Rf_error("qio: column '%s' has unsupported physical type %s "
+                     "(logical type: %s, type_length: %d)",
+                     qio_column_path_cstr(schema, column),
+                     carquet_physical_type_name(type),
+                     qio_logical_description(schema, column),
+                     carquet_schema_node_type_length(
+                         qio_leaf_node_at(schema, column)));
         }
     }
 

@@ -282,7 +282,7 @@ test_that("active reads reject reentrant operations", {
 test_that("selectors and options are validated", {
   file <- local_parquet_file()
 
-  expect_error(collect(file, columns = "missing"), "unknown parquet column")
+  expect_error(collect(file, columns = "missing"), "Unknown Parquet column")
   expect_error(collect(file, columns = c("id", "id")), "duplicates")
   expect_error(collect(file, row_groups = 5), "out of range")
   expect_error(collect(file, row_groups = c(1, 1)), "duplicates")
@@ -390,4 +390,176 @@ test_that("schema() reports every leaf of a wide file", {
   expect_identical(nrow(result), 200L)
   expect_identical(result$column, seq_len(200L))
   expect_identical(result$name, names(wide))
+})
+
+# --- Phase 1: vendored foundation ------------------------------------------
+
+# Count OS threads in this process. Returns NA where there is no cheap probe,
+# which is how the thread-count test skips on Windows.
+qio_thread_count <- function() {
+  if (dir.exists("/proc/self/task")) {
+    return(length(list.files("/proc/self/task")))
+  }
+  if (.Platform$OS.type == "unix") {
+    out <- suppressWarnings(
+      system2("ps", c("-M", Sys.getpid()), stdout = TRUE, stderr = FALSE)
+    )
+    if (length(out) > 1L) {
+      return(length(out) - 1L)
+    }
+  }
+  NA_integer_
+}
+
+# The vendored batch pipeline only engages for a compressed, memory-mapped file
+# whose projected columns are all non-nullable, and which has either several row
+# groups or at least 500,000 rows. qio writes a single row group, so the row
+# count is what makes this file eligible.
+local_pipeline_file <- function(rows = 500000L, envir = parent.frame()) {
+  path <- withr::local_tempfile(fileext = ".parquet", .local_envir = envir)
+  write_parquet(
+    data.frame(a = as.double(seq_len(rows)), b = as.double(seq_len(rows))),
+    path
+  )
+  path
+}
+
+test_that("walk_batches(threads = 1) starts no worker thread", {
+  skip_on_cran()
+  if (is.na(qio_thread_count())) {
+    skip("no thread-count probe on this platform")
+  }
+  path <- local_pipeline_file()
+
+  peak_threads <- function(threads) {
+    base <- qio_thread_count()
+    peak <- base
+    file <- parquet_open(path, mmap = TRUE, threads = threads)
+    on.exit(parquet_close(file))
+    walk_batches(file, function(batch, index) {
+      peak <<- max(peak, qio_thread_count())
+    })
+    peak - base
+  }
+
+  # Upstream raised any request below two threads up to two, so a serial read
+  # still started a worker. See .agents/VENDORED.md.
+  expect_identical(peak_threads(1L), 0L)
+  # Control: if the probe stopped working, this would also report zero and the
+  # assertion above would pass for the wrong reason.
+  expect_gt(peak_threads(2L), 0L)
+})
+
+test_that("serial and threaded mmap reads agree", {
+  path <- fixture_path()
+  serial <- local_parquet_file(path, mmap = TRUE, threads = 1L)
+  threaded <- local_parquet_file(path, mmap = TRUE, threads = 4L)
+  buffered <- local_parquet_file(path, mmap = FALSE)
+
+  expected <- collect(serial)
+  expect_identical(collect(threaded), expected)
+  expect_identical(collect(buffered), expected)
+  expect_identical(read_parquet(path), expected)
+})
+
+test_that("serial and threaded mmap batch walks agree", {
+  path <- fixture_path()
+  walk_all <- function(threads) {
+    file <- local_parquet_file(path, mmap = TRUE, threads = threads)
+    batches <- list()
+    walk_batches(file, function(batch, index) batches[[index]] <<- batch)
+    do.call(rbind, batches)
+  }
+  expect_identical(walk_all(4L), walk_all(1L))
+})
+
+# --- Phase 2: one plan across every materializing read ---------------------
+
+test_that("all three read APIs agree under projection and row-group selection", {
+  path <- fixture_path()
+  file <- local_parquet_file(path)
+
+  cases <- list(
+    list(columns = NULL, row_groups = NULL),
+    list(columns = c("id", "label"), row_groups = NULL),
+    list(columns = NULL, row_groups = c(1L, 3L)),
+    list(columns = c("price", "active"), row_groups = 2L),
+    # Reversed selector: results follow physical file order regardless.
+    list(columns = c("label", "id"), row_groups = NULL)
+  )
+
+  for (case in cases) {
+    collected <- collect(
+      file,
+      columns = case$columns,
+      row_groups = case$row_groups
+    )
+    batches <- list()
+    walk_batches(
+      file,
+      function(batch, index) batches[[index]] <<- batch,
+      columns = case$columns,
+      row_groups = case$row_groups
+    )
+    walked <- if (length(batches)) {
+      do.call(rbind, batches)
+    } else {
+      collected[0, , drop = FALSE]
+    }
+
+    label <- paste(
+      "columns:",
+      paste(case$columns, collapse = ","),
+      "row_groups:",
+      paste(case$row_groups, collapse = ",")
+    )
+    expect_equal(walked, collected, info = label)
+    expect_identical(
+      vapply(walked, class, character(1)),
+      vapply(collected, class, character(1)),
+      info = label
+    )
+  }
+})
+
+test_that("read_parquet() equals collect() over the whole file", {
+  path <- fixture_path()
+  file <- local_parquet_file(path)
+  expect_identical(read_parquet(path), collect(file))
+})
+
+test_that("a zero-column selection preserves the row count in every API", {
+  path <- ext_nested <- test_path("parquet", "name_collision.parquet")
+  file <- local_parquet_file(path)
+
+  result <- suppressMessages(collect(file, columns = "s.b"))
+  expect_identical(dim(result), c(3L, 0L))
+
+  rows <- 0L
+  suppressMessages(
+    walk_batches(
+      file,
+      function(batch, index) rows <<- rows + nrow(batch),
+      columns = "s.b"
+    )
+  )
+  expect_identical(rows, 3L)
+})
+
+test_that("nulls decode identically through collect() and walk_batches()", {
+  path <- fixture_path()
+  file <- local_parquet_file(path)
+
+  collected <- collect(file)
+  batches <- list()
+  walk_batches(file, function(batch, index) batches[[index]] <<- batch)
+  walked <- do.call(rbind, batches)
+
+  for (column in names(collected)) {
+    expect_identical(
+      is.na(walked[[column]]),
+      is.na(collected[[column]]),
+      info = column
+    )
+  }
 })

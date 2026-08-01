@@ -72,8 +72,9 @@ sanitizers, Valgrind, LTO, gctorture, and rchk.
 
 - [ ] Complete the v0.1.0 portion of the
   [`TYPES.md` implementation sequence](TYPES.md#implementation-sequence):
-  shared planning through temporal and integer annotations. Nested and
-  extension types remain deferred.
+  shared planning through temporal and integer annotations, less the
+  `INTERVAL` class carved out below. Nested and extension types remain
+  deferred.
 - [ ] Resolve projected columns by complete schema path, not leaf name.
 - [ ] Build an interoperability corpus across physical/logical types, page
   versions, encodings, and boundary values. Unsupported files must fail
@@ -118,15 +119,26 @@ sanitizers, Valgrind, LTO, gctorture, and rchk.
 
 [`TYPES.md`](TYPES.md#conversion-contracts) settles the modes themselves:
 `int64 = c("double", "integer64")`, `time = c("numeric", "hms")`, and a
-validated `tz`. Their API surface is still open and must be decided once, before
-the 64-bit and temporal work starts:
+validated `tz`. The surface is now settled too:
 
-- which functions accept them (`read_parquet()`, `collect()`, `walk_batches()`,
-  `parquet_open()`, or a single options object);
-- how they reach the shared read plan and how `read_plan()` reports them; and
-- where defaults are validated, which must be before any allocation.
+- **Per-call arguments, not a handle setting and not an options object.**
+  `read_parquet()`, `collect()`, `walk_batches()`, and `read_plan()` each take
+  `int64`, `time`, and `tz` directly. Reads have three options where the writer
+  has many, so a constructor would cost more than it saves, and binding them to
+  `parquet_open()` would make one handle's plan depend on how it was opened.
+- **`read_plan()` takes the same arguments** so a plan can be inspected for
+  exactly the read that will follow. This is what keeps `read_plan()` the
+  authoritative description rather than a separate opinion.
+- **One internal constructor validates them.** Every entry point calls
+  `qio_read_options()` first, before any allocation or native call, and threads
+  the result into `qio_build_plan()`. The three materializing reads cannot
+  diverge because they share that one path.
+- Defaults reproduce today's behavior exactly, so adding the arguments changes
+  no existing result.
 
-Do not let the 64-bit and temporal phases each invent their own mechanism.
+The arguments appear as each mode is implemented: `int64` with the 64-bit work,
+`time` and `tz` with the temporal work. The mechanism is fixed now so those two
+phases do not invent different ones.
 
 ## Writer configuration
 
@@ -145,8 +157,15 @@ The direction is settled:
 Still open:
 
 - constructor and argument names;
-- whether row-group targets use rows, bytes, or both; and
+- whether row-group targets use rows, bytes, or both. Carquet offers only a
+  byte target plus an explicit `carquet_writer_new_row_group()` boundary, so a
+  row-count target has to be implemented in qio by counting rows and calling
+  that boundary; and
 - exact v0.1.0 fields, defaults, and global/per-column dictionary controls.
+
+qio currently sets no row-group target at all, so every file it writes under
+128MB is a single row group. Phase 6's explicit row-group boundaries are what
+make multi-row-group output possible from qio.
 
 The dictionary design must use carquet's effective per-column encoding API,
 not its inert global option; see [`carquet.md`](carquet.md#writer-boundary).
@@ -164,6 +183,16 @@ For v0.1.0:
   pruning metadata is absent.
 - Reads and writes are flat-only as specified in
   [`TYPES.md`](TYPES.md#nested-release-boundary); nested reading targets v0.2.0.
+
+- `INTERVAL` ships as exact bytes, not as a class. It is a fixed 12-byte
+  binary leaf, so the v0.1.0 binary mapping already returns it losslessly. A
+  dedicated interval class needs print, format, subset, comparison, and `NA`
+  semantics with no runtime dependency; that design is v0.2.0.
+- Extension types are v0.2.0. `GEOMETRY` and `GEOGRAPHY` are single
+  `BYTE_ARRAY` leaves, so their WKB bytes already fall out of the v0.1.0 binary
+  mapping; `VARIANT` is a group and is skipped with the other nested columns.
+  v0.1.0 adds no extension-specific code and surfaces no extension metadata API
+  beyond what `schema()` already reports.
 
 Also deferred: ALTREP/zero-copy R views, custom codecs, shared process-wide
 reader pools, and structured variant/geospatial interpretation. Revisit these

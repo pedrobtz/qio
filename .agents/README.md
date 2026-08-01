@@ -16,5 +16,7 @@ package. Each topic has one owner:
 When it conflicts with `TYPES.md` or `roadmap.md`, those documents win.
 
 User-facing documentation (`README.md`, `NEWS.md`, and licenses) stays at the
-repository root. Fixture provenance stays beside the fixtures under
-`tests/testthat/parquet/`.
+repository root. Fixture provenance and the independent cross-check tool are
+recorded beside the fixtures in `tests/testthat/parquet/SOURCE.md`. The
+benchmark method, reference workloads, regression threshold, and recorded
+baseline live in [`../bench/README.md`](../bench/README.md).

@@ -4,6 +4,14 @@
 # Requires GNU make (declared via SystemRequirements in DESCRIPTION) for the
 # wildcard/shell logic below.
 
+# --- Default target ----------------------------------------------------------
+# Makevars is read before R's own makefiles, so the first rule defined here
+# becomes make's default goal. This file defines a header-dependency rule
+# below, so `all` must be declared first or make would stop after building the
+# first object instead of linking the shared library. See Writing R Extensions,
+# "Using Makevars".
+all: $(SHLIB)
+
 # --- Sources -----------------------------------------------------------------
 # Package-level glue (R <-> C) lives directly in src/. The vendored libraries
 # live under src/<lib>/.
@@ -14,6 +22,25 @@ LZ4_SOURCES     = $(wildcard lz4/*.c)
 
 OBJECTS = $(PKG_SOURCES:.c=.o) $(CARQUET_SOURCES:.c=.o) \
           $(ZSTD_SOURCES:.c=.o) $(LZ4_SOURCES:.c=.o)
+
+# --- Header dependencies -----------------------------------------------------
+# R's build rules do not track headers. carquet's reader_internal.h defines
+# structs shared by several translation units, so a header edit that changes a
+# struct layout would otherwise relink new objects against stale ones and
+# corrupt memory at runtime with no linker error.
+#
+# The dependency is deliberately coarse: every object depends on every vendored
+# and package header, so any header edit rebuilds everything. That is slower
+# than per-file dependency generation but needs no compiler-specific flags
+# (-MMD and friends are not portable across the compilers R is built with), and
+# correctness here outweighs incremental build speed.
+HEADERS = $(wildcard *.h) \
+          $(wildcard carquet/*.h) $(wildcard carquet/*/*.h) \
+          $(wildcard carquet/simd/*/*.h) \
+          $(wildcard zstd/*.h) $(wildcard zstd/*/*.h) \
+          $(wildcard lz4/*.h)
+
+$(OBJECTS): $(HEADERS)
 
 # --- Include paths -----------------------------------------------------------
 # carquet includes its public headers as <carquet/...> and internal headers as

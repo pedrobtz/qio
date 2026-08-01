@@ -103,10 +103,13 @@ worker pool; strings remain on R's main thread. Buffered `collect()` is serial.
 The direct path respects `threads = 1`.
 
 The batch reader parallelizes only mapped or memory-backed input. Its worker
-pipeline also requires compressed, non-repeated projected columns and either
-multiple row groups or at least 500,000 rows. This snapshot raises
-`num_threads = 1` to two workers in that path. `walk_batches()` inherits the
-bug.
+pipeline also requires every projected column to be non-nullable and
+non-repeated, compression on at least one of them, and either multiple row
+groups or at least 500,000 rows. A file failing any of these reads serially
+whatever `threads` says — which is why most fixtures never reach the pool.
+
+`num_threads = 1` is honored: qio patches the pipeline to create no pool below
+two threads. See [`VENDORED.md`](VENDORED.md#local-carquet-patches).
 
 qio deliberately includes private `reader/worker_pool.h`; recheck that coupling
 on every carquet update. Its queue holds 512 tasks and `submit()` blocks when
@@ -162,6 +165,10 @@ Important defaults and controls:
   bloom filters.
 - Global options also cover row groups, checksums, indexes, metadata version,
   and timestamp coercion.
+- `writer_options.row_group_size` is a target in **bytes** (default 128MB), and
+  carquet flushes a row group when it is exceeded. There is no row-count
+  target; an explicit boundary needs `carquet_writer_new_row_group()`. qio sets
+  neither today, so every qio-written file under 128MB is a single row group.
 - Requested legacy `LZ4` is written as `LZ4_RAW`.
 
 qio independently defaults to Snappy. Its planned configuration object is
@@ -205,7 +212,7 @@ metadata files are modeled but not implemented.
 | Dotted paths in `carquet_schema_find_column()` | Leaf-name comparison only |
 | Snappy/dictionary writer defaults in comments | Uncompressed; `PLAIN` or compressed-float `BYTE_STREAM_SPLIT` |
 | `batch_reader_config.use_mmap` | Initialized but ignored; mapping is fixed at reader open |
-| `num_threads = 1` disables parallelism | Batch worker pipeline forces at least two |
+| `num_threads = 1` disables parallelism | Public `carquet_thread_pool_create()` still forces two; the batch pipeline is patched locally to honor one |
 | `carquet_worker_pool_submit()` "Non-blocking" | Blocks once the 512-slot queue is full |
 | `carquet_worker_pool_wait()` | No timeout, so it cannot be interrupted |
 | `get_buffer()` bytes use `free()` | Bytes use the configured allocator |

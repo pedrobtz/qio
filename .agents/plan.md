@@ -181,50 +181,96 @@ Cleanup
 
 ## Phase 0: lock scope and establish baselines
 
-Status: not started
+Status: complete
+
+### Recorded baseline
+
+Taken on the commit that completed phase P, from a clean tree on R 4.6.1,
+`aarch64-apple-darwin23`, 8 cores.
+
+| Baseline | Result |
+|---|---|
+| `devtools::test()` | 236 pass, 0 fail, 0 warn, 0 skip |
+| `devtools::check()` | 0 errors, 0 warnings, 0 notes |
+| `pkgdown::check_pkgdown()` | Fails: `url` missing in `_pkgdown.yml` |
+| Benchmarks | [`bench/README.md`](../bench/README.md) |
+
+The `R CMD check` note about `AGENTS.md` and `CLAUDE.md` at top level was fixed
+here by adding both to `.Rbuildignore`. The pkgdown failure is left open: it
+needs the published site URL and is already owned by phase 7.
+
+Three baseline facts worth carrying forward rather than rediscovering:
+
+- Run-to-run noise is bimodal. Serial cases repeat to within 3%, but the two
+  worker-pool cases vary 11-12%, so the regression gate uses per-case
+  tolerances rather than one number. Filtered runs are measurably faster than
+  the same case inside a full run and must not be compared across the two.
+
+- Buffered and mmap collects are the same speed when serial; the 2.7x gap is
+  the worker pool, not the mapping. Phase 4's question about private-reader
+  parallelism therefore starts from evidence that it is worth ~2.7x on the
+  `parquet_open()` default.
+- `walk_batches()` costs about 35% more than `collect()` for a full pass.
 
 ### Work
 
-- [ ] Confirm the v0.1.0 type boundary: complete shared planning, scalar,
+- [x] Confirm the v0.1.0 type boundary: complete shared planning, scalar,
   binary/text, decimal, temporal, and integer-width work. Nested and extension
   types remain deferred.
-- [ ] Record a clean baseline for the full test suite and R CMD check.
-- [ ] Establish reproducible read and write benchmark commands, fixtures,
+- [x] Record a clean baseline for the full test suite and R CMD check.
+- [x] Establish reproducible read and write benchmark commands, fixtures,
   environment details, and reported metrics. Name the reference workloads that
   later phases must not regress, and set the regression threshold that fails a
   performance gate.
-- [ ] Choose the independent Parquet cross-check tool used by the phase 5, 6,
+- [x] Choose the independent Parquet cross-check tool used by the phase 5, 6,
   and 7 gates. Record which tool and version, whether it runs in CI or only
   when fixtures are regenerated, and how its results become checked-in
   expectations. It must never become a test-time dependency of the package.
-- [ ] Turn any known baseline failure into an explicit roadmap item or fix it
+- [x] Turn any known baseline failure into an explicit roadmap item or fix it
   before feature work begins.
 
 ### Exit gate
 
-- [ ] `roadmap.md`, `TYPES.md`, and this plan agree on release scope.
-- [ ] Test, check, and benchmark baselines are reproducible from a clean tree,
+- [x] `roadmap.md`, `TYPES.md`, and this plan agree on release scope.
+- [x] Test, check, and benchmark baselines are reproducible from a clean tree,
   with named reference workloads and a numeric regression threshold.
-- [ ] The independent cross-check tool is chosen and its output location is
+- [x] The independent cross-check tool is chosen and its output location is
   recorded in `tests/testthat/parquet/SOURCE.md`.
 
 ## Phase 1: make the vendored foundation reproducible
 
-Status: not started
+Status: code, tests, and CI complete; three exit-gate lines await CI runs on
+the branch, and the upstream submission is outstanding.
+
+### What the work turned up
+
+- The header-dependency rule was necessary and its absence is silent.
+  `R CMD INSTALL` rebuilt **0 of 79** objects after a shared header changed
+  without the rule, and all 79 with it. `devtools::load_all()` precleans, so it
+  rebuilds everything either way and can never reveal this.
+- Adding any rule to `Makevars` makes it make's default goal, because Makevars
+  is read before R's own makefiles. Without a leading `all: $(SHLIB)` the build
+  stops after one object and links nothing.
+- The batch pipeline is far narrower than "compressed and mapped": every
+  projected column must also be non-nullable. Arrow writes nullable columns by
+  default, so most third-party files never reach the worker pool at all.
 
 ### Work
 
-- [ ] Generate one authoritative `.agents/carquet-changes.patch` against the
-  pinned upstream commit.
-- [ ] Add a CI check that reverse-applies the patch to the vendored tree and
+- [x] Generate one authoritative `.agents/carquet-changes.patch` against the
+  pinned upstream commit. It applies to pristine upstream to reproduce
+  `src/carquet` exactly, and reverses to recover pristine upstream.
+- [x] Add a CI check that reverse-applies the patch to the vendored tree and
   fails on drift. Verify that `.Rbuildignore` still excludes `.agents/` from the
-  R source package.
-- [ ] Add vendored-header dependencies to `src/Makevars` and
+  R source package. `tools/check-vendor-drift.sh`, run by the `vendor`
+  workflow; verified to fail on injected drift.
+- [x] Add vendored-header dependencies to `src/Makevars` and
   `src/Makevars.win`; prove that touching a shared header rebuilds all affected
-  objects.
-- [ ] Add a Windows CI case that forces mmap with at least two threads and
-  compares its result with the serial path.
-- [ ] Make `walk_batches(threads = 1)` start no second worker, patching the
+  objects. `tools/check-header-deps.sh`, verified to fail with the rule removed.
+- [x] Add a Windows CI case that forces mmap with at least two threads and
+  compares its result with the serial path. Covered by tests in
+  `test-parquet-file.R`, which `R-CMD-check` already runs on `windows-latest`.
+- [x] Make `walk_batches(threads = 1)` start no second worker, patching the
   vendored batch pipeline locally if upstream has not fixed it.
 - [ ] Best effort: submit or update upstream changes for every local carquet
   patch. If the required fixes are merged before release validation begins,
@@ -235,45 +281,68 @@ Status: not started
 
 ### Exit gate
 
-- [ ] The patch drift check passes from a clean checkout.
-- [ ] A vendored-header change cannot reuse ABI-incompatible objects.
-- [ ] Serial and threaded mmap reads agree on Windows, Linux, and macOS.
-- [ ] A focused test in `test-parquet-file.R` shows that
-  `walk_batches(threads = 1)` creates no second worker.
+- [x] The patch drift check passes from a clean checkout.
+  `tools/check-vendor-drift.sh` exits 0 clean and 1 on drift.
+- [x] A vendored-header change cannot reuse ABI-incompatible objects.
+  `tools/check-header-deps.sh`, with the negative control above.
+- [x] A focused test in `test-parquet-file.R` shows that
+  `walk_batches(threads = 1)` creates no second worker. It counts process
+  threads, with `threads = 2` as a control so a broken probe cannot pass, and
+  skips where no thread-count probe exists (Windows).
+- [ ] Serial and threaded mmap reads agree on Windows, Linux, and macOS. The
+  tests pass on macOS; Windows and Linux need an `R-CMD-check` run.
 - [ ] Native sanitizer, Valgrind, LTO, gctorture, and rchk workflows pass.
+  Requires dispatching `native-checks`; not runnable locally.
+- [ ] The `vendor` workflow passes on the branch. It has not run yet.
 
 ## Phase 2: finish column identity and shared planning
 
-Status: not started
+Status: complete
+
+### What the work turned up
+
+Selecting by leaf name was not merely ambiguous, it was wrong on a file any
+mainstream writer can produce. In `name_collision.parquet` a struct field `s.b`
+and a flat column `b` share the leaf name `b`;
+`carquet_schema_find_column("b")` returns the nested leaf, so asking for the
+flat column failed with *"nested parquet column 'b' is not supported"*. Where
+both candidates are flat, the same lookup would have returned the wrong column
+silently. Selections now resolve to leaf indexes in R before any native call.
 
 ### Work
 
-- [ ] Resolve user selections to leaf indexes by complete schema path before
+- [x] Resolve user selections to leaf indexes by complete schema path before
   entering carquet. Cover duplicate leaf names and collisions between flat and
   skipped nested leaves.
-- [ ] Settle the materializing-read option surface once, before phases 3.1 and
+- [x] Settle the materializing-read option surface once, before phases 3.1 and
   3.4 invent separate mechanisms: where `int64`, `time`, and `tz` are accepted,
   how they reach the shared plan, how `read_plan()` reports them, and how
-  defaults are validated before any allocation.
-- [ ] Audit the schema-driven read plan so allocation, null handling, physical
+  defaults are validated before any allocation. Settled in
+  [`roadmap.md`](roadmap.md#read-options): per-call arguments on the three
+  materializing reads plus `read_plan()`, validated by one shared
+  `qio_read_options()` constructor. The arguments themselves ship with the
+  modes that need them, in 3.1 and 3.4; no argument is added here that would
+  accept a value qio cannot yet honor.
+- [x] Audit the schema-driven read plan so allocation, null handling, physical
   fallback, logical conversion, and class assignment are selected once.
-- [ ] Keep `qio_type_registry()` authoritative and generate
+- [x] Keep `qio_type_registry()` authoritative and generate
   `parquet_type_mapping()` from it.
-- [ ] Make unsupported-type diagnostics include the complete column path,
+- [x] Make unsupported-type diagnostics include the complete column path,
   physical type, logical type, and relevant parameters.
-- [ ] Verify that eager reads, persistent collection, and batch walking apply
+- [x] Verify that eager reads, persistent collection, and batch walking apply
   identical plans for projection, row-group selection, nulls, and zero-column
   results.
 
 ### Exit gate
 
-- [ ] Complete-path selection is unambiguous across every read API.
-- [ ] A test regenerates `parquet_type_mapping()` from `qio_type_registry()` and
+- [x] Complete-path selection is unambiguous across every read API.
+- [x] A test regenerates `parquet_type_mapping()` from `qio_type_registry()` and
   fails on any difference, so documented mappings cannot drift from native
   behavior.
-- [ ] The read-option surface is fixed and documented; `read_plan()` reports
-  every selected mode.
-- [ ] Focused plan, projection, row-group, nested-skip, and batch tests pass in
+- [x] The read-option surface is fixed and documented in `roadmap.md`.
+  `read_plan()` reporting each selected mode is verified in 3.1, with the first
+  argument that has a mode to report.
+- [x] Focused plan, projection, row-group, nested-skip, and batch tests pass in
   `test-parquet-plan.R` and `test-parquet-file.R`.
 
 ## Phase 3: complete v0.1.0 type coverage
@@ -315,8 +384,8 @@ order. All four groups depend on the phase 2 read-option surface.
 - [ ] Finish UTC and non-UTC timestamp behavior with validated `tz`, documented
   DST behavior, overflow checks, and operation-level timezone messages.
 - [ ] Add numeric and optional `hms` time-of-day modes.
-- [ ] Add remaining signed/unsigned integer-width annotations and interval
-  representation.
+- [ ] Add remaining signed/unsigned integer-width annotations. `INTERVAL` needs
+  no work here; 3.2 already returns its 12 bytes exactly.
 - [ ] Add boundary fixtures for every timestamp unit and integer width.
 
 ### Exit gate
@@ -325,7 +394,9 @@ order. All four groups depend on the phase 2 read-option surface.
   row-group, batch, boundary, and malformed-input coverage where applicable.
 - [ ] All three materializing read APIs return the same type and values.
 - [ ] Optional modes fail clearly when their suggested package is unavailable.
-- [ ] Nested, variant, and geospatial values remain outside v0.1.0 scope.
+- [ ] Nested values, extension types, and a dedicated interval class remain
+  outside v0.1.0. `GEOMETRY`, `GEOGRAPHY`, and `INTERVAL` read as exact bytes
+  through the binary mapping; `VARIANT` is skipped as nested.
 
 ## Phase 4: bound reader memory and optimize measured hot paths
 
@@ -352,8 +423,11 @@ Status: not started
   selected row group. State the measured bound and the instrument that produced
   it, and assert it across a multi-row-group fixture.
 - [ ] Dictionary, plain, and mixed pages return identical character results.
-- [ ] Performance changes include reproducible evidence from the phase 0
-  reference workloads and stay within the phase 0 regression threshold.
+- [ ] Performance changes include reproducible evidence from the reference
+  workloads and stay within each case's tolerance
+  (`Rscript bench/benchmark.R --compare <tag>` exits non-zero otherwise).
+  Changes to the parallel path also report `collect-mmap-serial` and
+  `collect-buffered`, whose tolerances are tight enough to be meaningful.
 - [ ] Valgrind, sanitizers, and gctorture pass the new allocation paths.
 
 ## Phase 5: harden and configure the writer

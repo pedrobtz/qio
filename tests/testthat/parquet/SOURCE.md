@@ -33,6 +33,27 @@ tests pin the present behavior and should be promoted as those features land.
 four three-row row groups, all physical types currently supported by qio,
 nulls, and duplicate footer metadata keys.
 
+## Independent cross-check tool
+
+The plan's phase 5, 6, and 7 gates require agreement with an independent
+Parquet implementation. That implementation is the **Apache Arrow R package**
+(`arrow`), chosen in phase 0.
+
+- **Why:** it is a mainstream, independently written Parquet implementation
+  with both a reader and a writer, installable on all three CI platforms, and
+  usable from R so fixtures and expectations are generated with one toolchain.
+- **When it runs:** only when fixtures or expectations are regenerated, never
+  during `R CMD check`. Its output is committed as fixture files plus the
+  expected values written into tests.
+- **Not a dependency:** `arrow` is absent from `DESCRIPTION`, no test loads it,
+  and every generator that uses it lives in `tools/` or `bench/`, both outside
+  the installed package. A machine without `arrow` can run the full suite.
+- **Recording versions:** each generated fixture records the `arrow` version
+  that produced it in its section below, so a regenerated file that changes
+  behavior is traceable.
+
+Generators: `tools/generate-int32-min-fixture.R`, `bench/benchmark.R`.
+
 ## Third-party boundary fixture
 
 `int32_min.parquet` was written by the Apache Arrow R package, an independent
@@ -49,3 +70,23 @@ Expected behavior: reading it warns once that `-2147483648` was coerced to `NA`
 because R's `integer` reserves that value, and returns the other values exactly.
 See `.agents/TYPES.md`. `arrow` is only used to regenerate this file; it is not
 a qio dependency and no test loads it.
+
+## Column-identity fixture
+
+`name_collision.parquet` was written by the Apache Arrow R package so that
+complete-path column identity is verified against a schema qio cannot produce
+itself: qio writes flat schemas only, so it cannot create two leaves that share
+a name.
+
+- Generator: `tools/generate-name-collision-fixture.R`, R `arrow` 24.0.0
+- Command: `compression = "snappy"`, `version = "2.6"`
+- License: Apache License 2.0
+- Contents: a struct `s` with field `b`, a flat `INT32` column also named `b`,
+  and a `STRING` column `label`. The two `b` leaves have complete paths `s.b`
+  and `b`.
+
+Expected behavior: `collect(columns = "b")` returns the flat column, the nested
+`s.b` leaf is skipped with the usual message, and neither resolves to the
+other. `carquet_schema_find_column()` compares leaf names only and returns the
+nested leaf for `"b"`, which is why qio resolves selections to leaf indexes by
+complete path before calling carquet. See `.agents/carquet.md`.

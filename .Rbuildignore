@@ -14,3 +14,6 @@
 ^local-data$
 ^local-script$
 ^\.agents$
+^bench$
+^AGENTS\.md$
+^CLAUDE\.md$

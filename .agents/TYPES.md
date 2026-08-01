@@ -83,7 +83,7 @@ Double-backed 64-bit integer objects currently infer `DOUBLE`.
 | UTC `TIMESTAMP` | `POSIXct` | Instant displayed in `tz` |
 | non-UTC `TIMESTAMP` | `POSIXct` | Wall clock interpreted in `tz` |
 | `TIME` | numeric or `hms` | Seconds since midnight, selected by `time` |
-| `INTERVAL` | dedicated class | Preserve months, days, and milliseconds separately |
+| `INTERVAL` | list-column of 12-byte raw vectors | Exact bytes in v0.1.0; a dedicated class is v0.2.0 |
 
 Ordinary numeric input continues to infer `DOUBLE`. `FLOAT`, `FLOAT16`, and
 `INT64` writes require an explicit schema.
@@ -109,12 +109,18 @@ define rounding. New `INT96` output will not be added.
 Variable binary, fixed binary, UUID, and decimal writes require explicit
 schemas. Ordinary character input continues to infer `STRING`.
 
-Initial extension mappings remain dependency-light:
+Extension types are deferred to v0.2.0, and v0.1.0 adds no code for them. What
+falls out of the rules above is the whole of their v0.1.0 behavior:
 
-- `VARIANT`: preserve metadata and value bytes.
-- `GEOMETRY` and `GEOGRAPHY`: raw WKB list-columns plus metadata.
+- `GEOMETRY` and `GEOGRAPHY` are single `BYTE_ARRAY` leaves, so their WKB bytes
+  read as raw list-columns. `schema()` continues to report `crs` and the edge
+  algorithm; no other metadata is attached to the column.
+- `VARIANT` is a group, so it is skipped with the other nested columns.
+- `INTERVAL` is a fixed 12-byte leaf, so it reads as a fixed-length raw vector.
 
-Richer interpretation belongs in downstream packages.
+Richer interpretation belongs in v0.2.0 or in downstream packages. Reading
+these as exact bytes now means a later structured mapping changes a column's
+class, which [Compatibility](#compatibility) governs.
 
 ### Nested values
 
@@ -186,7 +192,11 @@ Requirements:
 - In integer64 mode, warn:
   `Some INT64 or UINT64 values were coerced to NA because they cannot be
   represented by bit64::integer64.`
-- `read_plan()` records the mode, and every materializing read applies it.
+- `read_plan()` records the mode, and every materializing read applies it. The
+  argument surface is settled in
+  [`roadmap.md`](roadmap.md#read-options): per-call arguments on
+  `read_parquet()`, `collect()`, `walk_batches()`, and `read_plan()`, validated
+  by one shared constructor before any allocation.
 
 ### Timestamps and time of day
 
@@ -265,13 +275,16 @@ legacy or recursive shapes instead of flattening their meaning.
 3. **Binary and text:** separate bytes from text; add fixed binary, UUID, JSON,
    BSON, enum, and float16.
 4. **Exact decimal:** support every physical storage form and explicit writes.
-5. **Remaining temporal/integer types:** finish timezone, `TIME`, interval, and
-   integer-width annotations.
+5. **Remaining temporal/integer types:** finish timezone, `TIME`, and
+   integer-width annotations. `INTERVAL` needs no work here: step 3 already
+   returns its 12 bytes exactly.
 6. **Nested values:** lists first, then null variants, structs, maps,
    parent-path projection, and finally writes.
-7. **Extensions:** preserve variant and geospatial payloads with metadata.
+7. **Extensions:** structured variant and geospatial interpretation, and a
+   dedicated interval class.
 
-The roadmap tracks scheduling; this order records type dependencies.
+The roadmap tracks scheduling; this order records type dependencies. Steps 1
+through 5 are v0.1.0; steps 6 and 7 are v0.2.0.
 
 ## Compatibility
 
