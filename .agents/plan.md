@@ -459,11 +459,18 @@ but not implemented; the remaining optimizations are unstarted.
 
 ### What the measurements show
 
-- Buffered and memory-mapped reads are the same speed when serial (0.180 s vs
-  0.177 s, 1.02x). The 2.64x gap is entirely the worker pool. Private-reader
-  parallelism for buffered handles is therefore worth about 2.6x on the
-  `parquet_open()` default, which means the plan's "or record why it is not
-  justified" branch is not available on the evidence.
+- Buffered and memory-mapped reads are the same speed when serial (0.181 s vs
+  0.179 s). The whole gap was the worker pool, and giving buffered handles
+  private readers closed it: `collect-buffered` went to 0.063 s, level with the
+  mapped parallel path.
+- The first version of that change was wrong in a way worth remembering. It
+  submitted the lanes to the pool *and* fell through to the inline loop, so
+  every task ran twice, once on a worker and once on the main thread, against
+  the same reader. The symptoms were short reads in about 1 of 10 collects and
+  no speedup at all. Both were initially mis-read as a concurrency defect in
+  carquet's buffered reader; the defect was in qio's dispatch. The lesson is
+  that "no speedup" is diagnostic: parallel work that does not get faster is
+  usually not running where it is thought to be.
 - Chunked string scratch costs `read-string_low_cardinality` 6.6%, recorded as
   an accepted trade-off in `bench/README.md`. Materializing dictionary text
   from indexes targets that same workload and would recover it.
@@ -480,25 +487,15 @@ but not implemented; the remaining optimizations are unstarted.
   improvement.
 - [ ] Decode suitable numeric columns into R-owned memory and expand nullable
   values backward in place.
-- [ ] Benchmark buffered persistent reads. Either implement private-reader
-  parallelism with correct ownership or record why it is not justified.
-  **Benchmarked: justified at 2.64x. Implemented, and reverted as unsafe.**
-  One `carquet_reader_t` per worker, tasks grouped into lanes so one reader is
-  only ever used by one lane at a time, produced *intermittent short reads*:
-  3 of 48 fresh-handle collects failed with counts like "yielded 211264 of
-  250000" and once "yielded 0 of 250000". The same 48 runs pass with the
-  change reverted. Failures need several handles in one session to appear;
-  three collects on one handle never reproduced it.
-
-  This is not a qio-side ownership problem as far as it was traced: carquet's
-  buffered reader has no mutable file-scope state, and each lane owned its
-  reader exclusively. Root-causing it means finding what two independent
-  `carquet_reader_t` values share on the buffered path. Until that is
-  understood the 2.6x is not available, and shipping the change would trade a
-  correctness guarantee for speed.
-
-  Next step is diagnosis, not reimplementation: run the lane build under the
-  thread sanitizer, which is the tool that names the shared object.
+- [x] Benchmark buffered persistent reads, and implement private-reader
+  parallelism with correct ownership. Each worker gets its own
+  `carquet_reader_t`, opened on the same path with the same options, because
+  the buffered path shares `FILE*` and prebuffer state. Tasks are grouped into
+  lanes so one reader is only ever used by one lane, and a lane runs its tasks
+  in sequence on a single worker. Measured 0.181 s to 0.063 s on
+  `collect-buffered`, a 65% reduction, bringing the buffered default level with
+  the mapped parallel path. Only taken above 50,000 selected rows, since each
+  private reader re-parses the footer.
 
 ### Exit gate
 

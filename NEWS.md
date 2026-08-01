@@ -1,5 +1,15 @@
 # qio 0.0.0.9000
 
+* Reads through a `parquet_open()` handle now decode columns in parallel even
+  without `mmap = TRUE`, by giving each worker its own reader. Collecting a
+  1-million-row file went from 0.181 s to 0.063 s. Previously only memory-mapped
+  handles decoded in parallel, and memory mapping on its own made no measurable
+  difference.
+* `collect(batch_size =)` now bounds the scratch memory the reader allocates
+  for string and binary columns, which previously scaled with the largest
+  selected row group rather than with anything the caller controlled. It still
+  does not bound the size of the result; use `walk_batches()` for that.
+
 * Non-UTC `TIMESTAMP` columns are now read as `POSIXct`. A UTC-adjusted column
   is an instant, so the new `tz` argument changes only how it prints; a non-UTC
   column is a wall clock with no zone stored, so its civil components are

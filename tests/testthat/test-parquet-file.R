@@ -608,3 +608,38 @@ test_that("batch_size does not change collected values", {
     )
   }
 })
+
+test_that("a buffered parallel collect returns exactly the serial result", {
+  # Buffered reads give each worker a private reader, since the buffered path
+  # shares FILE* and prebuffer state. An earlier version of that change also
+  # ran every task inline on the main thread, so each task executed twice
+  # against one reader and produced short reads about once in ten collects.
+  # Comparing values across thread counts, on fresh handles, is what catches it.
+  path <- fixture_path()
+  serial <- local_parquet_file(path, threads = 1L)
+  expected <- collect(serial)
+
+  for (threads in c(0L, 2L, 4L, 8L)) {
+    for (attempt in 1:3) {
+      file <- parquet_open(path, threads = threads)
+      actual <- collect(file)
+      parquet_close(file)
+      expect_identical(
+        actual,
+        expected,
+        info = paste("threads =", threads, "attempt", attempt)
+      )
+    }
+  }
+})
+
+test_that("buffered and mapped reads agree at every thread count", {
+  path <- fixture_path()
+  expected <- collect(local_parquet_file(path, threads = 1L))
+  for (threads in c(0L, 2L, 4L)) {
+    buffered <- local_parquet_file(path, threads = threads)
+    mapped <- local_parquet_file(path, mmap = TRUE, threads = threads)
+    expect_identical(collect(buffered), expected)
+    expect_identical(collect(mapped), expected)
+  }
+})

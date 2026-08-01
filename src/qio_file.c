@@ -22,6 +22,11 @@
 typedef struct {
     carquet_reader_t *reader;
     int32_t threads;
+    /* How this handle was opened. Needed to reopen an identical private reader
+     * per worker for parallel buffered collects: the buffered path shares
+     * FILE* and prebuffer state, so workers cannot share one reader. */
+    int use_mmap;
+    int verify_checksums;
     int busy;
 } qio_parquet_handle_t;
 
@@ -75,6 +80,8 @@ typedef struct {
     carquet_row_batch_t *batch;
     carquet_column_reader_t *column;  /* in-flight direct-read column reader */
     carquet_worker_pool_t *pool;      /* in-flight parallel-collect pool */
+    carquet_reader_t **private_readers; /* one per lane, buffered reads only */
+    int32_t num_private_readers;
     SEXP file;
     SEXP callback;
     int int64_mode;                   /* QIO_INT64_DOUBLE or QIO_INT64_BIT64 */
@@ -933,6 +940,11 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
 
 #define QIO_TASK_BATCH 65536
 
+/* Below this many selected rows a buffered parallel collect is not worth it:
+ * every private reader re-parses the footer, and that fixed cost dominates a
+ * small read. Chosen by measurement; see bench/README.md. */
+#define QIO_PRIVATE_READER_MIN_ROWS 50000
+
 typedef struct {
     carquet_reader_t *reader;
     int32_t row_group;
@@ -1003,6 +1015,27 @@ done:
     free(values);
     free(defs);
     carquet_column_reader_free(column);
+}
+
+/* A lane is a group of tasks that share one reader and therefore must run one
+ * after another. Memory-mapped reads need no lanes, because every column
+ * reader on a mapped file is independent; buffered reads do, because they
+ * share FILE* and prebuffer state. One lane runs on one worker, so the reader
+ * it owns is never touched concurrently. */
+typedef struct {
+    qio_column_task_t **tasks;
+    int32_t num_tasks;
+} qio_lane_t;
+
+static void qio_lane_run(void *arg) {
+    qio_lane_t *lane = (qio_lane_t *)arg;
+    for (int32_t i = 0; i < lane->num_tasks; i++) {
+        qio_column_task_run(lane->tasks[i]);
+        /* Stop this lane at its first failure; the reader's position is
+         * undefined afterwards. Other lanes are unaffected and the main thread
+         * reports the first error it finds. */
+        if (lane->tasks[i]->status) return;
+    }
 }
 
 /* Resolve threads for parallel collect: explicit count, or core count when
@@ -1421,18 +1454,96 @@ static SEXP qio_collect_body(void *data) {
         }
     }
 
-    /* Numeric tasks run on carquet's worker pool when the reader is
-     * memory-mapped (the fread path shares FILE-handle and prebuffer state
-     * and is not thread-safe) and threads != 1; inline otherwise. */
+    /* Numeric tasks run on carquet's worker pool whenever there is more than
+     * one of them and the caller did not ask for a serial read.
+     *
+     * A mapped reader is shared: every column reader on it is independent. A
+     * buffered reader is not, so each worker gets a private reader opened on
+     * the same path with the same options, and tasks are grouped into lanes so
+     * that one reader is only ever used by one lane at a time. Measured worth
+     * about 2.6x on a buffered handle, which is what parquet_open() defaults
+     * to; see bench/README.md.
+     *
+     * Opening a private reader re-parses the footer, so the buffered path is
+     * only taken when there are enough rows to amortize that. */
     int32_t threads = qio_collect_threads(context->handle->threads);
-    if (context->handle->threads != 1 && threads > 1 && n_tasks > 1 &&
-        carquet_reader_is_mmap(reader)) {
+    int use_lanes = 0;
+    if (context->handle->threads != 1 && threads > 1 && n_tasks > 1) {
         if (threads > n_tasks) threads = n_tasks;
-        context->pool = carquet_worker_pool_create(threads);
-        /* NULL just means no parallelism; fall through to the inline path. */
+        if (carquet_reader_is_mmap(reader)) {
+            context->pool = carquet_worker_pool_create(threads);
+        } else if (context->selection.total_rows >= QIO_PRIVATE_READER_MIN_ROWS) {
+            use_lanes = 1;
+        }
+        /* A NULL pool just means no parallelism; the inline path follows. */
     }
+
+    qio_lane_t *lanes = NULL;
+    if (use_lanes) {
+        const char *path = Rf_translateChar(
+            STRING_ELT(R_ExternalPtrProtected(context->file), 0));
+        carquet_reader_options_t options;
+        carquet_reader_options_init(&options);
+        options.use_mmap = 0;
+        options.verify_checksums = context->handle->verify_checksums;
+        options.num_threads = 1;
+
+        carquet_reader_t **readers = (carquet_reader_t **)R_alloc(
+            (size_t)threads, sizeof(carquet_reader_t *));
+        memset(readers, 0, (size_t)threads * sizeof(carquet_reader_t *));
+        int32_t opened = 0;
+        for (int32_t i = 0; i < threads; i++) {
+            carquet_error_t err = CARQUET_ERROR_INIT;
+            readers[i] = carquet_reader_open(path, &options, &err);
+            if (!readers[i]) break; /* fall back to fewer lanes, or to serial */
+            opened++;
+        }
+        /* Registered before use so an unwind from here on closes them. */
+        context->private_readers = readers;
+        context->num_private_readers = opened;
+
+        if (opened > 1) {
+            lanes = (qio_lane_t *)R_alloc((size_t)opened, sizeof(qio_lane_t));
+            qio_column_task_t **slots = (qio_column_task_t **)R_alloc(
+                (size_t)n_tasks, sizeof(qio_column_task_t *));
+            /* Round-robin so lanes get comparable work; tasks are one row
+             * group by one column, so they are of similar size. */
+            int32_t at = 0;
+            for (int32_t lane = 0; lane < opened; lane++) {
+                lanes[lane].tasks = slots + at;
+                lanes[lane].num_tasks = 0;
+                for (int32_t t = lane; t < n_tasks; t += opened) {
+                    slots[at++] = &tasks[t];
+                    lanes[lane].num_tasks++;
+                    tasks[t].reader = readers[lane];
+                }
+            }
+            context->pool = carquet_worker_pool_create(opened);
+            if (!context->pool) lanes = NULL;
+            if (!lanes) {
+                /* Reverting to the shared reader for the inline path. */
+                for (int32_t t = 0; t < n_tasks; t++) tasks[t].reader = reader;
+            }
+        } else {
+            lanes = NULL;
+        }
+    }
+
+    if (lanes) {
+        /* One submission per lane, so a lane's tasks never overlap. */
+        for (int32_t lane = 0; lane < context->num_private_readers; lane++) {
+            carquet_worker_pool_submit(context->pool, qio_lane_run,
+                                       &lanes[lane]);
+        }
+    }
+
     int32_t submitted = 0;
-    if (context->pool) {
+    if (lanes) {
+        /* Every task is already queued, inside its lane. Nothing runs here:
+         * running them inline as well would execute each task twice, once on a
+         * worker and once on the main thread, against the same reader. */
+        submitted = n_tasks;
+    } else if (context->pool) {
         /* carquet_worker_pool_submit() blocks once the queue is full, despite
          * its header comment. Submitting every task up front would therefore
          * stall the main thread before it reaches the string pass below, so
@@ -1663,6 +1774,18 @@ static void qio_batch_cleanup(void *data, Rboolean jump) {
         carquet_worker_pool_destroy(context->pool);
         context->pool = NULL;
     }
+    /* Closed only after the pool has stopped: a worker may still be reading
+     * through one of these. */
+    if (context->private_readers) {
+        for (int32_t i = 0; i < context->num_private_readers; i++) {
+            if (context->private_readers[i]) {
+                carquet_reader_close(context->private_readers[i]);
+                context->private_readers[i] = NULL;
+            }
+        }
+        context->private_readers = NULL;
+        context->num_private_readers = 0;
+    }
     context->handle->busy = 0;
 }
 
@@ -1721,6 +1844,8 @@ SEXP qio_parquet_open(SEXP path, SEXP use_mmap, SEXP verify_checksums,
     }
     handle->reader = reader;
     handle->threads = options.num_threads;
+    handle->use_mmap = options.use_mmap;
+    handle->verify_checksums = options.verify_checksums;
 
     SEXP file = PROTECT(R_MakeExternalPtr(handle, qio_file_tag(), path));
     R_RegisterCFinalizerEx(file, qio_finalize_file, TRUE);

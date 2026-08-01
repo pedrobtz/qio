@@ -185,21 +185,21 @@ numbers, per the rules above.
   already chunked, which is why it looks flat. Compare against a build without
   the change instead.
 
-## Buffered reads leave 2.6x on the table
+## Buffered reads are now parallel
 
-Measured on `mixed.parquet`, and the reason is worth keeping:
+Measured on `mixed.parquet`:
 
-| | median | vs buffered |
+| | before | after |
 |---|---|---|
-| buffered, serial (the `parquet_open()` default) | 0.180 s | 1.00x |
-| memory-mapped, serial | 0.177 s | 1.02x |
-| memory-mapped, parallel | 0.067 s | 2.69x |
+| buffered, serial decode (the `parquet_open()` default) | 0.181 s | **0.063 s** |
+| memory-mapped, serial decode | 0.179 s | 0.179 s |
+| memory-mapped, parallel decode | 0.067 s | 0.067 s |
 
-Mapping buys essentially nothing; the entire gap is the worker pool, which
-today only runs for mapped readers. Giving each worker a private
-`carquet_reader_t` was implemented and reverted: it produced intermittent short
-reads. See the phase 4 entry in `../.agents/plan.md` for the failure counts and
-the next diagnostic step.
+Mapping never bought anything on its own; the entire gap was the worker pool,
+which used to run only for mapped readers. Buffered handles now give each
+worker a private `carquet_reader_t`, so the default handle decodes in parallel
+too. Only above 50,000 selected rows, since each private reader re-parses the
+footer.
 
 ## Not measured yet
 
