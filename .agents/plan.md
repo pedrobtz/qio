@@ -69,8 +69,8 @@ release work begins.
 
 ## Phase P: native glue preflight
 
-Status: code and tests complete; two exit-gate lines await a `native-checks`
-run on the branch.
+Status: complete, except for one gate that no available tool covers; see the
+exit gate.
 
 Defects and dead code found by reviewing `src/qio.c` and `src/qio_file.c`
 against the carquet headers and the R callers. None of this is new feature
@@ -172,10 +172,16 @@ Cleanup
   input left an empty orphan file.
 - [x] Every native entry point validates the type of every argument it
   dereferences, and the range of `threads` and `batch_size`.
-- [ ] Sanitizer, Valgrind, and gctorture workflows pass on the corrected glue.
-  Requires dispatching `native-checks`; not runnable locally.
-- [ ] Allocation failure inside the write loop is covered. No R-reachable
-  trigger remains, so this needs fault injection or the sanitizer run above.
+- [x] Sanitizer, Valgrind, and gctorture workflows pass on the corrected glue.
+  `native-checks` run 30700895527 on `2d6a50d`: sanitizers, Valgrind, LTO,
+  gctorture, and rchk all green. rchk in particular covers the `PROTECT`
+  balance in the new raw-vector and callback-environment code.
+- [ ] Allocation failure inside the write loop is covered. Still open, and the
+  sanitizer run does not close it: ASan and Valgrind do not make allocations
+  fail, so nothing yet exercises the `R_alloc` failure path. Closing this needs
+  a malloc-fault-injection harness. The translation-failure path through the
+  same cleanup is covered by `test-qio.R`, so the cleanup itself is exercised;
+  what is untested is that branch reaching it.
 - [x] No write-only struct fields, unused constants, or stale build comments
   remain in package-owned C.
 
@@ -239,8 +245,8 @@ Three baseline facts worth carrying forward rather than rediscovering:
 
 ## Phase 1: make the vendored foundation reproducible
 
-Status: code, tests, and CI complete; three exit-gate lines await CI runs on
-the branch, and the upstream submission is outstanding.
+Status: complete except for the best-effort upstream submission, which does not
+block the release.
 
 ### What the work turned up
 
@@ -289,11 +295,14 @@ the branch, and the upstream submission is outstanding.
   `walk_batches(threads = 1)` creates no second worker. It counts process
   threads, with `threads = 2` as a control so a broken probe cannot pass, and
   skips where no thread-count probe exists (Windows).
-- [ ] Serial and threaded mmap reads agree on Windows, Linux, and macOS. The
-  tests pass on macOS; Windows and Linux need an `R-CMD-check` run.
-- [ ] Native sanitizer, Valgrind, LTO, gctorture, and rchk workflows pass.
-  Requires dispatching `native-checks`; not runnable locally.
-- [ ] The `vendor` workflow passes on the branch. It has not run yet.
+- [x] Serial and threaded mmap reads agree on Windows, Linux, and macOS.
+  `R-CMD-check` run 30699868106 on `2d6a50d`: all five jobs green, including
+  `windows-latest` and three `ubuntu-latest` R versions.
+- [x] Native sanitizer, Valgrind, LTO, gctorture, and rchk workflows pass.
+  `native-checks` run 30700895527 on `2d6a50d`, all five jobs green.
+- [x] The `vendor` workflow passes on the branch. Run 30699868156 on
+  `2d6a50d`: the patch-drift and header-dependency checks both pass from a
+  clean CI checkout, not only on a developer machine.
 
 ## Phase 2: finish column identity and shared planning
 
@@ -429,11 +438,17 @@ order. All four groups depend on the phase 2 read-option surface.
 
 ### Exit gate
 
-- [ ] Every supported mapping has round-trip, null, projected-column,
-  row-group, batch, boundary, and malformed-input coverage where applicable.
-- [ ] All three materializing read APIs return the same type and values.
-- [ ] Optional modes fail clearly when their suggested package is unavailable.
-- [ ] Nested values, extension types, and a dedicated interval class remain
+- [x] Every supported mapping has null, projected-column, row-group, batch,
+  boundary, and malformed-input coverage. Round-trip coverage applies only to
+  types qio can write; the rest are verified against third-party fixtures,
+  since writes are deferred to v0.2.0.
+- [x] All three materializing read APIs return the same type and values.
+  Asserted per type group in `test-external.R`, including under projection,
+  row-group selection, and batching.
+- [x] Optional modes fail clearly when their suggested package is unavailable.
+  `test-parquet-plan.R` mocks the namespace lookup, since `bit64` and `hms`
+  are installed in development and the branch would otherwise never run.
+- [x] Nested values, extension types, and a dedicated interval class remain
   outside v0.1.0. `GEOMETRY`, `GEOGRAPHY`, and `INTERVAL` read as exact bytes
   through the binary mapping; `VARIANT` is skipped as nested.
 

@@ -494,3 +494,22 @@ test_that("the plan maps text annotations to character and bytes to lists", {
   )
   expect_true(all(plan$collectible))
 })
+
+# --- Optional modes without their suggested package ------------------------
+
+test_that("optional modes fail clearly when their package is unavailable", {
+  # bit64 and hms are installed in development, so the missing-package branch
+  # would otherwise never run. Mock the lookup rather than the packages.
+  local_mocked_bindings(
+    requireNamespace = function(package, ...) FALSE,
+    .package = "base"
+  )
+
+  expect_error(qio_read_options(int64 = "integer64"), "needs the bit64 package")
+  expect_error(qio_read_options(time = "hms"), "needs the hms package")
+
+  # The defaults must not depend on either package.
+  expect_silent(options <- qio_read_options())
+  expect_identical(options$int64, "double")
+  expect_identical(options$time, "numeric")
+})
