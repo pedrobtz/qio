@@ -181,3 +181,48 @@ test_that("a REQUIRED column rejects missing values before writing", {
   )
   expect_false(file.exists(path))
 })
+
+# --- Writer: float encoding ------------------------------------------------
+
+test_that("large nullable double columns round-trip exactly", {
+  # carquet selects BYTE_STREAM_SPLIT for FLOAT/DOUBLE when a codec is set, and
+  # its encoder is wrong for a page whose values arrive in more than one call:
+  # it transposes each call's subrange separately and appends, so the decoder
+  # de-splits the concatenation as one stride. This silently corrupted every
+  # present value once a nullable double column passed roughly a megabyte of
+  # them. qio forces PLAIN for these types; see .agents/VENDORED.md.
+  skip_on_cran()
+  n <- 200000L
+  set.seed(1)
+  values <- stats::rnorm(n)
+  values[seq(1L, n, by = 7L)] <- NA
+  path <- withr::local_tempfile(fileext = ".parquet")
+
+  write_parquet(data.frame(v = values), path)
+  back <- read_parquet(path)$v
+
+  expect_identical(is.na(back), is.na(values))
+  expect_equal(back, values)
+})
+
+test_that("float and double survive every codec at page-spanning sizes", {
+  skip_on_cran()
+  n <- 160000L
+  set.seed(2)
+  values <- stats::rnorm(n)
+  values[seq(1L, n, by = 5L)] <- NA
+
+  for (codec in c("snappy", "zstd", "gzip", "uncompressed")) {
+    path <- withr::local_tempfile(fileext = ".parquet")
+    write_parquet(data.frame(v = values), path, compression = codec)
+    expect_equal(read_parquet(path)$v, values, info = codec)
+  }
+
+  # FLOAT goes through the same encoder selection.
+  path <- withr::local_tempfile(fileext = ".parquet")
+  schema <- parquet_schema(v = "FLOAT")
+  write_parquet(data.frame(v = values), path, schema = schema)
+  back <- read_parquet(path)$v
+  expect_identical(is.na(back), is.na(values))
+  expect_equal(back, values, tolerance = 1e-6)
+})

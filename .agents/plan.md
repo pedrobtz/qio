@@ -553,7 +553,26 @@ as not justified; see below.
 
 ## Phase 5: harden and configure the writer
 
-Status: not started
+Status: in progress. A silent data-corruption bug in the default write path was
+found and fixed here; bounded chunks and interrupts are blocked upstream.
+
+### What the work turned up
+
+Attempting to write columns in chunks exposed that carquet's writer corrupts
+data when a column is written in more than one batch: `BOOLEAN` bit packing does
+not resume across calls, and BYTE_STREAM_SPLIT transposes each call's subrange
+separately.
+
+Chasing that led to a worse bug already present on the branch. carquet selects
+BYTE_STREAM_SPLIT for `FLOAT` and `DOUBLE` whenever a codec is set, which is
+qio's default, and its encoder is wrong for any page assembled from more than
+one call. A nullable double column past roughly a megabyte of present values
+was written with **every non-null value wrong** -- 171,428 of 200,000 -- and
+Apache Arrow read the same wrong values back, so the file itself was corrupt.
+`uncompressed` was unaffected, which is what identified the encoding.
+
+Both are recorded in
+[`VENDORED.md`](VENDORED.md#known-upstream-defects-worked-around-in-qio).
 
 ### Entry gate
 
@@ -564,12 +583,22 @@ Status: not started
 
 ### Work
 
-- [ ] Write bounded chunks, check user interrupts between chunks, and protect
-  cleanup with `R_UnwindProtect`.
+- [ ] Write bounded chunks and check user interrupts between chunks.
+  **Blocked upstream.** Both need a column written in pieces, and carquet
+  corrupts `BOOLEAN` and BYTE_STREAM_SPLIT columns when a column is written in
+  more than one batch. `INT32`, `INT64`, and `BYTE_ARRAY` were verified to
+  survive it, so a type-conditional chunking is possible but would put a
+  correctness cliff behind an encoding choice; not worth it before the upstream
+  fix. Cleanup is already protected with `R_UnwindProtect` from phase P.
+- [x] Stop writing corrupt `FLOAT` and `DOUBLE` columns, by forcing `PLAIN`
+  encoding for them. Measured cost in file size: none worth reporting.
 - [ ] Abort after write failures but never after `carquet_writer_close()` has
   consumed the handle. Test interruption and every failure stage.
 - [ ] Validate schema and configuration before creating or truncating output.
-- [ ] Preserve contextual carquet write errors through the C and R boundaries.
+- [x] Preserve contextual carquet write errors through the C and R boundaries,
+  as far as carquet exposes them: `carquet_writer_write_batch()` and
+  `carquet_writer_close()` return only a status, with no `carquet_error_t`, so
+  messages now carry `carquet_status_string()` and the failing row.
 - [ ] Implement the resolved reusable configuration object with global and
   complete-path per-column settings.
 - [ ] Keep `parquet_schema()` responsible for types and verify that the default

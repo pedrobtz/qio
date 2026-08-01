@@ -215,6 +215,8 @@ metadata files are modeled but not implemented.
 | `num_threads = 1` disables parallelism | Public `carquet_thread_pool_create()` still forces two; the batch pipeline is patched locally to honor one |
 | `carquet_worker_pool_submit()` "Non-blocking" | Blocks once the 512-slot queue is full |
 | `carquet_worker_pool_wait()` | No timeout, so it cannot be interrupted |
+| BYTE_STREAM_SPLIT encodes a page | Each call's subrange is split separately and appended, corrupting any multi-call page |
+| `write_batch()` may be called repeatedly per column | `BOOLEAN` bit packing and BYTE_STREAM_SPLIT do not resume across calls |
 | `get_buffer()` bytes use `free()` | Bytes use the configured allocator |
 | External column metadata APIs | Return `CARQUET_ERROR_NOT_IMPLEMENTED` |
 

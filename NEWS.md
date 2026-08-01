@@ -1,5 +1,13 @@
 # qio 0.0.0.9000
 
+* Fixed silent corruption of large `double` and `float` columns. With any
+  compression codec, the vendored writer selected an encoding whose
+  implementation is wrong for pages assembled from more than one call, so a
+  nullable double column past roughly a megabyte of non-null values was written
+  incorrectly: every non-null value came back wrong, and other Parquet readers
+  saw the same wrong values. qio now writes these columns with `PLAIN`
+  encoding, at no measurable cost in file size.
+
 * Reading dictionary-encoded text is roughly twice as fast: repeated values are
   interned once rather than once per row. A 1-million-row low-cardinality
   column went from 0.113 s to 0.062 s. Plain-encoded columns are unaffected.

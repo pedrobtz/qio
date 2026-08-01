@@ -107,6 +107,49 @@ Two consequences worth knowing:
 `find src -name '*.o' -delete` is still a valid reset, but is no longer
 required after a header change.
 
+## Known upstream defects worked around in qio
+
+These are carquet bugs qio avoids rather than patches. Each one should be
+reported upstream and rechecked on every re-vendor.
+
+### BYTE_STREAM_SPLIT corrupts any page written in more than one call
+
+`writer/page_writer.c`, `encode_double_values()` and `encode_float_values()`.
+
+BYTE_STREAM_SPLIT transposes a whole page into byte planes: every value's first
+byte, then every value's second byte, and so on. The encoder instead splits
+each call's subrange on its own and appends the result, so a page assembled
+from two calls holds two independently transposed regions. The decoder
+de-splits the concatenation as a single stride, and every value in the page
+comes back wrong.
+
+carquet selects this encoding automatically for `FLOAT` and `DOUBLE` whenever a
+compression codec is set, which is qio's default. The effect was silent
+corruption of the written file, not a read error: Apache Arrow reads the same
+wrong values back.
+
+Reproduced with a nullable double column past roughly a megabyte of present
+values -- 171,428 of 200,000 values wrong, every non-null one. Non-nullable
+columns of the same size were unaffected, so the trigger is how many separate
+encode calls a page receives, not size alone.
+
+**Workaround:** `src/qio.c` calls `carquet_writer_set_column_encoding()` to
+force `CARQUET_ENCODING_PLAIN` for `FLOAT` and `DOUBLE`. Measured cost: none
+worth reporting; a 200,000-row random double column is 1.53MB with PLAIN plus
+Snappy against 1.79MB from Arrow's own default. Covered by `test-qio.R`.
+
+### Multiple write batches per column corrupt some encodings
+
+Related, and the reason writes are not yet chunked. Calling
+`carquet_writer_write_batch()` several times for one column corrupts
+`BOOLEAN` columns, whose bit packing does not resume correctly across calls,
+and corrupted `FLOAT`/`DOUBLE` through the encoder above. `INT32`, `INT64`, and
+`BYTE_ARRAY` round-tripped correctly in the same test.
+
+This blocks bounding the writer's scratch memory and adding interrupt checks,
+since both need a column to be written in pieces. Re-verify every physical type
+before attempting it again.
+
 ## Patch record
 
 `.agents/carquet-changes.patch` is the mechanical record of every local carquet
