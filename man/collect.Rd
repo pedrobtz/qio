@@ -32,9 +32,9 @@ error, and so is a path matching more than one leaf.}
 \item{row_groups}{Integer vector of 1-based row-group IDs, or \code{NULL} for all
 row groups.}
 
-\item{batch_size}{Positive batch size in rows. Currently unused by
-\code{collect()} (see Details); \code{\link[=walk_batches]{walk_batches()}} decodes this many rows per
-batch.}
+\item{batch_size}{Positive number of rows decoded at a time. It bounds the
+reader's scratch memory, not the size of the result (see Details);
+\code{\link[=walk_batches]{walk_batches()}} additionally uses it as the size of each batch.}
 
 \item{int64}{How 64-bit integer columns reach R. \code{"double"} (the default)
 is exact from \code{-2^53} through \code{2^53} and returns \code{NA} outside it.
@@ -62,11 +62,12 @@ Columns are returned in requested order. Row groups are always returned in
 their physical file order, even if their selector is not sorted.
 }
 \details{
-\code{collect()} reads each column in full and does not currently sub-divide the
-read by \code{batch_size}; the argument is accepted for symmetry with
-\code{\link[=walk_batches]{walk_batches()}} and forward compatibility. Neither function bounds the
-memory occupied by the returned data frame — use \code{\link[=walk_batches]{walk_batches()}} for
-bounded-memory processing.
+\code{collect()} returns the whole selection, so \code{batch_size} does not bound the
+result; use \code{\link[=walk_batches]{walk_batches()}} for that. It does bound the scratch memory the
+reader allocates while decoding string and binary columns, which would
+otherwise scale with the largest selected row group rather than with
+anything the caller controls. Smaller batches lower peak memory and cost a
+little throughput on dictionary-encoded text.
 
 Nested and repeated columns are not materialized in qio 0.1.0. When a
 selection includes them, they are omitted and one message reports how many

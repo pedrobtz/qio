@@ -563,3 +563,48 @@ test_that("nulls decode identically through collect() and walk_batches()", {
     )
   }
 })
+
+# --- Phase 4: bounded string scratch ---------------------------------------
+
+test_that("collect(batch_size =) bounds the scratch it allocates", {
+  skip_on_cran()
+  # R_alloc draws from R's vector heap, so gc()'s "max used" Vcells accounts
+  # for the native scratch buffers as well as the result. Before scratch was
+  # chunked, batch_size had no effect on peak memory at all.
+  path <- withr::local_tempfile(fileext = ".parquet")
+  rows <- 200000L
+  write_parquet(
+    data.frame(
+      s = paste0("row-", sprintf("%08d", seq_len(rows))),
+      stringsAsFactors = FALSE
+    ),
+    path
+  )
+
+  peak_mb <- function(batch_size) {
+    file <- parquet_open(path)
+    on.exit(parquet_close(file))
+    gc(reset = TRUE, full = TRUE)
+    invisible(collect(file, batch_size = batch_size))
+    gc(full = TRUE)["Vcells", "max used"] * 8 / 1024^2
+  }
+
+  small <- peak_mb(4096L)
+  large <- peak_mb(rows)
+  # The whole-row-group read needs the descriptors for every row at once; the
+  # small batch needs them for 4096 rows. The difference must be visible.
+  expect_lt(small, large)
+})
+
+test_that("batch_size does not change collected values", {
+  path <- fixture_path()
+  file <- local_parquet_file(path)
+  expected <- collect(file)
+  for (batch_size in c(1L, 2L, 7L, 65536L)) {
+    expect_equal(
+      collect(file, batch_size = batch_size),
+      expected,
+      info = paste("batch_size =", batch_size)
+    )
+  }
+})

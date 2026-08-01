@@ -164,6 +164,27 @@ Two results are worth carrying into phase 4 rather than rediscovering:
 
 Neither is a defect; both are starting points with numbers attached.
 
+## Accepted trade-offs
+
+Deliberate changes that moved a case past its tolerance, with the measured
+numbers, per the rules above.
+
+- **Bounded string scratch, phase 4.** Reading string and binary columns in
+  `batch_size` chunks costs `read-string_low_cardinality` **+6.6%**
+  (0.1060 -> 0.1130 s, measured by A/B of the same commit with and without the
+  change). In exchange, peak scratch stops scaling with the largest row group
+  and becomes a property the caller controls: on a 2-million-row file peak heap
+  fell from a flat ~81 MB at every `batch_size` to 67 MB at 16k rows, rising to
+  81 MB only when `batch_size` reaches the row-group size. The cost is
+  recoverable later by materializing dictionary text from indexes, which is
+  the phase 4 item that targets exactly this workload.
+
+  A caution for anyone re-measuring: sweeping `batch_size` does **not** isolate
+  this, because the chunk is `min(batch_size, rows in the row group)` and the
+  reference fixtures use 250k-row groups. Every point in such a sweep is
+  already chunked, which is why it looks flat. Compare against a build without
+  the change instead.
+
 ## Not measured yet
 
 - **Peak memory.** The phase 4 gate on bounded string scratch needs a peak-RSS

@@ -454,13 +454,26 @@ order. All four groups depend on the phase 2 read-option surface.
 
 ## Phase 4: bound reader memory and optimize measured hot paths
 
-Status: not started
+Status: memory items complete. The buffered-parallelism decision is measured
+but not implemented; the remaining optimizations are unstarted.
+
+### What the measurements show
+
+- Buffered and memory-mapped reads are the same speed when serial (0.180 s vs
+  0.177 s, 1.02x). The 2.64x gap is entirely the worker pool. Private-reader
+  parallelism for buffered handles is therefore worth about 2.6x on the
+  `parquet_open()` default, which means the plan's "or record why it is not
+  justified" branch is not available on the evidence.
+- Chunked string scratch costs `read-string_low_cardinality` 6.6%, recorded as
+  an accepted trade-off in `bench/README.md`. Materializing dictionary text
+  from indexes targets that same workload and would recover it.
 
 ### Work
 
-- [ ] Read strings in sub-batches so scratch memory is bounded by
+- [x] Read strings in sub-batches so scratch memory is bounded by
   `batch_size`, not the largest selected row group.
-- [ ] Give `collect(batch_size =)` observable, documented behavior.
+- [x] Give `collect(batch_size =)` observable, documented behavior. It bounds
+  the reader's scratch, not the result; before this it had no effect at all.
 - [ ] Materialize dictionary text from indexes when safe and fall back for
   plain or mixed encoding without changing the R result.
 - [ ] Add a statistics-driven no-null path only if benchmarks show a useful
@@ -469,13 +482,21 @@ Status: not started
   values backward in place.
 - [ ] Benchmark buffered persistent reads. Either implement private-reader
   parallelism with correct ownership or record why it is not justified for
-  v0.1.0.
+  v0.1.0. **Benchmarked: it is justified** (2.64x on the default handle), so
+  the recording branch is closed and the implementation is outstanding. It
+  needs one independent `carquet_reader_t` per worker, since the buffered path
+  shares `FILE*` and prebuffer state; each private reader re-parses the footer,
+  so the gain has to be amortized against that for small reads.
 
 ### Exit gate
 
-- [ ] Peak string scratch scales with `batch_size`, not with the largest
-  selected row group. State the measured bound and the instrument that produced
-  it, and assert it across a multi-row-group fixture.
+- [x] Peak string scratch scales with `batch_size`, not with the largest
+  selected row group. Bound: `min(batch_size, rows in the row group)` times the
+  value width, 16 bytes for a byte-array descriptor plus 2 for a definition
+  level. Instrument: `gc()`'s "max used" Vcells, since `R_alloc` draws from R's
+  vector heap. Measured on a 2-million-row file: a flat ~81 MB at every
+  `batch_size` before, 67 MB at 16k rows after. Asserted in
+  `test-parquet-file.R`.
 - [ ] Dictionary, plain, and mixed pages return identical character results.
 - [ ] Performance changes include reproducible evidence from the reference
   workloads and stay within each case's tolerance

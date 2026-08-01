@@ -1469,9 +1469,17 @@ static SEXP qio_collect_body(void *data) {
                 value_width = (size_t)context->selection.type_length[i];
             }
         }
-        void *value_buf = R_alloc((size_t)max_rg_rows, (int)value_width);
-        int16_t *def_buf =
-            (int16_t *)R_alloc((size_t)max_rg_rows, sizeof(int16_t));
+        /* Scratch is bounded by batch_size, not by the largest row group. A
+         * row group can hold millions of rows, and sizing the buffer to it
+         * made peak memory a property of the file rather than of anything the
+         * caller controls. Each column is read in batch_size chunks and
+         * scattered as it goes; this is what gives collect(batch_size =) its
+         * observable effect. */
+        int64_t chunk = context->batch_size;
+        if (chunk > max_rg_rows) chunk = max_rg_rows;
+        if (chunk < 1) chunk = 1;
+        void *value_buf = R_alloc((size_t)chunk, (int)value_width);
+        int16_t *def_buf = (int16_t *)R_alloc((size_t)chunk, sizeof(int16_t));
         for (int32_t s = 0; s < n_groups; s++) {
             for (int32_t i = 0; i < ncol; i++) {
                 int32_t file_col = context->selection.columns[i];
@@ -1495,28 +1503,34 @@ static SEXP qio_collect_body(void *data) {
                 context->column = col;
 
                 int16_t *def_ptr = (max_def > 0) ? def_buf : NULL;
-                int64_t n = carquet_column_read_batch(col, value_buf,
-                                                      rg_rows[s], def_ptr,
-                                                      NULL);
-                if (n != rg_rows[s]) {
-                    Rf_error("qio: column %d of row group %d yielded %lld of "
-                             "%lld rows",
-                             file_col + 1, rg_index[s] + 1, (long long)n,
-                             (long long)rg_rows[s]);
+                for (int64_t read = 0; read < rg_rows[s];) {
+                    int64_t want = rg_rows[s] - read;
+                    if (want > chunk) want = chunk;
+                    int64_t n = carquet_column_read_batch(col, value_buf, want,
+                                                          def_ptr, NULL);
+                    if (n != want) {
+                        Rf_error("qio: column %d of row group %d yielded %lld "
+                                 "of %lld rows",
+                                 file_col + 1, rg_index[s] + 1,
+                                 (long long)(read + (n > 0 ? n : 0)),
+                                 (long long)rg_rows[s]);
+                    }
+                    /* Scatter before the next read: BYTE_ARRAY values point
+                     * into the column reader's page buffers, which the next
+                     * read may release. */
+                    qio_scatter_dense_column(
+                        VECTOR_ELT(result, i), rg_offset[s] + (R_xlen_t)read,
+                        type, value_buf, def_ptr, max_def, n,
+                        carquet_schema_column_name(schema, file_col),
+                        &context->int32_sentinel,
+                        context->selection.kind[i] == QIO_KIND_INT64
+                            ? context->int64_mode
+                            : -1,
+                        context->selection.unsigned64[i],
+                        &context->int64_coerced, context->selection.kind[i],
+                        context->selection.type_length[i]);
+                    read += n;
                 }
-                /* Scatter before freeing: BYTE_ARRAY values point into the
-                 * column reader's page buffers, released on free. */
-                qio_scatter_dense_column(
-                    VECTOR_ELT(result, i), rg_offset[s], type, value_buf,
-                    def_ptr, max_def, n,
-                    carquet_schema_column_name(schema, file_col),
-                    &context->int32_sentinel,
-                    context->selection.kind[i] == QIO_KIND_INT64
-                        ? context->int64_mode
-                        : -1,
-                    context->selection.unsigned64[i], &context->int64_coerced,
-                    context->selection.kind[i],
-                    context->selection.type_length[i]);
                 carquet_column_reader_free(col);
                 context->column = NULL;
             }

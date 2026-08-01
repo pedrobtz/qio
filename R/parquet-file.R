@@ -139,11 +139,12 @@ metadata.qio_parquet_file <- function(x, ...) {
 #' Columns are returned in requested order. Row groups are always returned in
 #' their physical file order, even if their selector is not sorted.
 #'
-#' `collect()` reads each column in full and does not currently sub-divide the
-#' read by `batch_size`; the argument is accepted for symmetry with
-#' [walk_batches()] and forward compatibility. Neither function bounds the
-#' memory occupied by the returned data frame — use [walk_batches()] for
-#' bounded-memory processing.
+#' `collect()` returns the whole selection, so `batch_size` does not bound the
+#' result; use [walk_batches()] for that. It does bound the scratch memory the
+#' reader allocates while decoding string and binary columns, which would
+#' otherwise scale with the largest selected row group rather than with
+#' anything the caller controls. Smaller batches lower peak memory and cost a
+#' little throughput on dictionary-encoded text.
 #'
 #' Nested and repeated columns are not materialized in qio 0.1.0. When a
 #' selection includes them, they are omitted and one message reports how many
@@ -160,9 +161,9 @@ metadata.qio_parquet_file <- function(x, ...) {
 #'   error, and so is a path matching more than one leaf.
 #' @param row_groups Integer vector of 1-based row-group IDs, or `NULL` for all
 #'   row groups.
-#' @param batch_size Positive batch size in rows. Currently unused by
-#'   `collect()` (see Details); [walk_batches()] decodes this many rows per
-#'   batch.
+#' @param batch_size Positive number of rows decoded at a time. It bounds the
+#'   reader's scratch memory, not the size of the result (see Details);
+#'   [walk_batches()] additionally uses it as the size of each batch.
 #' @param int64 How 64-bit integer columns reach R. `"double"` (the default)
 #'   is exact from `-2^53` through `2^53` and returns `NA` outside it.
 #'   `"integer64"` returns [bit64::integer64], which covers the full signed
