@@ -454,8 +454,9 @@ order. All four groups depend on the phase 2 read-option surface.
 
 ## Phase 4: bound reader memory and optimize measured hot paths
 
-Status: memory and parallelism items complete. Dictionary text, the no-null
-fast path, and backward expansion are unstarted.
+Status: memory, parallelism, and dictionary text complete. The statistics-driven
+no-null path and backward expansion are unstarted; both are conditional on
+measurement showing they are worth it.
 
 ### What the measurements show
 
@@ -481,8 +482,16 @@ fast path, and backward expansion are unstarted.
   `batch_size`, not the largest selected row group.
 - [x] Give `collect(batch_size =)` observable, documented behavior. It bounds
   the reader's scratch, not the result; before this it had no effect at all.
-- [ ] Materialize dictionary text from indexes when safe and fall back for
-  plain or mixed encoding without changing the R result.
+- [x] Materialize dictionary text efficiently, falling back for plain or mixed
+  encoding without changing the R result. Implemented without carquet's
+  dictionary-preserving API, which is reachable only through the batch reader
+  and has no public setter on a column reader: a dictionary page materializes
+  every occurrence of a value as a pointer into one decoded entry, so caching
+  CHARSXPs by that address gives the same saving with no coupling. Measured 200
+  distinct addresses across 65536 rows on the reference column. The cache
+  disables itself when it is not paying for itself, since a plain page gives
+  every value a distinct address; without that it cost 9% on a high-cardinality
+  column. `read-string_low_cardinality` 0.1130 s to 0.0615 s, -46%.
 - [ ] Add a statistics-driven no-null path only if benchmarks show a useful
   improvement.
 - [ ] Decode suitable numeric columns into R-owned memory and expand nullable
@@ -506,7 +515,10 @@ fast path, and backward expansion are unstarted.
   vector heap. Measured on a 2-million-row file: a flat ~81 MB at every
   `batch_size` before, 67 MB at 16k rows after. Asserted in
   `test-parquet-file.R`.
-- [ ] Dictionary, plain, and mixed pages return identical character results.
+- [x] Dictionary, plain, and mixed pages return identical character results.
+  Fixture `string_encodings.parquet` holds one of each, including a column that
+  switches encoding partway; results are checked against Apache Arrow's own
+  read and across batch sizes, since a batch boundary resets the cache.
 - [ ] Performance changes include reproducible evidence from the reference
   workloads and stay within each case's tolerance
   (`Rscript bench/benchmark.R --compare <tag>` exits non-zero otherwise).

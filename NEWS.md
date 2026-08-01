@@ -1,5 +1,9 @@
 # qio 0.0.0.9000
 
+* Reading dictionary-encoded text is roughly twice as fast: repeated values are
+  interned once rather than once per row. A 1-million-row low-cardinality
+  column went from 0.113 s to 0.062 s. Plain-encoded columns are unaffected.
+
 * Reads through a `parquet_open()` handle now decode columns in parallel even
   without `mmap = TRUE`, by giving each worker its own reader. Collecting a
   1-million-row file went from 0.181 s to 0.063 s. Previously only memory-mapped

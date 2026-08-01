@@ -201,6 +201,22 @@ worker a private `carquet_reader_t`, so the default handle decodes in parallel
 too. Only above 50,000 selected rows, since each private reader re-parses the
 footer.
 
+## Cumulative effect of phase 4
+
+Against the baseline recorded at the end of 3.2, on the same machine:
+
+| Case | before | after | |
+|---|---|---|---|
+| `collect-buffered` | 0.1810 | 0.0415 | -77% |
+| `read-string_low_cardinality` | 0.1130 | 0.0615 | -46% |
+| `read-mixed` | 0.0680 | 0.0440 | -35% |
+| `read-string_high_cardinality` | 0.2180 | 0.2195 | +0.7% |
+
+Two changes compound: buffered handles decode in parallel, and repeated
+dictionary values are interned once instead of once per row. The
+high-cardinality column is the control -- it has no repeated values to cache
+and no dictionary to exploit, so it should not move, and does not.
+
 ## Not measured yet
 
 - **Peak memory.** The phase 4 gate on bounded string scratch needs a peak-RSS

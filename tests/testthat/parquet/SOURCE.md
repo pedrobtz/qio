@@ -170,3 +170,18 @@ and non-UTC timestamps.
   UTC-adjusted timestamps keep their instant while `tz` changes display;
   non-UTC timestamps keep their civil components while the instant moves;
   `TIME` reads as seconds since midnight. See `.agents/TYPES.md`.
+
+## String-encoding fixture
+
+`string_encodings.parquet` was written by the Apache Arrow R package.
+
+- Generator: `tools/generate-encoding-fixture.R`, R `arrow` 24.0.0
+- Command: `compression = "snappy"`, `version = "2.6"`,
+  `use_dictionary = c(TRUE, FALSE, TRUE)`, `data_page_size = 16384`
+- Contents: `dict` stays dictionary encoded, `plain` has dictionary encoding
+  disabled, and `mixed` repeats first and then holds enough distinct values to
+  overflow the dictionary page limit, so its pages switch to `PLAIN` partway.
+- Expected behavior: all three return identical character values whatever the
+  encoding, at any batch size and through any read API. The reader caches
+  interned strings by the address of the bytes they came from, which is a large
+  win on dictionary pages and must be invisible on the others.

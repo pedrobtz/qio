@@ -853,6 +853,97 @@ static void *qio_column_data_pointer(SEXP destination,
     }
 }
 
+/* Cache of CHARSXPs keyed by the address of the bytes they were built from.
+ *
+ * A dictionary-encoded page materializes every occurrence of a value as a
+ * pointer into one decoded dictionary entry, so in a low-cardinality column
+ * the same address recurs constantly: measured 200 distinct addresses across
+ * 65536 rows. Rf_mkCharLenCE() hashes the bytes and probes R's global string
+ * cache on every call, so caching by address turns 65536 hashes into 200.
+ *
+ * Keyed on (address, length) and valid only for one carquet_column_read_batch()
+ * result, because the next read may reuse the same buffers for other bytes.
+ * A plain-encoded page gives every value its own address, so the cache simply
+ * misses and costs one probe. Cached CHARSXPs are held in a protected STRSXP:
+ * a bare SEXP in C memory could otherwise be collected between allocations. */
+#define QIO_CHARCACHE_BITS 10
+#define QIO_CHARCACHE_SIZE (1 << QIO_CHARCACHE_BITS)
+
+typedef struct {
+    const uint8_t *key;
+    int32_t length;
+    int32_t slot; /* -1 when the entry is empty */
+} qio_charcache_entry_t;
+
+/* Insertions stop at half capacity so a lookup never walks a long run, and the
+ * cache switches itself off when it is not paying for itself: a plain-encoded
+ * column gives every value a distinct address, where probing is pure overhead.
+ * Measured at +9% on a high-cardinality column before this. */
+#define QIO_CHARCACHE_MAX_USED (QIO_CHARCACHE_SIZE / 2)
+#define QIO_CHARCACHE_TRIAL 4096
+
+typedef struct {
+    qio_charcache_entry_t entries[QIO_CHARCACHE_SIZE];
+    SEXP values; /* protected by the caller */
+    int32_t used;
+    int64_t lookups;
+    int64_t hits;
+    int enabled;
+} qio_charcache_t;
+
+static void qio_charcache_reset(qio_charcache_t *cache) {
+    for (int32_t i = 0; i < QIO_CHARCACHE_SIZE; i++) cache->entries[i].slot = -1;
+    cache->used = 0;
+    cache->lookups = 0;
+    cache->hits = 0;
+    cache->enabled = 1;
+}
+
+static uint32_t qio_charcache_hash(const uint8_t *key) {
+    /* Addresses are aligned, so the low bits carry little information. */
+    uintptr_t value = (uintptr_t)key >> 3;
+    value *= 2654435761u;
+    return (uint32_t)(value & (QIO_CHARCACHE_SIZE - 1));
+}
+
+/* Returns the cached CHARSXP, or R_NilValue when the value is not cached and
+ * `out_probe` receives the slot to fill. */
+static SEXP qio_charcache_get(qio_charcache_t *cache, const uint8_t *key,
+                              int32_t length, uint32_t *out_probe) {
+    *out_probe = QIO_CHARCACHE_SIZE;
+    if (!cache->enabled) return R_NilValue;
+    if (++cache->lookups == QIO_CHARCACHE_TRIAL && cache->hits * 4 < cache->lookups) {
+        cache->enabled = 0; /* not a dictionary column; stop paying for probes */
+        return R_NilValue;
+    }
+    uint32_t probe = qio_charcache_hash(key);
+    for (int32_t step = 0; step < 8; step++) {
+        qio_charcache_entry_t *entry = &cache->entries[probe];
+        if (entry->slot < 0) {
+            *out_probe = probe;
+            return R_NilValue;
+        }
+        if (entry->key == key && entry->length == length) {
+            cache->hits++;
+            return STRING_ELT(cache->values, entry->slot);
+        }
+        probe = (probe + 1) & (QIO_CHARCACHE_SIZE - 1);
+    }
+    *out_probe = QIO_CHARCACHE_SIZE; /* full run of probes: do not cache */
+    return R_NilValue;
+}
+
+static void qio_charcache_put(qio_charcache_t *cache, uint32_t probe,
+                              const uint8_t *key, int32_t length, SEXP value) {
+    if (probe >= QIO_CHARCACHE_SIZE) return;
+    if (cache->used >= QIO_CHARCACHE_MAX_USED) return;
+    int32_t slot = cache->used++;
+    SET_STRING_ELT(cache->values, slot, value);
+    cache->entries[probe].key = key;
+    cache->entries[probe].length = length;
+    cache->entries[probe].slot = slot;
+}
+
 static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
                                      carquet_physical_type_t type,
                                      const void *values,
@@ -895,9 +986,14 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
     switch (type) {
     case CARQUET_PHYSICAL_BYTE_ARRAY: {
         /* Strings must go through SET_STRING_ELT (write barrier) and
-         * Rf_mkCharLenCE (interning); only the null branch can be hoisted. */
+         * Rf_mkCharLenCE (interning). Repeated dictionary values are served
+         * from the address cache, so validation and interning happen once per
+         * distinct value rather than once per row. */
         const carquet_byte_array_t *src =
             (const carquet_byte_array_t *)values;
+        qio_charcache_t cache;
+        cache.values = PROTECT(Rf_allocVector(STRSXP, QIO_CHARCACHE_SIZE));
+        qio_charcache_reset(&cache);
         int64_t j = 0;
         for (int64_t i = 0; i < length; i++) {
             R_xlen_t out = offset + (R_xlen_t)i;
@@ -906,13 +1002,27 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
                 continue;
             }
             const carquet_byte_array_t *value = &src[j++];
+            uint32_t probe = 0;
+            SEXP cached = value->length > 0
+                              ? qio_charcache_get(&cache, value->data,
+                                                  value->length, &probe)
+                              : R_NilValue;
+            if (cached != R_NilValue) {
+                SET_STRING_ELT(destination, out, cached);
+                continue;
+            }
             qio_check_string_bytes(value, column, i);
             const char *bytes = value->length > 0
                                     ? (const char *)value->data
                                     : "";
-            SET_STRING_ELT(destination, out,
-                           Rf_mkCharLenCE(bytes, value->length, CE_UTF8));
+            SEXP made = Rf_mkCharLenCE(bytes, value->length, CE_UTF8);
+            SET_STRING_ELT(destination, out, made);
+            if (value->length > 0) {
+                qio_charcache_put(&cache, probe, value->data, value->length,
+                                  made);
+            }
         }
+        UNPROTECT(1);
         break;
     }
     default:

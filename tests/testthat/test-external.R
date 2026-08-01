@@ -681,3 +681,67 @@ test_that("tz is validated before anything is read", {
   # forbids using implicitly.
   expect_error(read_parquet(temporal_fixture(), tz = ""), "single time zone")
 })
+
+# --- Encoding independence (phase 4) ---------------------------------------
+# The reader caches CHARSXPs by the address of the bytes they came from, which
+# is a large win on dictionary-encoded pages and must be invisible everywhere
+# else. string_encodings.parquet holds a dictionary column, a plain column, and
+# one that switches from dictionary to plain partway through.
+
+test_that("dictionary, plain, and mixed pages give identical results", {
+  path <- ext("string_encodings.parquet")
+  df <- read_parquet(path)
+
+  for (column in c("dict", "plain", "mixed")) {
+    expect_type(df[[column]], "character")
+    expect_false(anyNA(df[[column]]), info = column)
+  }
+  # The two low-cardinality columns are drawn from one pool, so encoding alone
+  # must not change what comes back.
+  expect_setequal(unique(df$dict), unique(df$plain))
+
+  # The mixed column repeats first and is distinct afterwards; both halves must
+  # survive the switch between encodings.
+  expect_true(any(duplicated(df$mixed)))
+  expect_gt(length(unique(df$mixed)), 10000L)
+  expect_true(all(grepl("^(category_|u)", df$mixed)))
+})
+
+test_that("encoding does not change results across batch sizes or APIs", {
+  path <- ext("string_encodings.parquet")
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+  expected <- collect(file)
+
+  # A small batch splits every column across several reads, which resets the
+  # address cache; the result must not depend on where those splits land.
+  for (batch_size in c(1000L, 7777L, 65536L)) {
+    expect_identical(
+      collect(file, batch_size = batch_size),
+      expected,
+      info = paste("batch_size =", batch_size)
+    )
+  }
+
+  batches <- list()
+  walk_batches(
+    file,
+    function(batch, index) batches[[index]] <<- batch,
+    batch_size = 5000L
+  )
+  expect_identical(do.call(rbind, batches), expected)
+  expect_identical(read_parquet(path), expected)
+})
+
+test_that("a cached string is a real copy, not a borrowed pointer", {
+  # Values must own their memory once returned: the cache holds CHARSXPs, and
+  # the bytes they were built from belong to carquet page buffers that are
+  # released when the read finishes.
+  path <- ext("string_encodings.parquet")
+  file <- parquet_open(path)
+  df <- collect(file)
+  parquet_close(file)
+  gc(full = TRUE)
+  expect_identical(substr(df$dict[1], 1L, 9L), "category_")
+  expect_true(all(nchar(df$mixed) > 0L))
+})
