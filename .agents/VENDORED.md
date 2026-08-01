@@ -178,14 +178,49 @@ required after a header change.
 
 ## Upstream reporting
 
-Every entry in the patch ledger above is a carquet bug worth reporting
-upstream, and each should be rechecked on every re-vendor. The three writer
-defects found in phase 5 are the most consequential, because all three
-corrupted data silently rather than failing:
+**Nothing here has been reported upstream yet.** No issue exists for any of
+these. When one is filed, record its number beside the ledger entry so a
+re-vendor can tell what upstream has already taken.
 
-- BYTE_STREAM_SPLIT applied per call instead of per page,
-- BOOLEAN bit packing restarting at each call,
-- an empty BOOLEAN page reported as out of memory.
+Not every entry is a defect, and a report should not mix them. Two are
+optimizations qio wanted (the dense-value cursor and counting page nulls once)
+and one is defensive hardening whose motivating corruption had another cause
+(zeroing decode slack). The remaining eleven are bugs, worth reporting roughly
+in this order:
+
+**Silent data corruption** — the worst kind, because the caller gets wrong
+values and no error:
+
+- BYTE_STREAM_SPLIT applied per call instead of per page. Affects the default
+  path: carquet selects it for `FLOAT`/`DOUBLE` whenever a codec is set.
+- BOOLEAN bit packing restarting at each call rather than continuing the page.
+- Scalar Snappy sending 8..15 byte matches through unsafe 16-byte copies,
+  which is what typical x86 builds run.
+
+**Memory-unsafe** — a data race that corrupts or ends the process:
+
+- zstd contexts kept process-global on Windows without OpenMP, on the
+  assumption that no OpenMP means no threads, which carquet's own worker pool
+  contradicts.
+
+**Valid files rejected** — no data loss, but the file cannot be read or written
+at all:
+
+- a dictionary page declared only through `data_page_offset`, read as a data
+  page; two Apache reference fixtures were unreadable.
+- `RLE` unimplemented as a BOOLEAN data encoding, which Apache Arrow emits for
+  every BOOLEAN column in a V2 data page.
+- an empty BOOLEAN page reported as out of memory, so an all-null column failed.
+- `%zu` in a message format, unsupported by MinGW's C runtime.
+- an SSE4.2 guard that MinGW does not legalize without `-msse4.2`.
+
+**Contract violations** — the API promises something it does not do:
+
+- `num_threads = 1` raised to two, so a caller cannot ask for serial work.
+- preload and offset-index failures swallowed instead of propagated.
+
+Recheck every one on each re-vendor: an upstream fix that lands silently should
+retire its patch, not sit under it.
 
 ## Patch record
 
