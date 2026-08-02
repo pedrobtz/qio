@@ -1,5 +1,10 @@
 # qio 0.0.0.9000
 
+* 64-bit integer columns written with `DELTA_BINARY_PACKED` now read. Apache
+  Arrow uses a larger block size for 64-bit columns than for 32-bit ones, and
+  the bundled decoder rejected it, so such a column failed as an unsupported
+  encoding while the 32-bit equivalent read fine.
+
 * `write_parquet()` gains `append`, which adds row groups to an existing file.
   qio checks compatibility itself before writing a byte, because the bundled
   library's check compares logical type identity without comparing its

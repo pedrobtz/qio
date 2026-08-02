@@ -859,3 +859,69 @@ test_that("a cached string is a real copy, not a borrowed pointer", {
   expect_identical(substr(df$dict[1], 1L, 9L), "category_")
   expect_true(all(nchar(df$mixed) > 0L))
 })
+
+# --- Coverage fixtures from the phase 7 audit --------------------------------
+# The audit compared the corpus against what qio claims to support and found
+# four things with no third-party file. Reading them is the point: qio's own
+# round trips cannot separate a reader fault from a matching writer fault.
+
+test_that("delta and byte-stream-split encodings read from another writer", {
+  # DELTA_BINARY_PACKED on INT64 failed here until the decoder's block-size
+  # limit was raised: Apache Arrow writes 256 values per block for 64-bit
+  # columns and 128 for 32-bit ones, and carquet validated against 128 only.
+  # The one delta column in the Apache corpus is INT32, so nothing caught it.
+  result <- read_parquet(ext("delta_encodings.parquet"))
+
+  expect_identical(nrow(result), 300L)
+  expect_identical(result$i32, 0:299)
+  expect_identical(result$i64, as.numeric((0:299) * 1000003))
+  expect_identical(result$text[1], "row-0000")
+  expect_identical(result$text[300], "row-0299")
+  expect_identical(result$varying[1], "x")
+  expect_identical(result$varying[37], strrep("x", 37))
+  expect_equal(result$dbl, (0:299) / 7)
+  expect_equal(result$flt, (0:299) / 3, tolerance = 1e-6)
+})
+
+test_that("every codec reads from another writer's file", {
+  # Each column uses a different codec, so one file covers all four. Before
+  # this, only Snappy and uncompressed had ever been read from a file qio did
+  # not write.
+  result <- read_parquet(ext("codec_mix.parquet"))
+
+  expect_identical(nrow(result), 300L)
+  expect_identical(result$zstd_col[1], "zstd-0000")
+  expect_identical(result$zstd_col[300], "zstd-0299")
+  expect_identical(result$gzip_col, as.numeric(0:299))
+  expect_equal(result$lz4_col, (0:299) / 11)
+  expect_identical(result$snappy_col, rep(c(TRUE, FALSE), 150))
+
+  file <- parquet_open(ext("codec_mix.parquet"))
+  withr::defer(parquet_close(file))
+  # LZ4_RAW is the codec modern writers use, and is also what qio's own
+  # `compression = "lz4"` produces; see .agents/carquet.md.
+  expect_setequal(
+    column_chunks(file)$compression,
+    c("ZSTD", "GZIP", "LZ4_RAW", "SNAPPY")
+  )
+})
+
+test_that("DATE reads from another writer, including before the epoch", {
+  result <- read_parquet(ext("date_types.parquet"))
+  expect_s3_class(result$day, "Date")
+  expect_identical(
+    result$day,
+    as.Date(c("1970-01-01", "2020-02-29", "1969-12-31", "2262-04-11", NA))
+  )
+  # The companion column holds the same values as raw day offsets, so the
+  # DATE annotation is what is under test rather than the storage.
+  expect_identical(as.integer(result$day), result$offset)
+})
+
+test_that("a JSON annotation reads as character, like STRING", {
+  result <- read_parquet(ext("text_annotations.parquet"))
+  expect_type(result$plain, "character")
+  expect_type(result$as_json, "character")
+  expect_identical(result$as_json[1], '{"a":1}')
+  expect_true(is.na(result$as_json[3]))
+})

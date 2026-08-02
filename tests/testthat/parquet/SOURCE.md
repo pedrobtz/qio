@@ -270,3 +270,71 @@ the tests vacuous.
 Bloom filters are probabilistic, so tests assert per-value only in the
 direction the structure guarantees -- no false negatives -- and assert on the
 bulk for the other direction.
+
+## Coverage fixtures from the phase 7 audit
+
+Phase 7 audited this corpus against what qio claims to support, across physical
+types, logical annotations, encodings, data-page versions, null patterns, and
+row-group layouts. Four things had no third-party file. They are covered by
+separate fixtures so a failure names the feature.
+
+All four were written by `tools/generate-coverage-fixtures.py` with `pyarrow`
+25.0.0 at `version = "2.6"`, under the Apache License 2.0.
+
+`delta_encodings.parquet`
+
+- Contents: 300 rows. `i32` and `i64` are `DELTA_BINARY_PACKED`, `text` is
+  `DELTA_LENGTH_BYTE_ARRAY`, `varying` is `DELTA_BYTE_ARRAY`, and `dbl` and
+  `flt` are `BYTE_STREAM_SPLIT`.
+- Why it matters: reading this file failed. Apache Arrow writes 256 values per
+  block for 64-bit `DELTA_BINARY_PACKED` and 128 for 32-bit, and carquet
+  validated every header against 128, so `INT64` delta columns were rejected as
+  an unsupported encoding. The single delta column in the Apache corpus is
+  `INT32`, which is why nothing caught it. Fixed in the vendored tree; see
+  `.agents/VENDORED.md`.
+- `BYTE_STREAM_SPLIT` also matters here: qio's own writer emits it for
+  compressed floats, so until now it was only ever read back from qio's own
+  output, which cannot separate a reader fault from a matching writer fault.
+
+`codec_mix.parquet`
+
+- Contents: 300 rows, one codec per column -- Zstandard, Gzip, LZ4, Snappy.
+- Why it matters: only Snappy and uncompressed had ever been *read* from a file
+  qio did not write. Every other codec was exercised solely by round-tripping,
+  which is exactly the blind spot that let the Windows Zstandard defect live as
+  long as it did.
+- Note: the LZ4 column reports `LZ4_RAW`, the codec modern writers use and the
+  one qio's `compression = "lz4"` produces.
+
+`date_types.parquet`
+
+- Contents: five `DATE` values including the epoch, a leap day, one day before
+  the epoch, a far-future date, and a null, alongside an `INT32` column holding
+  the same values as raw day offsets.
+- Why it matters: `DATE` is a documented mapping to R's `Date` with no
+  third-party fixture at all. The companion column makes the annotation rather
+  than the storage the thing under test.
+
+`text_annotations.parquet`
+
+- Contents: a `STRING` column and a `JSON` column, each with a null.
+- Why it matters: qio reads `STRING`, `ENUM`, and `JSON` as character.
+
+**Known gap:** `ENUM` has no fixture. No writer available here emits it --
+pyarrow maps a dictionary to a dictionary-encoded `STRING`, not to the `ENUM`
+annotation -- so the branch is exercised only by unit-level reasoning, not by a
+real file. Recorded rather than papered over.
+
+### What the audit found covered
+
+- Physical types: all eight, including `INT96` and `FIXED_LEN_BYTE_ARRAY`.
+- Logical annotations: `DATE`, `DECIMAL`, `FLOAT16`, `INTEGER`, `JSON`, `NULL`,
+  `STRING`, `TIME`, `TIMESTAMP`, `UUID`, plus nested `LIST` and `MAP`.
+- Encodings: `PLAIN`, `PLAIN_DICTIONARY`, `RLE_DICTIONARY`, `RLE`, `BIT_PACKED`,
+  all three `DELTA_*`, and `BYTE_STREAM_SPLIT`.
+- Data page versions: both V1 and V2.
+- Codecs: uncompressed, Snappy, Zstandard, Gzip, LZ4_RAW.
+- Row-group layouts: single-group files plus four-group files from both qio's
+  own generator and pyarrow.
+- Null patterns: nullable and required columns, all-null columns, and files with
+  no statistics at all.

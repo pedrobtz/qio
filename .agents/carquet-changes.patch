@@ -1,5 +1,5 @@
 diff -ruN a/carquet/compression/snappy.c b/carquet/compression/snappy.c
---- a/carquet/compression/snappy.c	2026-08-01 22:28:33
+--- a/carquet/compression/snappy.c	2026-08-02 07:03:50
 +++ b/carquet/compression/snappy.c	2026-07-02 15:02:47
 @@ -307,11 +307,17 @@
                                           uint8_t* const buf_limit) {
@@ -24,7 +24,7 @@ diff -ruN a/carquet/compression/snappy.c b/carquet/compression/snappy.c
      if (pattern_size < (size_t)big_pattern) {
  #if SNAPPY_HAVE_VECTOR_SHUFFLE
 diff -ruN a/carquet/compression/zstd.c b/carquet/compression/zstd.c
---- a/carquet/compression/zstd.c	2026-08-01 22:28:33
+--- a/carquet/compression/zstd.c	2026-08-02 07:03:50
 +++ b/carquet/compression/zstd.c	2026-08-01 22:24:11
 @@ -26,12 +26,20 @@
   *   POSIX (any)      -> pthread_key_create with destructors.  Works for both
@@ -98,8 +98,86 @@ diff -ruN a/carquet/compression/zstd.c b/carquet/compression/zstd.c
  #endif
  
  int carquet_zstd_decompress(
+diff -ruN a/carquet/encoding/delta.c b/carquet/encoding/delta.c
+--- a/carquet/encoding/delta.c	2026-08-02 07:03:50
++++ b/carquet/encoding/delta.c	2026-08-02 07:01:52
+@@ -22,10 +22,22 @@
+  * ============================================================================
+  */
+ 
++/* What this encoder writes. The format allows other shapes; these are the
++ * smallest legal ones and are what parquet-mr emits. */
+ #define DELTA_BLOCK_SIZE      128
+ #define DELTA_MINI_BLOCKS     4
+ #define DELTA_MINI_BLOCK_SIZE (DELTA_BLOCK_SIZE / DELTA_MINI_BLOCKS)
+ 
++/* What this decoder accepts, which must be wider than what it writes. The
++ * format allows any block size that is a multiple of 128, and Apache Arrow
++ * writes 256 values per block for INT64 while writing 128 for INT32 -- so
++ * validating against the encoder's own shape rejected a legal file, and only
++ * for 64-bit columns. The buffers below are sized for the worst case these
++ * bounds permit: one mini-block holding a whole block. */
++#define DELTA_MAX_BLOCK_SIZE      1024
++#define DELTA_MAX_MINI_BLOCKS     32
++#define DELTA_MAX_MINI_BLOCK_SIZE DELTA_MAX_BLOCK_SIZE
++
+ /* ============================================================================
+  * Delta Decoder State
+  * ============================================================================
+@@ -46,12 +58,12 @@
+ 
+     /* Current block state */
+     int64_t min_delta;
+-    uint8_t bit_widths[DELTA_MINI_BLOCKS];
++    uint8_t bit_widths[DELTA_MAX_MINI_BLOCKS];
+     int32_t current_mini_block;
+     int32_t values_in_mini_block;
+ 
+     /* Mini-block buffer */
+-    int64_t mini_block_values[DELTA_MINI_BLOCK_SIZE];
++    int64_t mini_block_values[DELTA_MAX_MINI_BLOCK_SIZE];
+     int32_t mini_block_pos;
+ } delta_decoder_t;
+ 
+@@ -109,14 +121,15 @@
+     dec->pos += bytes;
+ 
+     /* Validate header values to prevent buffer overflows */
+-    if (dec->mini_blocks_per_block <= 0 || dec->mini_blocks_per_block > DELTA_MINI_BLOCKS) {
++    if (dec->mini_blocks_per_block <= 0 ||
++        dec->mini_blocks_per_block > DELTA_MAX_MINI_BLOCKS) {
+         return CARQUET_ERROR_DECODE;
+     }
+-    if (dec->block_size <= 0 || dec->block_size > DELTA_BLOCK_SIZE) {
++    if (dec->block_size <= 0 || dec->block_size > DELTA_MAX_BLOCK_SIZE) {
+         return CARQUET_ERROR_DECODE;
+     }
+     /* mini_block_size = block_size / mini_blocks_per_block must fit in buffer */
+-    if (dec->block_size / dec->mini_blocks_per_block > DELTA_MINI_BLOCK_SIZE) {
++    if (dec->block_size / dec->mini_blocks_per_block > DELTA_MAX_MINI_BLOCK_SIZE) {
+         return CARQUET_ERROR_DECODE;
+     }
+ 
+@@ -134,7 +147,7 @@
+ 
+     dec->last_value = dec->first_value;
+     dec->current_mini_block = dec->mini_blocks_per_block; /* Force block read */
+-    dec->mini_block_pos = DELTA_MINI_BLOCK_SIZE; /* Force mini-block read */
++    dec->mini_block_pos = DELTA_MAX_MINI_BLOCK_SIZE; /* Force mini-block read */
+ 
+     return CARQUET_OK;
+ }
+@@ -183,7 +196,7 @@
+             return CARQUET_ERROR_DECODE;
+         }
+ 
+-        uint32_t unpacked[DELTA_MINI_BLOCK_SIZE];
++        uint32_t unpacked[DELTA_MAX_MINI_BLOCK_SIZE];
+         carquet_bitunpack_32(dec->data + dec->pos, mini_block_size, bit_width, unpacked);
+ 
+         for (int i = 0; i < mini_block_size; i++) {
 diff -ruN a/carquet/encoding/plain.c b/carquet/encoding/plain.c
---- a/carquet/encoding/plain.c	2026-08-01 22:28:33
+--- a/carquet/encoding/plain.c	2026-08-02 07:03:50
 +++ b/carquet/encoding/plain.c	2026-08-01 18:53:00
 @@ -234,15 +234,20 @@
      }
@@ -127,7 +205,7 @@ diff -ruN a/carquet/encoding/plain.c b/carquet/encoding/plain.c
      return CARQUET_OK;
  }
 diff -ruN a/carquet/reader/batch_reader.c b/carquet/reader/batch_reader.c
---- a/carquet/reader/batch_reader.c	2026-08-01 22:28:33
+--- a/carquet/reader/batch_reader.c	2026-08-02 07:03:50
 +++ b/carquet/reader/batch_reader.c	2026-08-01 10:02:42
 @@ -435,7 +435,10 @@
          /* Trigger page load to check if it's a zero-copy page */
@@ -223,7 +301,7 @@ diff -ruN a/carquet/reader/batch_reader.c b/carquet/reader/batch_reader.c
      /* If every projected column is backed by a direct page view, trim the
       * batch to the smallest currently available page slice. This avoids
 diff -ruN a/carquet/reader/column_reader.c b/carquet/reader/column_reader.c
---- a/carquet/reader/column_reader.c	2026-08-01 22:28:33
+--- a/carquet/reader/column_reader.c	2026-08-02 07:03:50
 +++ b/carquet/reader/column_reader.c	2026-07-01 22:15:57
 @@ -23,21 +23,12 @@
      int16_t* rep_levels,
@@ -271,7 +349,7 @@ diff -ruN a/carquet/reader/column_reader.c b/carquet/reader/column_reader.c
              dense_values_read += values_read;
          }
 diff -ruN a/carquet/reader/file_reader.c b/carquet/reader/file_reader.c
---- a/carquet/reader/file_reader.c	2026-08-01 22:28:33
+--- a/carquet/reader/file_reader.c	2026-08-02 07:03:50
 +++ b/carquet/reader/file_reader.c	2026-07-01 06:48:41
 @@ -17,6 +17,7 @@
  #include <string.h>
@@ -292,7 +370,7 @@ diff -ruN a/carquet/reader/file_reader.c b/carquet/reader/file_reader.c
      }
  
 diff -ruN a/carquet/reader/page_filter.c b/carquet/reader/page_filter.c
---- a/carquet/reader/page_filter.c	2026-08-01 22:28:33
+--- a/carquet/reader/page_filter.c	2026-08-02 07:03:50
 +++ b/carquet/reader/page_filter.c	2026-07-01 06:34:58
 @@ -664,7 +664,15 @@
          int64_t end_row;
@@ -312,7 +390,7 @@ diff -ruN a/carquet/reader/page_filter.c b/carquet/reader/page_filter.c
          } else {
              end_row = row_group_num_rows;
 diff -ruN a/carquet/reader/page_reader.c b/carquet/reader/page_reader.c
---- a/carquet/reader/page_reader.c	2026-08-01 22:28:33
+--- a/carquet/reader/page_reader.c	2026-08-02 07:03:50
 +++ b/carquet/reader/page_reader.c	2026-08-01 22:22:38
 @@ -19,6 +19,7 @@
  #include <string.h>
@@ -652,7 +730,7 @@ diff -ruN a/carquet/reader/page_reader.c b/carquet/reader/page_reader.c
              reader->values_remaining -= n;
              total_skipped += n;
 diff -ruN a/carquet/reader/reader_internal.h b/carquet/reader/reader_internal.h
---- a/carquet/reader/reader_internal.h	2026-08-01 22:28:33
+--- a/carquet/reader/reader_internal.h	2026-08-02 07:03:50
 +++ b/carquet/reader/reader_internal.h	2026-08-01 10:15:17
 @@ -169,6 +169,22 @@
      bool page_loaded;           /* Is a page currently loaded? */
@@ -678,7 +756,7 @@ diff -ruN a/carquet/reader/reader_internal.h b/carquet/reader/reader_internal.h
      int32_t page_compressed_size; /* Size of current page compressed data */
      uint8_t* decoded_values;    /* Buffer for decoded values from current page */
 diff -ruN a/carquet/reader/worker_pool.c b/carquet/reader/worker_pool.c
---- a/carquet/reader/worker_pool.c	2026-08-01 22:28:33
+--- a/carquet/reader/worker_pool.c	2026-08-02 07:03:50
 +++ b/carquet/reader/worker_pool.c	2026-08-01 22:24:30
 @@ -12,6 +12,10 @@
  #include "worker_pool.h"
@@ -707,7 +785,7 @@ diff -ruN a/carquet/reader/worker_pool.c b/carquet/reader/worker_pool.c
  #ifdef _WIN32
      return 0;
 diff -ruN a/carquet/simd/x86/sse_ops.c b/carquet/simd/x86/sse_ops.c
---- a/carquet/simd/x86/sse_ops.c	2026-08-01 22:28:33
+--- a/carquet/simd/x86/sse_ops.c	2026-08-02 07:03:50
 +++ b/carquet/simd/x86/sse_ops.c	2026-06-30 23:47:37
 @@ -16,8 +16,10 @@
  #include <string.h>
@@ -723,7 +801,7 @@ diff -ruN a/carquet/simd/x86/sse_ops.c b/carquet/simd/x86/sse_ops.c
  #ifdef _MSC_VER
  #include <intrin.h>
 diff -ruN a/carquet/writer/page_writer.c b/carquet/writer/page_writer.c
---- a/carquet/writer/page_writer.c	2026-08-01 22:28:33
+--- a/carquet/writer/page_writer.c	2026-08-02 07:03:51
 +++ b/carquet/writer/page_writer.c	2026-08-01 19:47:06
 @@ -124,6 +124,8 @@
      int64_t num_rows;        /* Logical rows (rep_level==0); used by V2 only */

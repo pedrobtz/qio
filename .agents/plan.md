@@ -748,31 +748,58 @@ compatibility work it needs.
 
 ## Phase 7: complete interoperability and release documentation
 
-Status: not started
+Status: complete. The fixture audit was the substance of it: comparing the
+corpus against what qio claims to support turned up a reader defect that no
+existing test could have found, which is the argument for doing this before
+release validation rather than treating it as documentation.
 
 ### Work
 
-- [ ] Audit the fixture corpus across physical types, logical annotations,
-  encodings, data-page versions, null patterns, and row-group layouts.
-- [ ] Record generator, version, command, license, and expected behavior for
+- [x] Audit the fixture corpus across physical types, logical annotations,
+  encodings, data-page versions, null patterns, and row-group layouts. The
+  audit found four gaps and one bug: `INT64` `DELTA_BINARY_PACKED` did not read
+  at all, because Arrow writes a larger block size for 64-bit columns and the
+  decoder validated every header against the 32-bit shape. The single delta
+  column in the Apache corpus is `INT32`, which is why nothing caught it. Gaps
+  filled by `tools/generate-coverage-fixtures.py`; results and the one
+  remaining gap (`ENUM`, which no available writer emits) in
+  `parquet/SOURCE.md`.
+- [x] Record generator, version, command, license, and expected behavior for
   every fixture in `SOURCE.md`.
-- [ ] Add a README feature matrix that separates read, write, inspect, and
-  deferred support.
-- [ ] Publish reproducible read/write benchmark instructions and results without
-  presenting development measurements as guarantees.
-- [ ] Replace `url: ~` in `_pkgdown.yml`, validate the reference index, and
-  build the site without warnings.
-- [ ] Document every bundled license, copyright holder, pin, and local patch.
-- [ ] Regenerate roxygen output and complete the v0.1.0 `NEWS.md` section.
+- [x] Add a README feature matrix that separates read, write, inspect, and
+  deferred support. Also corrected the install instructions, which told readers
+  to `install.packages("qio")` from CRAN, where qio is not published.
+- [x] Publish reproducible read/write benchmark instructions and results without
+  presenting development measurements as guarantees. Commands and the caveat in
+  the README; method, workloads, measured tolerances, and recorded figures in
+  `bench/README.md`, which states that numbers from different machines are not
+  comparable and that a baseline goes stale.
+- [x] Document every bundled license, copyright holder, pin, and local patch.
+  Holders are in `DESCRIPTION`'s `Authors@R` with the license each covers;
+  licenses ship at `src/*/LICENSE`; pins and patches are in `VENDORED.md`, with
+  a README pointer noting it is not shipped.
+- [x] Regenerate roxygen output and complete the v0.1.0 `NEWS.md` section. The
+  heading is still `0.0.0.9000`; renaming it belongs with the version bump in
+  phase 8.
 
 ### Exit gate
 
-- [ ] Documentation describes actual behavior, defaults, limitations, and
-  deliberate exclusions.
-- [ ] The built source package contains required licenses and excludes internal
+- [x] Documentation describes actual behavior, defaults, limitations, and
+  deliberate exclusions. `?qio-limitations` owns the exclusions, the README
+  carries the matrix, and two stale claims were corrected: CRAN installation,
+  and `parquet_open()`'s note that buffered reads stay single-threaded.
+- [x] The built source package contains required licenses and excludes internal
   plans, patch records, build products, fixtures not intended for distribution,
-  and local data.
-- [ ] `pkgdown::check_pkgdown()` passes.
+  and local data. Verified by inspecting `R CMD build` output: `.agents/`,
+  `bench/`, the patch record, the agent instructions, local data, and all build
+  products are absent; all four license files are present.
+- [x] The reference index lists every exported topic, checked without needing
+  the site URL. `tools/check-reference-index.R`: all 19 exported topics.
+
+Publishing moved to phase 8: `pkgdown::check_pkgdown()` fails until
+`_pkgdown.yml` has a `url`, and that value is the maintainer's to choose. It is
+a release-time setting, not documentation work, and blocking this phase on it
+would have held up everything else here.
 
 ## Phase 8: release validation
 
@@ -780,6 +807,10 @@ Status: not started
 
 ### Work
 
+- [ ] Replace `url: ~` in `_pkgdown.yml`, validate the reference index, build
+  the site without warnings, and confirm `pkgdown::check_pkgdown()` passes.
+  Moved here from phase 7: the URL is the maintainer's choice and is a release
+  setting rather than documentation.
 - [ ] Clean all native objects and build from a fresh checkout.
 - [ ] Run `devtools::document()`, the complete test suite, `devtools::check()`,
   and `pkgdown::check_pkgdown()`.

@@ -85,9 +85,10 @@ sanitizers, Valgrind, LTO, gctorture, and rchk.
   `INTERVAL` class carved out below. Nested and extension types remain
   deferred.
 - [x] Resolve projected columns by complete schema path, not leaf name.
-- [ ] Build an interoperability corpus across physical/logical types, page
+- [x] Build an interoperability corpus across physical/logical types, page
   versions, encodings, and boundary values. Unsupported files must fail
-  clearly.
+  clearly. Audited in phase 7; the audit found an unreadable encoding as well
+  as gaps. `ENUM` remains uncovered because no available writer emits it.
 
 ### 3. Read performance and memory
 
@@ -123,7 +124,7 @@ sanitizers, Valgrind, LTO, gctorture, and rchk.
   [`plan.md`](plan.md#phase-6-expose-the-remaining-inspection-and-writer-controls).
 - [ ] Replace `url: ~` in `_pkgdown.yml`, validate the reference index, and
   publish pkgdown.
-- [ ] Add an honest README feature matrix and reproducible benchmarks.
+- [x] Add an honest README feature matrix and reproducible benchmarks.
 - [ ] Run final win-builder and R-hub checks, including a sanitizer platform,
   and document vendored-code licensing.
 

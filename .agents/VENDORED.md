@@ -112,6 +112,16 @@ them.
   contexts as it exits, which also removes a leak the OpenMP branch always
   had. Covered by the writer round-trip tests in `tests/testthat/test-qio.R`,
   which read zstd files with several columns.
+- **Accept a legal DELTA_BINARY_PACKED block size** (`encoding/delta.c`). The
+  decoder validated every header against the shape its own encoder writes, 128
+  values in four mini-blocks, and rejected anything larger. Apache Arrow writes
+  256 values per block for 64-bit columns while writing 128 for 32-bit ones, so
+  every `INT64` delta column from Arrow failed as "unsupported encoding" while
+  the `INT32` ones read fine. The single delta column in the Apache reference
+  corpus is `INT32`, which is why this survived. The decoder now has its own
+  bounds, wider than the encoder's, with the buffers sized for the worst case
+  they permit; the encoder still writes the smallest legal shape. Covered by
+  `parquet/delta_encodings.parquet` and `test-external.R`.
 - **Decode RLE as a BOOLEAN data encoding** (`reader/page_reader.c`). Parquet
   allows `RLE` for `BOOLEAN` values, and Apache Arrow selects it for every
   `BOOLEAN` column it writes into DATA_PAGE_V2. carquet implemented `RLE` only

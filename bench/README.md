@@ -38,11 +38,14 @@ reproducible from `bench/workloads.R` and a fixed seed.
 
 Read fixtures are written with **Apache Arrow**, not with qio. Two reasons:
 
-1. qio's writer flushes a row group only when carquet's byte target is exceeded
-   (128MB default), so a qio-written fixture of this size is a *single* row
-   group. Benchmarking against that would exercise none of the multi-row-group
-   paths phase 4 changes — parallel collect schedules one task per row group
-   per column, and row-group projection would be a no-op.
+1. When these fixtures were designed, qio's writer had no way to set a row-group
+   boundary: it flushed only when carquet's byte target was exceeded (128MB
+   default), so a qio-written fixture of this size was a *single* row group.
+   Benchmarking against that would have exercised none of the multi-row-group
+   paths — parallel collect schedules one task per row group per column, and
+   row-group projection would be a no-op. Phase 6 added
+   `write_parquet(row_group_size =)`, so that constraint is gone; reason 2 is
+   why the fixtures still come from Arrow.
 2. Reading files produced by a mainstream writer is what users actually do.
 
 `arrow` is therefore needed **once**, to generate fixtures. It is not a package

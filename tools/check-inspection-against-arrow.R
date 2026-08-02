@@ -186,10 +186,13 @@ qio::write_parquet(
 # and by pyarrow, which exposes row_group.sorting_columns; the arrow R package
 # does not. What is checked here is that declaring an order does not disturb
 # the data.
-check("a sorted file still reads back its values", isTRUE(all.equal(
-  as.data.frame(arrow::read_parquet(sorted_path)),
-  data.frame(a = 1:100, b = rev(1:100))
-)))
+check(
+  "a sorted file still reads back its values",
+  isTRUE(all.equal(
+    as.data.frame(arrow::read_parquet(sorted_path)),
+    data.frame(a = 1:100, b = rev(1:100))
+  ))
+)
 
 cat("\n")
 if (failures > 0L) {
