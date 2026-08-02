@@ -200,7 +200,39 @@ int64_t carquet_rle_decoder_get_batch(
             dec->run_remaining -= to_fill;
 
         } else {
-            /* Bit-packed run */
+            /* Bit-packed run.
+             *
+             * The 8-value staging buffer exists only because a caller may ask
+             * for a count that does not land on a group boundary. When it does
+             * -- the common case, since a batch is thousands of values -- whole
+             * groups can be unpacked straight into the caller's buffer, which
+             * removes a copy and a three-condition loop test per value. */
+
+            /* Drain the staging buffer first, or a previous call that stopped
+             * mid-group would have its leftovers emitted out of order. */
+            while (read < count && dec->bitpack_pos < dec->bitpack_count &&
+                   dec->run_remaining > 0) {
+                output[read++] = dec->bitpack_buffer[dec->bitpack_pos++];
+                dec->run_remaining--;
+            }
+
+            /* Whole groups, unpacked in place. */
+            while (count - read >= 8 && dec->run_remaining >= 8) {
+                size_t bytes_needed = (size_t)dec->bit_width;
+                if (dec->pos + bytes_needed > dec->size) {
+                    dec->status = CARQUET_ERROR_INVALID_RLE;
+                    break;
+                }
+                carquet_bitunpack8_32(dec->data + dec->pos, dec->bit_width,
+                                      output + read);
+                dec->pos += bytes_needed;
+                read += 8;
+                dec->run_remaining -= 8;
+            }
+
+            /* Whatever is left: fewer than 8 wanted, or fewer than 8 in the
+             * run. These still go through the staging buffer, which is what
+             * carries a partial group across calls. */
             while (read < count && dec->run_remaining > 0) {
                 if (dec->bitpack_pos >= dec->bitpack_count) {
                     if (!fill_bitpack_buffer(dec)) {
@@ -208,7 +240,6 @@ int64_t carquet_rle_decoder_get_batch(
                     }
                 }
 
-                /* Copy from buffer */
                 while (read < count && dec->bitpack_pos < dec->bitpack_count &&
                        dec->run_remaining > 0) {
                     output[read++] = dec->bitpack_buffer[dec->bitpack_pos++];
