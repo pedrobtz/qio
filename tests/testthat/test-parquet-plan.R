@@ -459,6 +459,85 @@ test_that("qio_select_columns() returns NULL when every column is selectable", {
 
 # --- Phase 3.2: text, binary, UUID, FLOAT16 --------------------------------
 
+# Both converters were rewritten from one closure call per value to vectorized
+# forms: a UUID column cost about 23 microseconds a value, or 22 seconds for a
+# million rows against roughly 0.05 for an ordinary column. These pin the edge
+# cases the loop handled implicitly and a reshape can get wrong -- a NULL in
+# the middle shifts every subsequent value if the bytes are unlisted naively.
+
+test_that("vectorized UUID formatting handles nulls, edges, and bad lengths", {
+  zero <- as.raw(rep(0L, 16L))
+  ones <- as.raw(rep(255L, 16L))
+  mid <- as.raw(c(
+    0x01,
+    0x23,
+    0x45,
+    0x67,
+    0x89,
+    0xab,
+    0xcd,
+    0xef,
+    0xfe,
+    0xdc,
+    0xba,
+    0x98,
+    0x76,
+    0x54,
+    0x32,
+    0x10
+  ))
+
+  expect_identical(
+    qio_format_uuid(list(zero, NULL, ones, NULL, mid)),
+    c(
+      "00000000-0000-0000-0000-000000000000",
+      NA_character_,
+      "ffffffff-ffff-ffff-ffff-ffffffffffff",
+      NA_character_,
+      "01234567-89ab-cdef-fedc-ba9876543210"
+    )
+  )
+  # A null first, so a naive reshape would misalign everything after it.
+  expect_identical(
+    qio_format_uuid(list(NULL, mid)),
+    c(NA_character_, "01234567-89ab-cdef-fedc-ba9876543210")
+  )
+  expect_identical(qio_format_uuid(list()), character(0))
+  expect_identical(
+    qio_format_uuid(list(NULL, NULL)),
+    c(NA_character_, NA_character_)
+  )
+  expect_error(
+    qio_format_uuid(list(mid, as.raw(rep(0L, 15L)))),
+    "requires exactly 16"
+  )
+})
+
+test_that("vectorized FLOAT16 decoding covers every class of value", {
+  half <- function(bits) list(as.raw(c(bits %% 256L, bits %/% 256L)))
+  # Bit patterns from the IEEE 754 binary16 definition.
+  expect_identical(qio_decode_float16(half(0x0000L)), 0)
+  expect_identical(1 / qio_decode_float16(half(0x8000L)), -Inf) # signed zero
+  expect_identical(qio_decode_float16(half(0x3C00L)), 1)
+  expect_identical(qio_decode_float16(half(0xBC00L)), -1)
+  expect_identical(qio_decode_float16(half(0x7C00L)), Inf)
+  expect_identical(qio_decode_float16(half(0xFC00L)), -Inf)
+  expect_true(is.nan(qio_decode_float16(half(0x7E00L))))
+  expect_equal(qio_decode_float16(half(0x0001L)), 2^-24) # smallest subnormal
+  expect_equal(qio_decode_float16(half(0x7BFFL)), 65504) # largest finite
+
+  # Nulls interleaved, again with one first.
+  expect_identical(
+    qio_decode_float16(list(NULL, as.raw(c(0x00, 0x3C)), NULL)),
+    c(NA_real_, 1, NA_real_)
+  )
+  expect_identical(qio_decode_float16(list()), numeric(0))
+  expect_error(
+    qio_decode_float16(list(as.raw(c(0x00, 0x3C, 0x00)))),
+    "requires exactly 2"
+  )
+})
+
 test_that("qio_format_uuid() produces the canonical form", {
   bytes <- as.raw(c(
     0x12,

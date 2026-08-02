@@ -619,68 +619,98 @@ qio_apply_converter <- function(x, converter) {
 # value and stays NA; any other length is a malformed file, not a value qio can
 # silently reinterpret.
 qio_format_uuid <- function(x) {
-  vapply(
-    x,
-    function(bytes) {
-      if (is.null(bytes)) {
-        return(NA_character_)
-      }
-      if (length(bytes) != 16L) {
-        stop(
-          "A UUID column contains a value of ",
-          length(bytes),
-          " bytes; UUID requires exactly 16.",
-          call. = FALSE
-        )
-      }
-      hex <- paste(format(bytes), collapse = "")
-      paste(
-        substr(hex, 1L, 8L),
-        substr(hex, 9L, 12L),
-        substr(hex, 13L, 16L),
-        substr(hex, 17L, 20L),
-        substr(hex, 21L, 32L),
-        sep = "-"
-      )
-    },
-    character(1),
-    USE.NAMES = FALSE
+  # Vectorized rather than one closure call per value: a UUID column used to
+  # cost about 23 microseconds a value, which is 22 seconds for a million rows
+  # against roughly 0.05 for an ordinary column.
+  count <- length(x)
+  out <- rep(NA_character_, count)
+  sizes <- lengths(x)
+  present <- sizes != 0L
+
+  wrong <- which(present & sizes != 16L)
+  if (length(wrong) > 0L) {
+    stop(
+      "A UUID column contains a value of ",
+      sizes[[wrong[[1L]]]],
+      " bytes; UUID requires exactly 16.",
+      call. = FALSE
+    )
+  }
+  if (!any(present)) {
+    return(out)
+  }
+
+  # as.character() on a raw vector already produces two lowercase hex digits
+  # per byte, for the whole vector at once. Sixteen bytes per value means the
+  # result reshapes into a 16-row matrix whose columns are the values, so the
+  # canonical 8-4-4-4-12 grouping is five vectorized paste0() calls.
+  digits <- matrix(
+    as.character(unlist(x[present], use.names = FALSE)),
+    nrow = 16L
   )
+  out[present] <- paste(
+    paste0(digits[1L, ], digits[2L, ], digits[3L, ], digits[4L, ]),
+    paste0(digits[5L, ], digits[6L, ]),
+    paste0(digits[7L, ], digits[8L, ]),
+    paste0(digits[9L, ], digits[10L, ]),
+    paste0(
+      digits[11L, ],
+      digits[12L, ],
+      digits[13L, ],
+      digits[14L, ],
+      digits[15L, ],
+      digits[16L, ]
+    ),
+    sep = "-"
+  )
+  out
 }
 
 # IEEE 754 binary16 (little-endian) widened to double. Parquet stores FLOAT16
 # as two fixed bytes; R has no half type, so widening is lossless.
 qio_decode_float16 <- function(x) {
-  vapply(
-    x,
-    function(bytes) {
-      if (is.null(bytes)) {
-        return(NA_real_)
-      }
-      if (length(bytes) != 2L) {
-        stop(
-          "A FLOAT16 column contains a value of ",
-          length(bytes),
-          " bytes; FLOAT16 requires exactly 2.",
-          call. = FALSE
-        )
-      }
-      bits <- as.integer(bytes[[1L]]) + 256L * as.integer(bytes[[2L]])
-      sign <- if (bits >= 32768L) -1 else 1
-      exponent <- bits %/% 1024L %% 32L
-      mantissa <- bits %% 1024L
-      if (exponent == 0L) {
-        # Subnormal, or a signed zero when the mantissa is zero too.
-        sign * mantissa * 2^-24
-      } else if (exponent == 31L) {
-        if (mantissa == 0L) sign * Inf else NaN
-      } else {
-        sign * (1 + mantissa / 1024) * 2^(exponent - 15L)
-      }
-    },
-    numeric(1),
-    USE.NAMES = FALSE
+  # Vectorized for the same reason as qio_format_uuid(): one closure call per
+  # value cost about a microsecond each, which is a second for a million rows.
+  count <- length(x)
+  out <- rep(NA_real_, count)
+  sizes <- lengths(x)
+  present <- sizes != 0L
+
+  wrong <- which(present & sizes != 2L)
+  if (length(wrong) > 0L) {
+    stop(
+      "A FLOAT16 column contains a value of ",
+      sizes[[wrong[[1L]]]],
+      " bytes; FLOAT16 requires exactly 2.",
+      call. = FALSE
+    )
+  }
+  if (!any(present)) {
+    return(out)
+  }
+
+  # Little-endian: two bytes per value, so the unlisted bytes reshape into a
+  # 2-row matrix whose columns are the values.
+  bytes <- matrix(
+    as.integer(unlist(x[present], use.names = FALSE)),
+    nrow = 2L
   )
+  bits <- bytes[1L, ] + 256L * bytes[2L, ]
+  sign <- ifelse(bits >= 32768L, -1, 1)
+  exponent <- bits %/% 1024L %% 32L
+  mantissa <- bits %% 1024L
+
+  out[present] <- ifelse(
+    exponent == 0L,
+    # Subnormal, or a signed zero when the mantissa is zero too.
+    sign * mantissa * 2^-24,
+    ifelse(
+      exponent == 31L,
+      ifelse(mantissa == 0L, sign * Inf, NaN),
+      sign * (1 + mantissa / 1024) * 2^(exponent - 15L)
+    )
+  )
+  out
 }
 
 qio_as_posixct_utc <- function(x, per_second) {
