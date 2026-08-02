@@ -51,6 +51,25 @@ Rscript bench/benchmark.R --reps 20 --filter read- # subset, more repetitions
 `--compare` exits non-zero if any case regresses past the threshold, so it can
 gate a change without a human reading the table.
 
+## Comparing against other readers
+
+Not part of this directory: a comparison against `arrow` and `nanoparquet`
+lives in `local-script/`, which is untracked. One trap is worth recording here
+anyway, because anyone repeating the exercise will hit it.
+
+**arrow's R package uses ALTREP, so `read_parquet()` can return before the
+values exist.** The cost is charged to whoever first touches them. On a
+500,000-row string column, arrow's read measured 0.011s and forcing the same
+data measured 0.048s; qio materializes eagerly, so it measured 0.042s and
+0.045s. Timing the bare call therefore compares qio doing all the work against
+arrow doing a fraction of it -- it reported qio as 9x slower on text, where the
+forced figures are close to level.
+
+Any comparison must time to *materialized* data, by summing or otherwise
+touching every column after reading. It should also check that the readers
+agree before timing them, since readers that disagree are not doing the same
+work.
+
 ## Method
 
 - Metric: **median wall time** over `--reps` timed repetitions (default 10),
