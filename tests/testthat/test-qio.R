@@ -542,3 +542,63 @@ test_that("booleans survive a write split across chunks", {
   write_parquet(data.frame(v = values), path)
   expect_identical(read_parquet(path)$v, values)
 })
+
+# --- Dictionary-encoded text ------------------------------------------------
+# qio writes BYTE_ARRAY columns with RLE_DICTIONARY. carquet falls back to
+# PLAIN by itself once a chunk's dictionary outgrows its page limit, so both
+# outcomes have to round-trip, and the encoding is a per-chunk property rather
+# than a property of the file.
+
+test_that("text columns are written dictionary-encoded", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  frame <- data.frame(
+    label = sprintf("label-%03d", seq_len(2000L) %% 40L),
+    value = as.numeric(seq_len(2000L)),
+    stringsAsFactors = FALSE
+  )
+  write_parquet(frame, path)
+
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+  chunks <- column_chunks(file)
+
+  text <- chunks[chunks$column == 1L, ]
+  expect_true(all(text$dictionary_page))
+  expect_true(all(grepl("RLE_DICTIONARY", text$encodings, fixed = TRUE)))
+
+  # Numeric columns are left alone: a dictionary index is four bytes and a
+  # double is eight, so there is far less to gain and it would change the
+  # output of every existing numeric write.
+  numeric <- chunks[chunks$column == 2L, ]
+  expect_false(any(numeric$dictionary_page))
+
+  expect_identical(read_parquet(path), frame)
+})
+
+test_that("high-cardinality text still round-trips after the dictionary falls back", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  # Every value distinct and wide enough to outgrow the dictionary page limit,
+  # which forces carquet back to PLAIN partway through the chunk.
+  frame <- data.frame(
+    text = paste0(sprintf("%06d-", seq_len(5000L)), strrep("z", 400)),
+    stringsAsFactors = FALSE
+  )
+  write_parquet(frame, path)
+  expect_identical(read_parquet(path), frame)
+})
+
+test_that("appending keeps each row group's own encoding", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  first <- data.frame(
+    k = sprintf("g-%02d", seq_len(100L) %% 9L),
+    stringsAsFactors = FALSE
+  )
+  second <- data.frame(
+    k = sprintf("h-%02d", seq_len(60L) %% 5L),
+    stringsAsFactors = FALSE
+  )
+  write_parquet(first, path)
+  write_parquet(second, path, append = TRUE)
+
+  expect_identical(read_parquet(path), rbind(first, second))
+})

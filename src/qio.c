@@ -216,6 +216,34 @@ static SEXP qio_write_body(void *data) {
         }
     }
 
+    /* Dictionary-encode text.
+     *
+     * carquet defaults every column to PLAIN, which for repeated text is both
+     * larger on disk and slower to read back: a 500-value column measured
+     * 283 KB against 49 KB from Apache Arrow, and reading it takes the
+     * materializing path rather than the dictionary-index one.
+     *
+     * Only BYTE_ARRAY is set here. carquet also accepts dictionaries for the
+     * numeric physical types, but those gain much less -- a double is already
+     * eight bytes and an index is four -- and it would change the output of
+     * every existing numeric write. Text is where the difference is.
+     *
+     * carquet falls back to PLAIN by itself when a chunk's dictionary grows
+     * past its page limit, so high-cardinality columns are not penalised.
+     * Appends set it too: encoding is a per-chunk property, so new row groups
+     * may differ from the ones already in the file. */
+    for (int c = 0; c < ncol; c++) {
+        if ((carquet_physical_type_t)ptype[c] != CARQUET_PHYSICAL_BYTE_ARRAY) {
+            continue;
+        }
+        carquet_status_t enc = carquet_writer_set_column_encoding(
+            ctx->writer, c, CARQUET_ENCODING_RLE_DICTIONARY);
+        if (enc != CARQUET_OK) {
+            Rf_error("qio: cannot dictionary-encode column %d: %s", c + 1,
+                     carquet_status_string(enc));
+        }
+    }
+
     /* Footer key/value metadata, added before any data so a failure costs
      * nothing. Keys and values are written as UTF-8; carquet copies both. */
     if (ctx->meta_keys != R_NilValue) {
