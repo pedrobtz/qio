@@ -9,6 +9,7 @@ package. Each topic has one owner:
 | [`roadmap.md`](roadmap.md) | Current API, release scope, priorities, and open product choices |
 | [`plan.md`](plan.md) | Ordered v0.1.0 work, dependencies, and release gates |
 | [`TYPES.md`](TYPES.md) | Current and target Parquet-to-R mappings and conversion contracts |
+| [`read-performance.md`](read-performance.md) | The v0.2.0 read-performance target, profile, and ordered plan |
 | [`carquet.md`](carquet.md) | qio's integration with the vendored carquet snapshot |
 | [`VENDORED.md`](VENDORED.md) | Dependency pins, local patches, and re-vendoring |
 

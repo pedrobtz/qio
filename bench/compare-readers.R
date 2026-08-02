@@ -41,8 +41,12 @@
 for (package in c("arrow", "nanoparquet")) {
   if (!requireNamespace(package, quietly = TRUE)) {
     stop(
-      "compare-readers.R needs the ", package, " package:\n",
-      '  install.packages("', package, '")',
+      "compare-readers.R needs the ",
+      package,
+      " package:\n",
+      '  install.packages("',
+      package,
+      '")',
       call. = FALSE
     )
   }
@@ -60,7 +64,14 @@ parse_args <- function(argv = commandArgs(trailingOnly = TRUE)) {
     rows = as.integer(value_after("--rows", "1000000")),
     reps = as.integer(value_after("--reps", "5")),
     warmup = as.integer(value_after("--warmup", "1")),
-    out = value_after("--out", "")
+    out = value_after("--out", ""),
+    # The four cardinalities bracket the two points where the dictionary index
+    # bit width crosses a kernel boundary. See the sweep section below.
+    cardinalities = as.integer(strsplit(
+      value_after("--cardinalities", "200,257,65536,65537"),
+      ",",
+      fixed = TRUE
+    )[[1]])
   )
 }
 
@@ -127,11 +138,12 @@ readers <- list(
 materialize <- function(frame) {
   total <- 0
   for (column in frame) {
-    total <- total + if (is.character(column)) {
-      sum(nchar(column, type = "bytes"), na.rm = TRUE)
-    } else {
-      sum(as.numeric(column), na.rm = TRUE)
-    }
+    total <- total +
+      if (is.character(column)) {
+        sum(nchar(column, type = "bytes"), na.rm = TRUE)
+      } else {
+        sum(as.numeric(column), na.rm = TRUE)
+      }
   }
   invisible(total)
 }
@@ -143,7 +155,9 @@ time_it <- function(action, reps, warmup) {
     action()
     proc.time()[["elapsed"]] - started
   }
-  for (i in seq_len(warmup)) run()
+  for (i in seq_len(warmup)) {
+    run()
+  }
   vapply(seq_len(reps), function(i) run(), numeric(1))
 }
 
@@ -180,8 +194,13 @@ for (workload in names(workloads)) {
     for (name in names(values)[-1]) {
       if (!isTRUE(all.equal(values[[1]], values[[name]]))) {
         stop(
-          "readers disagree on ", workload, " written by ", writer, ": qio and ",
-          name, " returned different results, so timing them would compare ",
+          "readers disagree on ",
+          workload,
+          " written by ",
+          writer,
+          ": qio and ",
+          name,
+          " returned different results, so timing them would compare ",
           "different work.",
           call. = FALSE
         )
@@ -210,6 +229,97 @@ for (workload in names(workloads)) {
 }
 
 results <- do.call(rbind, results)
+
+# ------------------------------------------------------- cardinality sweep --
+
+# The workloads above use one text cardinality each, which hid a real effect:
+# qio's gap on dictionary-encoded text is not constant, it steps up as the
+# dictionary grows. The cause is that a dictionary index is bit-packed to
+# ceiling(log2(cardinality)) bits, and carquet has unrolled unpack kernels for
+# widths 1-8 and 16 only -- every other width falls back to a byte-at-a-time
+# loop. nanoparquet vendors fastpforlib, which has a kernel for all of 1-32.
+#
+# So the sweep brackets both boundaries: 200 and 257 straddle 8/9 bits, 65536
+# and 65537 straddle 16/17. A build that closes the gap should flatten the
+# ratio column, not merely lower it.
+#
+# Fixtures come from arrow, and the encoding is asserted rather than assumed:
+# qio's own writer does not emit dictionary pages at all, so a qio-written
+# fixture would measure the plain path and quietly answer a different question.
+#
+# The sweep needs rows to resolve. At the 1,000,000 default the 16 -> 17 bit
+# step measures ~12%; at --rows 400000 the same step measures ~4%, because the
+# whole read is then a few milliseconds and the step is inside the timer's
+# noise. Do not conclude from a small --rows run that the effect is gone.
+
+sweep_path <- function(k) file.path(directory, sprintf("card-%d.parquet", k))
+
+index_bits <- function(k) max(1L, as.integer(ceiling(log2(k))))
+
+sweep <- list()
+for (k in args$cardinalities) {
+  frame <- data.frame(
+    label = sprintf("v-%06d", seq_len(args$rows) %% k),
+    stringsAsFactors = FALSE
+  )
+  path <- sweep_path(k)
+  arrow::write_parquet(
+    frame,
+    path,
+    compression = "snappy",
+    chunk_size = rows_per_group
+  )
+
+  # Assert the fixture is what the sweep claims to measure.
+  handle <- qio::parquet_open(path)
+  chunks <- qio::column_chunks(handle)
+  qio::parquet_close(handle)
+  if (!any(chunks$dictionary_page)) {
+    stop(
+      "cardinality ",
+      k,
+      " fixture has no dictionary page, so timing it would ",
+      "measure the plain path instead of the dictionary path.",
+      call. = FALSE
+    )
+  }
+
+  values <- lapply(readers, function(read) as.data.frame(read(path)))
+  for (name in names(values)[-1]) {
+    if (!isTRUE(all.equal(values[[1]], values[[name]]))) {
+      stop(
+        "readers disagree on the cardinality ",
+        k,
+        " fixture: qio and ",
+        name,
+        " returned different results, so timing them would compare different ",
+        "work.",
+        call. = FALSE
+      )
+    }
+  }
+
+  for (name in names(readers)) {
+    local({
+      read <- readers[[name]]
+      timings <- time_it(
+        function() materialize(read(path)),
+        args$reps,
+        args$warmup
+      )
+      sweep[[length(sweep) + 1L]] <<- data.frame(
+        cardinality = k,
+        bits = index_bits(k),
+        reader = name,
+        median = median(timings),
+        min = min(timings),
+        stringsAsFactors = FALSE
+      )
+    })
+  }
+}
+
+sweep <- do.call(rbind, sweep)
 
 # ------------------------------------------------------------------ report --
 
@@ -245,16 +355,23 @@ for (writer in unique(results$writer)) {
     direction = "wide"
   )
   names(wide) <- sub("^median\\.", "", names(wide))
-  order <- c("workload", intersect(c("qio", "arrow", "nanoparquet"), names(wide)))
+  order <- c(
+    "workload",
+    intersect(c("qio", "arrow", "nanoparquet"), names(wide))
+  )
   wide <- wide[, order]
 
   label_width <- max(nchar(wide$workload), nchar("workload"))
   cat(sprintf("%-*s", label_width, "workload"))
-  for (name in order[-1]) cat(sprintf("  %11s", name))
+  for (name in order[-1]) {
+    cat(sprintf("  %11s", name))
+  }
   cat(sprintf("  %s\n", "qio vs best other"))
   for (i in seq_len(nrow(wide))) {
     cat(sprintf("%-*s", label_width, wide$workload[i]))
-    for (name in order[-1]) cat(sprintf("  %11.4f", wide[[name]][i]))
+    for (name in order[-1]) {
+      cat(sprintf("  %11.4f", wide[[name]][i]))
+    }
     others <- setdiff(order[-1], "qio")
     best <- min(unlist(wide[i, others]))
     ratio <- wide$qio[i] / best
@@ -267,6 +384,35 @@ for (writer in unique(results$writer)) {
   cat("\n")
 }
 
+cat("--- dictionary index bit width sweep (files written by arrow) ---\n")
+cat("A flat ratio column means the bit width no longer matters.\n\n")
+cat(sprintf(
+  "%12s  %5s  %11s  %11s  %11s  %s\n",
+  "cardinality",
+  "bits",
+  "qio",
+  "arrow",
+  "nanoparquet",
+  "qio vs best other"
+))
+for (k in args$cardinalities) {
+  block <- sweep[sweep$cardinality == k, ]
+  pick <- function(name) block$median[block$reader == name]
+  others <- vapply(setdiff(names(readers), "qio"), pick, numeric(1))
+  ratio <- pick("qio") / min(others)
+  cat(sprintf(
+    "%12d  %5d  %11.4f  %11.4f  %11.4f  %.2fx %s\n",
+    k,
+    index_bits(k),
+    pick("qio"),
+    pick("arrow"),
+    pick("nanoparquet"),
+    ratio,
+    if (ratio < 1) "faster" else "slower"
+  ))
+}
+cat("\n")
+
 cat(paste(
   "Read as: one machine, one build, one set of shapes, timed to materialized",
   "data rather than to the return of each read call. nanoparquet is",
@@ -275,8 +421,17 @@ cat(paste(
 ))
 
 if (nzchar(args$out)) {
-  results$rows <- args$rows
-  results$platform <- R.version$platform
-  utils::write.csv(results, args$out, row.names = FALSE)
+  # One frame, so a later run can be diffed against this one without joining
+  # two files. The sections carry different keys, hence the NA columns.
+  results$section <- "workload"
+  results$cardinality <- NA_integer_
+  results$bits <- NA_integer_
+  sweep$section <- "cardinality"
+  sweep$workload <- "text"
+  sweep$writer <- "arrow"
+  written <- rbind(results, sweep[, names(results)])
+  written$rows <- args$rows
+  written$platform <- R.version$platform
+  utils::write.csv(written, args$out, row.names = FALSE)
   cat("\nwrote", args$out, "\n")
 }

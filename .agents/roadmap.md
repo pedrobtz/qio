@@ -95,7 +95,11 @@ sanitizers, Valgrind, LTO, gctorture, and rchk.
 - [x] Sub-batch strings so scratch space does not scale with the largest row
   group and `collect(batch_size =)` has real behavior.
 - [x] Materialize dictionary text efficiently, with a safe fallback for mixed
-  encoding.
+  encoding. Shipped as an address-keyed CHARSXP cache. **Reopened for v0.2.0**:
+  profiling against nanoparquet shows that cache is itself 20% of a
+  dictionary-text read, because carquet expands the dictionary before qio
+  re-deduplicates it. See
+  [`read-performance.md`](read-performance.md#1-dictionary-text-is-expanded-then-re-deduplicated).
 - [x] Use statistics for a measured no-null fast path. **Measured and
   declined**; see [`plan.md`](plan.md#phase-4-bound-reader-memory-and-optimize-measured-hot-paths).
 - [x] Decode suitable numeric columns into R memory and expand nullable values

@@ -105,6 +105,44 @@ first thing to look at if read performance becomes a priority.
 Nothing qio documents claims otherwise. Recorded here so the position is known
 rather than assumed, and so a future optimization has a starting point.
 
+### The dictionary bit width sweep
+
+The table above uses one text cardinality, which hid a real effect: **the gap on
+dictionary text is not constant, it steps up as the dictionary grows.** A
+dictionary index is bit-packed to `ceiling(log2(cardinality))` bits, and carquet
+has unrolled unpack kernels for widths 1-8 and 16 only; every other width takes
+a byte-at-a-time fallback. nanoparquet vendors `fastpforlib`, which covers all
+of 1-32.
+
+The script therefore sweeps cardinalities that bracket both boundaries. At
+1,000,000 rows, files written by arrow, dictionary encoding asserted per
+fixture:
+
+| cardinality | index bits | qio | arrow | nanoparquet | qio vs best |
+|---:|---:|---:|---:|---:|---:|
+| 200 | 8 | 0.0230 | 0.0560 | 0.0150 | 1.53x |
+| 257 | 9 | 0.0270 | 0.0570 | 0.0160 | 1.69x |
+| 65536 | 16 | 0.0600 | 0.0630 | 0.0280 | 2.14x |
+| 65537 | 17 | 0.0670 | 0.0630 | 0.0280 | 2.39x |
+
+**A build that fixes this flattens the ratio column, not merely lowers it.**
+That is the point of the sweep: a change that speeds up every width equally has
+not addressed the kernel gap, whatever the totals say.
+
+Two cautions for anyone rerunning it:
+
+- **The sweep needs rows to resolve.** At the 1,000,000 default the 16 -> 17
+  step measures ~12%. At `--rows 400000` it measures ~4%, because the whole read
+  is then a few milliseconds and the step sits inside the timer's noise. A small
+  run is not evidence the effect is gone.
+- **Fixtures must come from arrow.** qio's writer does not emit dictionary pages
+  at all, so a qio-written fixture measures the plain path instead. The script
+  asserts `dictionary_page` per fixture rather than trusting this.
+
+The full analysis, root causes traced through both codebases, and the ordered
+plan are in `.agents/read-performance.md`, which does not ship in the source
+package.
+
 ## Method
 
 - Metric: **median wall time** over `--reps` timed repetitions (default 10),
