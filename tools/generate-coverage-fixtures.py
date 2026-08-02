@@ -21,6 +21,10 @@ failure names the feature:
                            sooner.
   date_types.parquet       DATE, which qio maps to R's Date and had no
                            third-party fixture at all.
+  converter_gaps.parquet   Integer-backed DECIMAL and a non-UTC nanosecond
+                           TIMESTAMP. Both were found by logging which read-plan
+                           converters the test suite actually reaches: every
+                           other converter was exercised, these two were not.
   text_annotations.parquet JSON alongside STRING. qio reads STRING, ENUM, and
                            JSON as character; ENUM has no fixture because no
                            available writer emits it -- pyarrow maps a
@@ -38,6 +42,7 @@ Usage:
 
 import datetime
 import sys
+from decimal import Decimal
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -156,5 +161,42 @@ pq.write_table(
     text, path("text_annotations.parquet"), version="2.6", compression="snappy"
 )
 report("text_annotations.parquet", ["SNAPPY"])
+
+# --- converters no test reached ----------------------------------------------
+# `decimal_int_*` applies to DECIMAL stored as INT32 or INT64, which pyarrow
+# writes only with store_decimal_as_integer. `timestamp_local_nanos_*` applies
+# to a nanosecond TIMESTAMP with no UTC adjustment. Both were implemented and
+# neither was reachable from any committed fixture.
+gaps = pa.table(
+    {
+        "dec32": pa.array(
+            [Decimal("12.30"), Decimal("-4.50"), None], pa.decimal128(7, 2)
+        ),
+        "dec64": pa.array(
+            [Decimal("123456789012.30"), Decimal("-1.00"), None],
+            pa.decimal128(17, 2),
+        ),
+        "local_nanos": pa.array(
+            [
+                datetime.datetime(2020, 1, 1, 0, 0, 1, 500000),
+                datetime.datetime(1999, 12, 31, 23, 59, 59),
+                None,
+            ],
+            pa.timestamp("ns"),
+        ),
+    }
+)
+pq.write_table(
+    gaps,
+    path("converter_gaps.parquet"),
+    version="2.6",
+    compression="snappy",
+    store_decimal_as_integer=True,
+)
+gap_meta = pq.ParquetFile(path("converter_gaps.parquet")).metadata.schema
+storage = {gap_meta.column(i).name: gap_meta.column(i).physical_type for i in range(3)}
+if storage["dec32"] != "INT32" or storage["dec64"] != "INT64":
+    sys.exit(f"decimals were not stored as integers: {storage}")
+report("converter_gaps.parquet", ["SNAPPY"])
 
 print("\nall coverage fixtures written")

@@ -513,3 +513,93 @@ test_that("optional modes fail clearly when their package is unavailable", {
   expect_identical(options$int64, "double")
   expect_identical(options$time, "numeric")
 })
+
+# --- Annotation combinations no available writer emits -----------------------
+# `?qio-types` states a mapping for every physical/logical pair qio implements.
+# Most are covered by a real file, but a handful cannot be: Apache Arrow writes
+# a bare INT32 rather than an INTEGER(32, signed) annotation because the
+# annotation is redundant, emits STRING rather than ENUM for a dictionary, and
+# never produces INTERVAL or a variable-length DECIMAL. Those branches are
+# reachable from a third-party file qio has simply never been handed, so they
+# are pinned here at the resolution layer instead of left untested.
+#
+# These assert the same contract the table publishes. If the table changes,
+# these fail.
+
+resolve_one <- function(physical, logical, details = NA_character_) {
+  qio_resolve_logical(data.frame(
+    physical_type = physical,
+    logical_type = logical,
+    logical_details = details,
+    stringsAsFactors = FALSE
+  ))
+}
+
+test_that("a redundant signed INTEGER annotation keeps the physical mapping", {
+  # Signed 32-bit in INT32, and signed 64-bit in INT64, add nothing over the
+  # physical type; both must resolve exactly as the bare type does.
+  wide32 <- resolve_one("INT32", "INTEGER", "bit_width=32, signed=true")
+  expect_identical(wide32$r_type, "integer")
+  expect_identical(wide32$converter, "int32")
+
+  wide64 <- resolve_one("INT64", "INTEGER", "bit_width=64, signed=true")
+  expect_identical(wide64$r_type, "double")
+  expect_identical(wide64$converter, "int64_double")
+
+  # ...and follows the int64 mode, like every other 64-bit column.
+  as_bit64 <- qio_resolve_logical(
+    data.frame(
+      physical_type = "INT64",
+      logical_type = "INTEGER",
+      logical_details = "bit_width=64, signed=true",
+      stringsAsFactors = FALSE
+    ),
+    options = list(int64 = "integer64", time = "numeric", tz = "UTC")
+  )
+  expect_identical(as_bit64$r_type, "integer64")
+})
+
+test_that("ENUM reads as text, like STRING and JSON", {
+  enum <- resolve_one("BYTE_ARRAY", "ENUM")
+  expect_identical(enum$r_type, "character")
+  expect_identical(enum$converter, "text")
+  # The same converter STRING and JSON use, which real fixtures do cover.
+  expect_identical(enum$converter, resolve_one("BYTE_ARRAY", "JSON")$converter)
+})
+
+test_that("a variable-length DECIMAL uses the binary decimal path", {
+  # pyarrow writes FIXED_LEN_BYTE_ARRAY even for decimal256, so only the
+  # fixed-length form has a fixture; both share this converter.
+  loose <- resolve_one("BYTE_ARRAY", "DECIMAL", "precision=20, scale=3")
+  fixed <- resolve_one(
+    "FIXED_LEN_BYTE_ARRAY",
+    "DECIMAL",
+    "precision=20, scale=3"
+  )
+  expect_identical(loose$r_type, "double")
+  expect_identical(loose$converter, "decimal_binary_3")
+  expect_identical(loose$converter, fixed$converter)
+})
+
+test_that("annotations with no R mapping stay bytes", {
+  # INTERVAL and BSON are real annotations qio deliberately does not interpret.
+  # Falling through to raw is the documented behavior, not an oversight.
+  for (pair in list(
+    c("FIXED_LEN_BYTE_ARRAY", "INTERVAL"),
+    c("BYTE_ARRAY", "BSON")
+  )) {
+    resolved <- resolve_one(pair[1], pair[2])
+    expect_identical(resolved$r_type, "list", info = pair[2])
+    expect_identical(resolved$converter, "binary", info = pair[2])
+  }
+})
+
+test_that("the NULL annotation wins over any physical type", {
+  # The annotation means the column carries no values at all, so the physical
+  # storage is irrelevant. Only INT32 storage has a fixture.
+  for (physical in c("BOOLEAN", "INT32", "INT64", "DOUBLE", "BYTE_ARRAY")) {
+    resolved <- resolve_one(physical, "NULL")
+    expect_identical(resolved$r_type, "logical", info = physical)
+    expect_identical(resolved$converter, "null_logical", info = physical)
+  }
+})

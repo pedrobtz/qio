@@ -320,6 +320,34 @@ All four were written by `tools/generate-coverage-fixtures.py` with `pyarrow`
 - Contents: a `STRING` column and a `JSON` column, each with a null.
 - Why it matters: qio reads `STRING`, `ENUM`, and `JSON` as character.
 
+## Type-mapping coverage
+
+Every converter in the read plan is reached by the test suite. That was measured
+rather than assumed: `qio_apply_converter()` was temporarily instrumented to log
+each converter it applied, the full suite was run, and the log compared against
+the complete list. The audit found two converters no test reached --
+`decimal_int_*`, for DECIMAL stored as INT32 or INT64, and
+`timestamp_local_nanos_*`, for a non-UTC nanosecond timestamp -- and
+`converter_gaps.parquet` was generated to close them. The measurement now
+reports 30 of 30.
+
+`converter_gaps.parquet`
+
+- Generator: `tools/generate-coverage-fixtures.py`, `pyarrow` 25.0.0, with
+  `store_decimal_as_integer = True`
+- Contents: `DECIMAL(7,2)` stored as `INT32`, `DECIMAL(17,2)` stored as `INT64`,
+  and a nanosecond `TIMESTAMP` with no UTC adjustment. Each column has a null.
+- Expected behavior: both decimals read as `double` with the scale applied and
+  are exact, since their unscaled integers are within 2^53; the timestamp keeps
+  its civil components as `tz` changes while its instant moves.
+
+A second layer sits below converters: the *annotation* combinations that route
+into them. Five of those cannot be produced by any writer available here --
+`INTEGER(32, signed)` and `INTEGER(64, signed)`, which Arrow omits as redundant;
+`ENUM`; variable-length `DECIMAL`; and `INTERVAL`. They are pinned at the
+resolution layer in `test-parquet-plan.R` instead, asserting the same mapping
+`?qio-types` publishes.
+
 **Known gaps.** Two rows of the type mapping in `?qio-types` have no fixture.
 Both are implemented and share a verified code path with a neighbouring row,
 but neither is exercised by a real file:

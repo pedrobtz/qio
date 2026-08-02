@@ -1,5 +1,10 @@
 # qio 0.0.0.9000
 
+* Integer-backed `DECIMAL` columns and non-UTC nanosecond `TIMESTAMP` columns
+  are now covered by tests. Both were implemented and correct, but no test
+  reached them; found by measuring which conversions the suite actually
+  exercises rather than assuming.
+
 * New `?qio-types` consolidates the Parquet-to-R type mapping into one table:
   every physical type, the logical annotations qio applies to it, the R type it
   produces, where precision is lost and why, and whether it can be written.

@@ -925,3 +925,45 @@ test_that("a JSON annotation reads as character, like STRING", {
   expect_identical(result$as_json[1], '{"a":1}')
   expect_true(is.na(result$as_json[3]))
 })
+
+test_that("integer-backed DECIMAL reads with its scale applied", {
+  # DECIMAL can be stored as INT32, INT64, or bytes. Only the byte form had a
+  # fixture, so the `decimal_int_*` converter was never reached by any test --
+  # found by logging which converters the suite actually exercises.
+  result <- suppressMessages(read_parquet(ext("converter_gaps.parquet")))
+
+  expect_type(result$dec32, "double")
+  expect_type(result$dec64, "double")
+  expect_equal(result$dec32, c(12.30, -4.50, NA))
+  # Within 2^53 as an unscaled integer, so this is exact rather than close.
+  expect_equal(result$dec64, c(123456789012.30, -1.00, NA))
+  expect_identical(result$dec64[1] * 100, 12345678901230)
+})
+
+test_that("integer-backed DECIMAL reports the same inexactness message", {
+  expect_message(
+    read_parquet(ext("converter_gaps.parquet")),
+    "decimal"
+  )
+})
+
+test_that("a non-UTC nanosecond timestamp keeps its civil components", {
+  # The `timestamp_local_nanos_*` converter had no fixture either. A non-UTC
+  # timestamp is a wall clock: the civil components stay put and the instant
+  # moves with `tz`, which is the opposite of a UTC-adjusted column.
+  path <- ext("converter_gaps.parquet")
+  utc <- suppressMessages(read_parquet(path, tz = "UTC"))$local_nanos
+  paris <- suppressMessages(read_parquet(path, tz = "Europe/Paris"))$local_nanos
+
+  expect_s3_class(utc, "POSIXct")
+  expect_identical(attr(paris, "tzone"), "Europe/Paris")
+
+  # Same wall clock in both zones...
+  civil <- function(x) format(x, "%Y-%m-%d %H:%M:%OS3")
+  expect_identical(civil(utc), civil(paris))
+  expect_identical(civil(utc)[1], "2020-01-01 00:00:01.500")
+
+  # ...so the underlying instants differ by the zone's offset.
+  expect_false(isTRUE(all.equal(as.numeric(utc[1]), as.numeric(paris[1]))))
+  expect_true(is.na(utc[3]))
+})
