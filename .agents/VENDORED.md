@@ -162,6 +162,47 @@ them.
   failed outright; every other type already handled it. The function's own
   `if (bytes_needed > 0)` guard shows a zero count was anticipated. Covered by
   the degenerate-frame tests in `tests/testthat/test-qio.R`.
+- **Expose dictionary preservation on a column reader** (`carquet/carquet.h`,
+  `reader/column_reader.c`). Upstream reaches `preserve_dictionary` only from
+  the batch reader's config, so a column reader obtained from
+  `carquet_reader_get_column()` -- which is what qio's `collect()` uses -- could
+  not ask for indices instead of materialized values. Adds
+  `carquet_column_set_preserve_dictionary()` and
+  `carquet_column_get_dictionary()`, both of which only expose state the reader
+  already maintains. The getter also reports the dictionary's byte size, which
+  upstream's batch-reader equivalent does not: the offset table and the length
+  prefixes come from the file, so a caller cannot bounds-check an entry without
+  it. Covered by `parquet/dict_nulls.parquet` and `test-external.R`.
+- **Refuse dictionary preservation for non-dictionary encodings**
+  (`reader/page_reader.c`). **Memory-unsafe.** `decode_phase3_values()` writes
+  materialized physical values, but its caller sizes the value buffer for
+  `uint32_t` indices whenever `preserve_dictionary` is set. A
+  `carquet_byte_array_t` is four times wider than a `uint32_t`, so a
+  `DELTA_BYTE_ARRAY`, `DELTA_LENGTH_BYTE_ARRAY` or `BYTE_STREAM_SPLIT` page read
+  in preserve mode overran the buffer and corrupted the heap. Upstream guards
+  `PLAIN` and `RLE` at their own call sites but not these. None of the encodings
+  that function handles is a dictionary encoding, so a single refusal at its
+  entry is complete. Found as an intermittent SIGSEGV/SIGBUS in qio's suite and
+  bisected to `parquet/delta_encodings.parquet`; `gctorture` was clean, which is
+  what identified it as a buffer overrun rather than a protection fault.
+- **Unpack whole RLE groups into the caller's buffer** (`encoding/rle.c`).
+  Performance, not a defect. `carquet_rle_decoder_get_batch()` unpacked eight
+  values into a staging buffer and copied them out one at a time with three loop
+  conditions per value. Whole groups now go straight to the destination; the
+  staging buffer still carries a partial group across calls, and it is drained
+  first so a call that stopped mid-group cannot reorder values. The unpack
+  kernel is also resolved once per batch rather than once per eight values.
+  Worth 5-9%, and 1.8% more from the hoist. Covered by reading every fixture at
+  batch sizes deliberately off the eight-value group boundary.
+- **Unpack bit widths 9-32 with a 64-bit accumulator** (`core/bitpack.c`).
+  Performance, not a defect. Widths 1-8 and 16 have specialized or SIMD kernels;
+  every other width -- which is every dictionary with more than 256 entries --
+  went through a loop that took one byte at a time and did two `% 8` operations
+  per byte. The undecoded bits now sit in a 64-bit accumulator refilled a byte
+  at a time, so each value costs one mask and one shift. Worth 15-25% on the
+  affected widths and nothing on width 8, which is the control. Verified
+  bit-exact against the previous algorithm over 4,800,000 unpacks by
+  `tools/bitunpack-differential.c`.
 
 `reader_internal.h` defines structs shared by multiple translation units. R's
 own build rules do not track header dependencies, so `src/Makevars` and
@@ -192,11 +233,14 @@ required after a header change.
 these. When one is filed, record its number beside the ledger entry so a
 re-vendor can tell what upstream has already taken.
 
-Not every entry is a defect, and a report should not mix them. Two are
-optimizations qio wanted (the dense-value cursor and counting page nulls once)
-and one is defensive hardening whose motivating corruption had another cause
-(zeroing decode slack). The remaining eleven are bugs, worth reporting roughly
-in this order:
+Not every entry is a defect, and a report should not mix them. Four are
+optimizations qio wanted (the dense-value cursor, counting page nulls once,
+unpacking whole RLE groups, and the 64-bit accumulator for widths 9-32), one is
+an API addition rather than a fix (exposing dictionary preservation on a column
+reader, which upstream offers only through the batch reader), and one is
+defensive hardening whose motivating corruption had another cause (zeroing
+decode slack). The remaining twelve are bugs, worth reporting roughly in this
+order:
 
 **Silent data corruption** — the worst kind, because the caller gets wrong
 values and no error:
@@ -207,11 +251,13 @@ values and no error:
 - Scalar Snappy sending 8..15 byte matches through unsafe 16-byte copies,
   which is what typical x86 builds run.
 
-**Memory-unsafe** — a data race that corrupts or ends the process:
+**Memory-unsafe** — corrupts or ends the process:
 
 - zstd contexts kept process-global on Windows without OpenMP, on the
   assumption that no OpenMP means no threads, which carquet's own worker pool
   contradicts.
+- dictionary-preserving mode decoding a non-dictionary page into a buffer sized
+  for `uint32_t` indices, overrunning it by 4x for any BYTE_ARRAY encoding.
 
 **Valid files rejected** — no data loss, but the file cannot be read or written
 at all:
