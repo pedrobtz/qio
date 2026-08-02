@@ -228,10 +228,15 @@ or creating a file.
 - A civil time that is **ambiguous** at a DST boundary -- one that occurs twice
   -- resolves to whichever instant the platform's `mktime` chooses.
 - A civil time that is **nonexistent** -- inside a spring-forward gap -- has no
-  instant in `tz` and reads as `NA`. It affects only itself: an earlier
-  implementation re-anchored through formatted text, where one such value made
-  `as.POSIXct.character` fall back to a date-only format and silently dropped
-  the time of day from every value in the column.
+  instant in `tz`, and **what it becomes is platform-dependent**: BSD and macOS
+  return -1 from `mktime`, which surfaces as `NA`, while glibc normalizes it to
+  a valid instant. qio does not currently impose a single answer, so the same
+  file can read differently on Linux and macOS. Making this deterministic is
+  open; see [`read-performance.md`](read-performance.md).
+- What *is* guaranteed on every platform is that such a value **affects only
+  itself**. An earlier implementation re-anchored through formatted text, where
+  one of them made `as.POSIXct.character` fall back to a date-only format and
+  silently dropped the time of day from every value in the column.
 - A non-UTC write with `tz != "UTC"` emits one operation-level message:
   `Converting POSIXct values to local time in "<tz>" before writing a non-UTC
   Parquet TIMESTAMP; the timezone is not stored in the file.`

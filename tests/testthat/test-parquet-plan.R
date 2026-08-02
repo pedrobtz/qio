@@ -241,10 +241,15 @@ test_that("a civil time with no instant in tz does not damage its neighbours", {
     adjusted = FALSE
   )
 
-  # The unrepresentable value is NA on its own account.
-  expect_true(is.na(result[2]))
-  # Every other value keeps its time of day. Before the fix all three read back
-  # as midnight.
+  # What the unrepresentable value itself becomes is the platform's business:
+  # BSD and macOS return -1 from mktime, which surfaces as NA, while glibc
+  # normalizes it to a valid instant. Asserting either fails on the other, and
+  # asserting NA is exactly what turned Linux CI red after this passed on macOS.
+  #
+  # What is portable, and is what the bug was about: it affects only itself.
+  # Before the fix all three values read back as midnight, because one value
+  # that would not parse made as.POSIXct.character fall back to a date-only
+  # format for the whole vector.
   expect_identical(
     format(result[1], "%Y-%m-%d %H:%M:%S"),
     "2023-06-01 09:15:30"

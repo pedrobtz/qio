@@ -1040,19 +1040,25 @@ test_that("DST boundaries match their reference in two zones", {
     read_parquet(path),
     reference("timestamp_dst-expected-utc.rds")
   )
+  # Row 2 holds a civil time that does not exist in New York, and what it
+  # resolves to is the platform's business, not qio's: BSD and macOS return -1
+  # from mktime, which surfaces as NA, while glibc normalizes it to a valid
+  # instant. Comparing it would pass on one platform and fail on the other,
+  # which is how this was found -- green on macOS, red on Linux CI.
+  gap <- 2L
+  in_new_york <- read_parquet(path, tz = "America/New_York")
   expect_identical(
-    read_parquet(path, tz = "America/New_York"),
-    reference("timestamp_dst-expected-new-york.rds")
+    in_new_york[-gap, ],
+    reference("timestamp_dst-expected-new-york.rds")[-gap, ]
   )
 
-  # Stated directly as well, because the reference alone would not say which
-  # property failed if it ever did.
-  in_new_york <- read_parquet(path, tz = "America/New_York")
-  expect_true(is.na(in_new_york$wall_us[2]))
-  expect_identical(
-    format(in_new_york$wall_us[1], "%H:%M:%S"),
-    "09:15:30"
-  )
+  # The portable guarantee, and the one the bug was about: a value with no
+  # instant in `tz` affects only itself. Before the fix, one of them stripped
+  # the time of day from every value in the column.
+  expect_identical(format(in_new_york$wall_us[1], "%H:%M:%S"), "09:15:30")
+  expect_identical(format(in_new_york$wall_us[3], "%H:%M:%S"), "01:30:00")
+  expect_identical(format(in_new_york$wall_us[5], "%H:%M:%S"), "00:07:06")
+  expect_true(is.na(in_new_york$wall_us[4])) # a real null stays null
 })
 
 # --- Dictionary-indexed text -------------------------------------------------

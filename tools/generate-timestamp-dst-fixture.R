@@ -67,13 +67,25 @@ expected_utc <- data.frame(
 # reproduces it, which would have encoded the bug as the expected answer.
 #
 # With an explicit format there is no detection: strptime resolves each value
-# on its own, the nonexistent civil time becomes NA, and the ambiguous one
-# takes whichever offset mktime chooses.
+# on its own, and the ambiguous one takes whichever offset mktime chooses.
+#
+# The gap value is deliberately *excluded from the reference*, because what it
+# resolves to is platform-dependent and not qio's choice. BSD and macOS return
+# -1 from mktime for a civil time that does not exist, which surfaces as NA;
+# glibc normalizes it to a valid instant instead. A committed reference cannot
+# hold both, and asserting either one makes the suite fail on the other
+# platform -- which is exactly how this was found, on Linux CI, after passing
+# locally on macOS.
+#
+# The portable guarantee, and the one the bug was about, is that a gap value
+# affects only itself. The test asserts that separately.
 in_new_york <- as.POSIXct(
   civil,
   format = "%Y-%m-%d %H:%M:%S",
   tz = "America/New_York"
 )
+gap_row <- 2L
+in_new_york[gap_row] <- NA # placeholder; the test never compares this row
 instant_in_new_york <- wall
 attr(instant_in_new_york, "tzone") <- "America/New_York"
 
@@ -99,4 +111,8 @@ cat("\nUTC:\n")
 print(expected_utc$wall_us)
 cat("\nAmerica/New_York:\n")
 print(expected_new_york$wall_us)
-cat("\nnonexistent civil time is NA:", is.na(in_new_york[2]), "\n")
+cat(
+  "\ngap row",
+  gap_row,
+  "is excluded from the reference (platform-dependent)\n"
+)
