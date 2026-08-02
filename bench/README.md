@@ -53,22 +53,57 @@ gate a change without a human reading the table.
 
 ## Comparing against other readers
 
-Not part of this directory: a comparison against `arrow` and `nanoparquet`
-lives in `local-script/`, which is untracked. One trap is worth recording here
-anyway, because anyone repeating the exercise will hit it.
+`compare-readers.R` times qio against `arrow` and `nanoparquet`. Both packages
+are needed to run it and neither is a qio dependency; like the rest of `bench/`,
+it never ships and no test loads it.
 
-**arrow's R package uses ALTREP, so `read_parquet()` can return before the
-values exist.** The cost is charged to whoever first touches them. On a
-500,000-row string column, arrow's read measured 0.011s and forcing the same
-data measured 0.048s; qio materializes eagerly, so it measured 0.042s and
-0.045s. Timing the bare call therefore compares qio doing all the work against
-arrow doing a fraction of it -- it reported qio as 9x slower on text, where the
-forced figures are close to level.
+```sh
+Rscript bench/compare-readers.R
+Rscript bench/compare-readers.R --rows 2000000 --reps 7 --out compare.csv
+```
 
-Any comparison must time to *materialized* data, by summing or otherwise
-touching every column after reading. It should also check that the readers
-agree before timing them, since readers that disagree are not doing the same
-work.
+A comparison is a claim about someone else's software, so the script is built to
+be refutable rather than flattering:
+
+- Files are written by **both** qio and arrow, so a reader tuned for its own
+  writer's layout shows up as a difference between the two writers rather than
+  as a win.
+- Readers must **agree before they are timed**. Readers that disagree are not
+  doing the same work, and the script stops instead of reporting it.
+- Only types all three map identically are used. Where the mappings differ --
+  64-bit integers most obviously -- a comparison measures behavior, not speed.
+- Thread counts are printed. nanoparquet is single-threaded by design, so its
+  column is a different trade-off rather than simply a slower one.
+
+**The trap that makes this hard: arrow's R package uses ALTREP, so
+`read_parquet()` can return before the values exist**, charging the cost to
+whoever first touches them. On a 500,000-row string column, arrow's read
+measured 0.011s while forcing the same data measured 0.048s; qio materializes
+eagerly, so it measured 0.042s and 0.045s. Timing the bare call compares qio
+doing all the work against arrow doing a fraction of it, and reported qio as 9x
+slower on text where the forced figures are close to level. Every case is
+therefore timed to *materialized* data, by summing over every column after
+reading, which costs all three readers the same.
+
+### Where qio stands
+
+Measured at 200,000 rows, snappy, four row groups, on one Apple silicon laptop
+with 8 cores. Median seconds to materialized data, files written by qio:
+
+| workload | qio | arrow | nanoparquet |
+|---|---:|---:|---:|
+| `numeric` | 0.0060 | 0.0050 | 0.0070 |
+| `text_dictionary` | 0.0390 | 0.0220 | 0.0150 |
+| `text_unique` | 0.0460 | 0.0290 | 0.0220 |
+| `mixed_nulls` | 0.0270 | 0.0170 | 0.0160 |
+
+qio is 1.2x to 2.6x slower than the best alternative on these shapes, closest on
+dense numerics and furthest on dictionary-encoded text. nanoparquet is fastest
+on text while single-threaded, which is the clearest signal in the table and the
+first thing to look at if read performance becomes a priority.
+
+Nothing qio documents claims otherwise. Recorded here so the position is known
+rather than assumed, and so a future optimization has a starting point.
 
 ## Method
 
