@@ -122,8 +122,9 @@ sanitizers, Valgrind, LTO, gctorture, and rchk.
   the qio-side schema check that makes it safe; carquet's own check is not
   sufficient, and the evidence is recorded in
   [`plan.md`](plan.md#phase-6-expose-the-remaining-inspection-and-writer-controls).
-- [ ] Replace `url: ~` in `_pkgdown.yml`, validate the reference index, and
-  publish pkgdown.
+- [ ] Publish pkgdown. The URL is set to
+  `https://pedrobtz.github.io/qio/`, `check_pkgdown()` reports no problems, and
+  the site builds without warnings; only publishing it remains.
 - [x] Add an honest README feature matrix and reproducible benchmarks.
 - [ ] Run final win-builder and R-hub checks, including a sanitizer platform,
   and document vendored-code licensing.
