@@ -8,6 +8,15 @@
 \description{
 Read and write files in the 'Apache Parquet' columnar storage format. Provides a native interface built on the fast C-based 'carquet' library. Bundles its C dependencies to avoid external runtime library requirements other than system 'zlib'.
 }
+\seealso{
+Useful links:
+\itemize{
+  \item \url{https://pedrobtz.github.io/qio/}
+  \item \url{https://github.com/pedrobtz/qio}
+  \item Report bugs at \url{https://github.com/pedrobtz/qio/issues}
+}
+
+}
 \author{
 \strong{Maintainer}: Pedro Baltazar \email{pedrobtz@gmail.com} [copyright holder]
 

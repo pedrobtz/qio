@@ -9,11 +9,18 @@ this document says what to change and why.
 
 **Match or beat nanoparquet on read, on the workloads where qio is behind.**
 
-qio is already ahead on numerics and near parity on plain text. The whole gap
-is dictionary-encoded text, and it widens with dictionary cardinality. Parity
-there is the goal; the parallel decode qio already has is what should take it
-past parity, since nanoparquet is single-threaded by design (confirmed: no
-threading primitives anywhere in its sources).
+qio is already ahead on numerics and on nullable mixed frames. **Two gaps
+remain, and they have different causes** -- an early draft of this plan covered
+only the first, which would have left qio short of the target:
+
+| gap | ratio | cause | steps |
+|---|---:|---|---|
+| dictionary-encoded text | 1.5x-2.6x | index decode and string materialization | 1-3 |
+| plain-encoded text | 1.14x-1.22x | per-row UTF-8 validation | 4 |
+
+The parallel decode qio already has is what should take it *past* parity rather
+than merely to it, since nanoparquet is single-threaded by design (confirmed:
+no threading primitives anywhere in its sources).
 
 ## Where qio stands
 
@@ -153,13 +160,16 @@ Ordered by measured value per unit of risk. Each step states its own exit
 gate. **No step lands without before/after medians on an idle machine**, per
 the working rules in `../bench/README.md`.
 
-### Step 0 -- extend the comparison harness (prerequisite)
+### Step 0 -- extend the comparison harness (prerequisite) -- **done**
 
-`bench/compare-readers.R` uses one text cardinality, which hides the cliff that
-turned out to be a real effect. Add a cardinality sweep (200, 257, 65536,
-65537) and record ratios, not just seconds.
+`bench/compare-readers.R` used one text cardinality, which hid the cliff that
+turned out to be a real effect. It now sweeps 200, 257, 65536 and 65537,
+asserts each fixture actually carries a dictionary page, and reports a ratio
+column that a real fix must *flatten* rather than merely lower.
 
-Exit: the table above is reproducible from a committed script.
+Landed in `33e4d6c`. The sweep reproduces the table above; note that it needs
+rows to resolve, and a small `--rows` run understates the effect rather than
+disproving it.
 
 ### Step 1 -- materialize dictionary text from indexes
 
@@ -230,7 +240,39 @@ dictionaries live. Nothing on width <= 8.
 Exit: `test_bitunpack_wide`-style verification of every new kernel against the
 scalar unpacker, plus the cardinality sweep from step 0 showing the cliff gone.
 
-### Step 4 -- parallelize text columns
+### Step 4 -- SIMD UTF-8 validation
+
+The only step that addresses the *plain*-text gap. Steps 1-3 do nothing for it:
+they are all about dictionary indices, and a plain page has none.
+
+`qio_check_string_bytes()` is **28% of a plain-text read** -- a scalar
+`qio_utf8_invalid_at()` walk plus a `memchr` for embedded nuls, per value.
+nanoparquet does neither: `convert_column_to_r_ba_string_nodict_nomiss` calls
+`Rf_mkCharLenCE(..., CE_UTF8)` on the raw bytes and moves on.
+
+**This is a feature qio has and nanoparquet does not**, not overhead to delete.
+`Rf_mkCharLenCE(CE_UTF8)` does not check, so without the walk a column of
+arbitrary bytes yields CHARSXPs claiming an encoding they do not have, failing
+somewhere else later instead of here with a column and row. `?qio-types`
+documents the guarantee. Removing it to win a benchmark would be trading a
+correctness property for a number.
+
+Accelerate it instead. SIMD UTF-8 validation is well-trodden and runs at
+GB/s; carquet already carries NEON and SSE/AVX2 infrastructure to model it on.
+Validate a whole page's byte range in one pass rather than per value, so the
+`memchr` folds into the same sweep.
+
+Expected: most of the 28%, which takes plain text from 1.14x to comfortably
+under parity. Nothing on dictionary columns after step 1, where validation has
+already moved to once per dictionary.
+
+Exit: plain-text workloads at ratio <= 1.0; the invalid-UTF-8 and embedded-nul
+fixtures still fail with the same messages, byte offset included; a
+differential test against the scalar validator over random and adversarial
+byte sequences (overlong forms, surrogate halves, truncated sequences,
+above U+10FFFF).
+
+### Step 5 -- parallelize text columns
 
 `qio_file.c` keeps all `BYTE_ARRAY` work on the main thread because interning
 and the write barrier are R API. But only `SET_STRING_ELT` (20%) truly needs
@@ -245,7 +287,7 @@ Amdahl and by the existing 50,000-row threshold for private readers.
 Exit: a measured gain at 8 threads with no change at `threads = 1`; clean under
 the sanitizer and helgrind workflows.
 
-### Step 5 -- write dictionary-encoded text
+### Step 6 -- write dictionary-encoded text
 
 Set `CARQUET_ENCODING_RLE_DICTIONARY` for `BYTE_ARRAY` columns. Roughly ten
 lines. 5.7x smaller files on low-cardinality text, and it puts qio-written files
@@ -263,19 +305,22 @@ output.
 
 ## Sequencing
 
-Steps 1-5 are v0.2.0 and **should not start before v0.1.0 is tagged.** Step 1
+Steps 1-6 are v0.2.0 and **should not start before v0.1.0 is tagged.** Step 1
 restructures how text is materialized, which invalidates phase 8's release
 validation.
 
-Step 5 is the exception worth considering for v0.1.0: it changes a shipped
+Step 6 is the exception worth considering for v0.1.0: it changes a shipped
 default, and defaults are the expensive thing to revisit after release --
 not for compatibility, since old files stay readable, but because users' stored
 files and their own measurements anchor on whatever 0.1.0 wrote. It is cheap to
 verify, so the decision should follow the verification result rather than
 precede it.
 
-Within v0.2.0, do step 0 first, then 1, then 2, then 3. Step 4 comes last: it
-is the only one whose payoff depends on another step landing first.
+Within v0.2.0, do step 0 first, then 1, then 2, then 3. Step 4 is independent
+of all of them and can be done at any point -- it is the only step touching the
+plain path, so it neither blocks nor is blocked by the dictionary work. Step 5
+comes last: it is the only one whose payoff depends on another step landing
+first.
 
 ## Out of scope
 
@@ -287,7 +332,9 @@ Recorded so they are not re-proposed without new evidence.
   is worth knowing but does not change the measured ceiling on qio's side.
 - **Dropping UTF-8 validation.** It is 28% of the plain-text read, and it is
   why qio rejects invalid UTF-8 and embedded nuls with the column and row.
-  Moving it (step 1) is in scope; removing it is not. If the plain path becomes
-  the priority, SIMD-accelerate `qio_utf8_invalid_at()` instead.
+  Moving it (step 1) and accelerating it (step 4) are in scope; removing it is
+  not. nanoparquet skips it entirely, so any comparison on plain text is
+  measuring qio doing strictly more work -- that is a defensible trade, but it
+  has to be stated rather than optimized away.
 - **Compression codecs.** Snappy decompression is 0.3% of a dictionary read.
   There is nothing here.
