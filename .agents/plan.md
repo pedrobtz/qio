@@ -807,10 +807,15 @@ Status: not started
 
 ### Work
 
-- [ ] Replace `url: ~` in `_pkgdown.yml`, validate the reference index, build
+- [x] Replace `url: ~` in `_pkgdown.yml`, validate the reference index, build
   the site without warnings, and confirm `pkgdown::check_pkgdown()` passes.
   Moved here from phase 7: the URL is the maintainer's choice and is a release
-  setting rather than documentation.
+  setting rather than documentation. Set to the conventional GitHub Pages
+  address for the repository, `https://pedrobtz.github.io/qio/`, with matching
+  `URL` and `BugReports` in `DESCRIPTION`, which pkgdown expects and which had
+  been missing. `check_pkgdown()` reports no problems and `build_site()`
+  completes with no warnings across 34 reference pages. Publishing the built
+  site is still outstanding.
 - [ ] Clean all native objects and build from a fresh checkout.
 - [ ] Run `devtools::document()`, the complete test suite, `devtools::check()`,
   and `pkgdown::check_pkgdown()`.
