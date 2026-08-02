@@ -220,6 +220,70 @@ test_that("read_plan() applies UTC timestamps and rescales by unit", {
   }
 })
 
+# A local TIMESTAMP stores civil components with no zone, so reading it means
+# re-anchoring them in `tz`. Doing that through formatted text was both wrong
+# and slow, and the wrongness is the dangerous part: as.POSIXct.character picks
+# a format by requiring every value to parse, so a single civil time inside a
+# spring-forward gap -- which has no instant in `tz` -- rejected the datetime
+# format and fell through to a date-only one, silently dropping the time of day
+# from the entire column.
+
+test_that("a civil time with no instant in tz does not damage its neighbours", {
+  # 02:30 on 2023-03-12 does not exist in New York: the clock jumps 02:00 -> 03:00.
+  civil <- as.numeric(as.POSIXct(
+    c("2023-06-01 09:15:30", "2023-03-12 02:30:00", "2023-12-24 00:07:06"),
+    tz = "UTC"
+  ))
+  result <- qio_as_posixct(
+    civil * 1e6,
+    1e6,
+    "America/New_York",
+    adjusted = FALSE
+  )
+
+  # The unrepresentable value is NA on its own account.
+  expect_true(is.na(result[2]))
+  # Every other value keeps its time of day. Before the fix all three read back
+  # as midnight.
+  expect_identical(
+    format(result[1], "%Y-%m-%d %H:%M:%S"),
+    "2023-06-01 09:15:30"
+  )
+  expect_identical(
+    format(result[3], "%Y-%m-%d %H:%M:%S"),
+    "2023-12-24 00:07:06"
+  )
+})
+
+test_that("re-anchoring civil components preserves them exactly", {
+  # Sub-second values and several zones, none of them near a DST transition,
+  # so this pins the ordinary case rather than the boundary.
+  civil <- as.numeric(as.POSIXct("2023-06-15 13:45:07", tz = "UTC")) +
+    c(0, 0.000001, 0.25, 0.5, 0.999999)
+  for (tz in c("UTC", "America/New_York", "Asia/Kolkata", "Australia/Sydney")) {
+    result <- qio_as_posixct(civil * 1e6, 1e6, tz, adjusted = FALSE)
+    expect_identical(
+      format(result, "%Y-%m-%d %H:%M:%S"),
+      format(
+        structure(civil, class = c("POSIXct", "POSIXt"), tzone = "UTC"),
+        "%Y-%m-%d %H:%M:%S"
+      ),
+      info = tz
+    )
+    expect_identical(attr(result, "tzone"), tz, info = tz)
+  }
+})
+
+test_that("re-anchoring in UTC is the identity", {
+  # tz defaults to UTC, and UTC civil components are already UTC instants.
+  # This used to format and reparse every value to return it unchanged.
+  civil <- as.numeric(as.POSIXct("2023-06-15 13:45:07", tz = "UTC")) +
+    c(0, 1, 2.5)
+  result <- qio_as_posixct(civil * 1e6, 1e6, "UTC", adjusted = FALSE)
+  expect_identical(as.numeric(result), civil)
+  expect_identical(attr(result, "tzone"), "UTC")
+})
+
 test_that("read_plan() reads a non-UTC timestamp as a wall clock in tz", {
   plan <- read_plan(ts_schema("unit=MICROS, adjusted_to_utc=false"))
 

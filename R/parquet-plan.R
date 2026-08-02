@@ -702,7 +702,29 @@ qio_as_posixct <- function(x, per_second, tz, adjusted) {
     return(structure(seconds, class = c("POSIXct", "POSIXt"), tzone = tz))
   }
   civil <- structure(seconds, class = c("POSIXct", "POSIXt"), tzone = "UTC")
-  as.POSIXct(format(civil, "%Y-%m-%d %H:%M:%OS6"), tz = tz)
+  # Re-anchoring UTC civil components in UTC is the identity, and `tz`
+  # defaults to UTC. Formatting and reparsing 3 million values to return them
+  # unchanged cost 42 seconds on one column of a public taxi dataset.
+  if (identical(tz, "UTC")) {
+    return(civil)
+  }
+  # Otherwise re-anchor through the civil components rather than through text.
+  #
+  # The string route was not only slow but wrong: as.POSIXct.character picks a
+  # format by requiring *every* value to parse, and a civil time inside a
+  # spring-forward gap does not exist in `tz`, so strptime returns NA for it.
+  # That rejected "%Y-%m-%d %H:%M:%OS" and fell through to "%Y-%m-%d", which
+  # parses everything -- silently discarding the time of day from the whole
+  # column because one value was unrepresentable.
+  #
+  # isdst = -1 leaves the DST decision to the platform's mktime, which is what
+  # the text route delegated to as well; TYPES.md, "Timestamps". A value that
+  # genuinely has no instant in `tz` now becomes NA on its own, without taking
+  # the rest of the column with it.
+  lt <- as.POSIXlt(civil, tz = "UTC")
+  lt$isdst <- -1L
+  attr(lt, "tzone") <- tz
+  as.POSIXct(lt)
 }
 
 # TIME is a count since midnight, not an instant, so neither mode returns
