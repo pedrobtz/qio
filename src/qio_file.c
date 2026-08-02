@@ -49,6 +49,7 @@ typedef struct {
 #define QIO_KIND_TEXT 2    /* BYTE_ARRAY with a text annotation -> character */
 #define QIO_KIND_BINARY 3  /* BYTE_ARRAY or FIXED_LEN_BYTE_ARRAY -> raw list */
 #define QIO_KIND_UINT32 4  /* INT32 bits read as unsigned -> double */
+#define QIO_KIND_UUID 5    /* FIXED_LEN_BYTE_ARRAY(16) + UUID -> character */
 
 /* R's exact integer range in a double. Both bounds are representable. */
 #define QIO_DOUBLE_EXACT_MAX 9007199254740992LL /* 2^53 */
@@ -489,11 +490,48 @@ static void qio_check_string_bytes(const carquet_byte_array_t *value,
     }
 }
 
+/* 16 bytes to the canonical 8-4-4-4-12 hyphenated form, lowercase.
+ *
+ * Formatted here rather than in the read plan because the bytes are already
+ * in C: building the text in R meant one closure call and several string
+ * allocations per value, about 23 microseconds each before it was vectorized
+ * and 3.6 after. The output is always exactly 36 characters. */
+static void qio_format_uuid(const uint8_t *bytes, char *out) {
+    static const char digits[] = "0123456789abcdef";
+    static const int group_bytes[] = {4, 2, 2, 2, 6};
+    int at = 0;
+    int byte = 0;
+    for (int group = 0; group < 5; group++) {
+        if (group > 0) out[at++] = '-';
+        for (int k = 0; k < group_bytes[group]; k++, byte++) {
+            out[at++] = digits[bytes[byte] >> 4];
+            out[at++] = digits[bytes[byte] & 0x0F];
+        }
+    }
+}
+
+#define QIO_UUID_TEXT_LENGTH 36
+#define QIO_UUID_BYTES 16
+
+/* A UUID is FIXED_LEN_BYTE_ARRAY(16) by definition. A file that annotates a
+ * different width is malformed rather than something to reinterpret. */
+static void qio_check_uuid_width(int32_t type_length, const char *column) {
+    if (type_length != QIO_UUID_BYTES) {
+        Rf_error("qio: column '%s' is annotated as UUID but its values are %d "
+                 "bytes; UUID requires exactly %d",
+                 column, (int)type_length, QIO_UUID_BYTES);
+    }
+}
+
 static SEXP qio_allocate_column(carquet_physical_type_t type,
                                 R_xlen_t length, int kind) {
     /* A binary column is a list of raw vectors whatever its physical type. */
     if (kind == QIO_KIND_BINARY) {
         return Rf_allocVector(VECSXP, length);
+    }
+    /* A UUID is formatted straight to text; its bytes never reach R. */
+    if (kind == QIO_KIND_UUID) {
+        return Rf_allocVector(STRSXP, length);
     }
     /* R's integer is signed, so the top half of an unsigned 32-bit column
      * needs a double to stay positive. */
@@ -522,7 +560,8 @@ static SEXP qio_allocate_column(carquet_physical_type_t type,
 /* True when a column materializes into an R list or character vector, both of
  * which need the R API and so cannot be built on a worker thread. */
 static int qio_needs_main_thread(carquet_physical_type_t type, int kind) {
-    return kind == QIO_KIND_BINARY || type == CARQUET_PHYSICAL_BYTE_ARRAY ||
+    return kind == QIO_KIND_BINARY || kind == QIO_KIND_UUID ||
+           type == CARQUET_PHYSICAL_BYTE_ARRAY ||
            type == CARQUET_PHYSICAL_FIXED_LEN_BYTE_ARRAY;
 }
 
@@ -624,8 +663,24 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                                   int *sentinel, int int64_mode,
                                   int is_unsigned64, int *int64_coerced,
                                   int kind, int32_t type_length) {
+    if (kind == QIO_KIND_UUID) {
+        qio_check_uuid_width(type_length, column);
+    }
     for (int64_t i = 0; i < length; i++) {
         R_xlen_t out = offset + (R_xlen_t)i;
+        if (kind == QIO_KIND_UUID) {
+            if (!qio_value_present(bitmap, i)) {
+                SET_STRING_ELT(destination, out, NA_STRING);
+                continue;
+            }
+            char text[QIO_UUID_TEXT_LENGTH];
+            qio_format_uuid((const uint8_t *)data +
+                                (size_t)i * (size_t)type_length,
+                            text);
+            SET_STRING_ELT(destination, out,
+                           Rf_mkCharLenCE(text, QIO_UUID_TEXT_LENGTH, CE_UTF8));
+            continue;
+        }
         if (kind == QIO_KIND_BINARY) {
             /* The batch reader hands back row-aligned values, so index by row
              * rather than tracking a dense cursor. */
@@ -1179,6 +1234,25 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
                                      int int64_mode, int is_unsigned64,
                                      int *int64_coerced, int kind,
                                      int32_t type_length) {
+    if (kind == QIO_KIND_UUID) {
+        qio_check_uuid_width(type_length, column);
+        int64_t j = 0;
+        for (int64_t i = 0; i < length; i++) {
+            R_xlen_t out = offset + (R_xlen_t)i;
+            if (def_levels != NULL && def_levels[i] != max_def) {
+                SET_STRING_ELT(destination, out, NA_STRING);
+                continue;
+            }
+            char text[QIO_UUID_TEXT_LENGTH];
+            qio_format_uuid((const uint8_t *)values +
+                                (size_t)j * (size_t)type_length,
+                            text);
+            j++;
+            SET_STRING_ELT(destination, out,
+                           Rf_mkCharLenCE(text, QIO_UUID_TEXT_LENGTH, CE_UTF8));
+        }
+        return;
+    }
     if (kind == QIO_KIND_BINARY) {
         int64_t j = 0;
         for (int64_t i = 0; i < length; i++) {
@@ -1488,7 +1562,7 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
     }
     for (int32_t i = 0; i < selection->num_columns; i++) {
         int kind = INTEGER(column_kinds)[i];
-        if (kind < QIO_KIND_DEFAULT || kind > QIO_KIND_UINT32) {
+        if (kind < QIO_KIND_DEFAULT || kind > QIO_KIND_UUID) {
             Rf_error("qio: invalid column kind %d", kind);
         }
         selection->kind[i] = (uint8_t)kind;
@@ -1530,9 +1604,10 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
         case CARQUET_PHYSICAL_BYTE_ARRAY:
             break;
         case CARQUET_PHYSICAL_FIXED_LEN_BYTE_ARRAY:
-            /* Only as raw bytes: every other mapping (UUID, FLOAT16, DECIMAL)
-             * is produced by the read plan from those bytes. */
-            if (selection->kind[i] != QIO_KIND_BINARY) {
+            /* Raw bytes, or UUID text formatted here. Every other mapping
+             * (FLOAT16, DECIMAL) is produced by the read plan from the bytes. */
+            if (selection->kind[i] != QIO_KIND_BINARY &&
+                selection->kind[i] != QIO_KIND_UUID) {
                 Rf_error("qio: column '%s' is FIXED_LEN_BYTE_ARRAY but the "
                          "read plan did not ask for raw bytes",
                          qio_column_path_cstr(schema, column));

@@ -606,8 +606,8 @@ qio_apply_converter <- function(x, converter) {
     # C already produced a character vector or a list of raw vectors.
     text = x,
     binary = x,
-    # 16 raw bytes to the canonical 8-4-4-4-12 hyphenated form.
-    uuid = qio_format_uuid(x),
+    # C formatted the 16 bytes into canonical text already.
+    uuid = x,
     # IEEE 754 binary16, little-endian, widened to double.
     float16 = qio_decode_float16(x),
     # Physical converters return their column unchanged.
@@ -615,62 +615,12 @@ qio_apply_converter <- function(x, converter) {
   )
 }
 
-# 16 raw bytes to the canonical hyphenated UUID form. A NULL element is a null
-# value and stays NA; any other length is a malformed file, not a value qio can
-# silently reinterpret.
-qio_format_uuid <- function(x) {
-  # Vectorized rather than one closure call per value: a UUID column used to
-  # cost about 23 microseconds a value, which is 22 seconds for a million rows
-  # against roughly 0.05 for an ordinary column.
-  count <- length(x)
-  out <- rep(NA_character_, count)
-  sizes <- lengths(x)
-  present <- sizes != 0L
-
-  wrong <- which(present & sizes != 16L)
-  if (length(wrong) > 0L) {
-    stop(
-      "A UUID column contains a value of ",
-      sizes[[wrong[[1L]]]],
-      " bytes; UUID requires exactly 16.",
-      call. = FALSE
-    )
-  }
-  if (!any(present)) {
-    return(out)
-  }
-
-  # as.character() on a raw vector already produces two lowercase hex digits
-  # per byte, for the whole vector at once. Sixteen bytes per value means the
-  # result reshapes into a 16-row matrix whose columns are the values, so the
-  # canonical 8-4-4-4-12 grouping is five vectorized paste0() calls.
-  digits <- matrix(
-    as.character(unlist(x[present], use.names = FALSE)),
-    nrow = 16L
-  )
-  out[present] <- paste(
-    paste0(digits[1L, ], digits[2L, ], digits[3L, ], digits[4L, ]),
-    paste0(digits[5L, ], digits[6L, ]),
-    paste0(digits[7L, ], digits[8L, ]),
-    paste0(digits[9L, ], digits[10L, ]),
-    paste0(
-      digits[11L, ],
-      digits[12L, ],
-      digits[13L, ],
-      digits[14L, ],
-      digits[15L, ],
-      digits[16L, ]
-    ),
-    sep = "-"
-  )
-  out
-}
 
 # IEEE 754 binary16 (little-endian) widened to double. Parquet stores FLOAT16
 # as two fixed bytes; R has no half type, so widening is lossless.
 qio_decode_float16 <- function(x) {
-  # Vectorized for the same reason as qio_format_uuid(): one closure call per
-  # value cost about a microsecond each, which is a second for a million rows.
+  # Vectorized rather than one closure call per value: each value cost about
+  # a microsecond, which is a second for a million rows.
   count <- length(x)
   out <- rep(NA_real_, count)
   sizes <- lengths(x)

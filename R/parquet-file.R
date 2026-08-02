@@ -439,8 +439,10 @@ qio_column_kinds <- function(plan, columns) {
   kind <- rep(0L, length(selected)) # QIO_KIND_DEFAULT
   kind[converter %in% c("int64_double", "int64_bit64")] <- 1L # INT64
   kind[converter == "text"] <- 2L # TEXT
-  # UUID and FLOAT16 are decoded as raw bytes and converted by the plan.
-  kind[converter %in% c("binary", "uuid", "float16")] <- 3L # BINARY
+  # FLOAT16 is decoded as raw bytes and converted by the plan.
+  kind[converter %in% c("binary", "float16")] <- 3L # BINARY
+  # UUID text is formatted in C, where the bytes already are.
+  kind[converter == "uuid"] <- 5L # UUID
   # Byte-array decimals need their raw bytes; integer-backed ones decode as
   # ordinary numbers and are scaled by the plan.
   kind[startsWith(converter, "decimal_binary_")] <- 3L # BINARY

@@ -459,59 +459,12 @@ test_that("qio_select_columns() returns NULL when every column is selectable", {
 
 # --- Phase 3.2: text, binary, UUID, FLOAT16 --------------------------------
 
-# Both converters were rewritten from one closure call per value to vectorized
-# forms: a UUID column cost about 23 microseconds a value, or 22 seconds for a
-# million rows against roughly 0.05 for an ordinary column. These pin the edge
-# cases the loop handled implicitly and a reshape can get wrong -- a NULL in
-# the middle shifts every subsequent value if the bytes are unlisted naively.
-
-test_that("vectorized UUID formatting handles nulls, edges, and bad lengths", {
-  zero <- as.raw(rep(0L, 16L))
-  ones <- as.raw(rep(255L, 16L))
-  mid <- as.raw(c(
-    0x01,
-    0x23,
-    0x45,
-    0x67,
-    0x89,
-    0xab,
-    0xcd,
-    0xef,
-    0xfe,
-    0xdc,
-    0xba,
-    0x98,
-    0x76,
-    0x54,
-    0x32,
-    0x10
-  ))
-
-  expect_identical(
-    qio_format_uuid(list(zero, NULL, ones, NULL, mid)),
-    c(
-      "00000000-0000-0000-0000-000000000000",
-      NA_character_,
-      "ffffffff-ffff-ffff-ffff-ffffffffffff",
-      NA_character_,
-      "01234567-89ab-cdef-fedc-ba9876543210"
-    )
-  )
-  # A null first, so a naive reshape would misalign everything after it.
-  expect_identical(
-    qio_format_uuid(list(NULL, mid)),
-    c(NA_character_, "01234567-89ab-cdef-fedc-ba9876543210")
-  )
-  expect_identical(qio_format_uuid(list()), character(0))
-  expect_identical(
-    qio_format_uuid(list(NULL, NULL)),
-    c(NA_character_, NA_character_)
-  )
-  expect_error(
-    qio_format_uuid(list(mid, as.raw(rep(0L, 15L)))),
-    "requires exactly 16"
-  )
-})
+# FLOAT16 was rewritten from one closure call per value to a vectorized form.
+# This pins the edge cases the loop handled implicitly and a reshape can get
+# wrong: a NULL contributes nothing to unlist(), so reshaping without excluding
+# nulls first shifts every later value into the wrong slot. UUID formatting
+# moved into C entirely and is covered through the read path in
+# test-external.R.
 
 test_that("vectorized FLOAT16 decoding covers every class of value", {
   half <- function(bits) list(as.raw(c(bits %% 256L, bits %/% 256L)))
@@ -538,42 +491,7 @@ test_that("vectorized FLOAT16 decoding covers every class of value", {
   )
 })
 
-test_that("qio_format_uuid() produces the canonical form", {
-  bytes <- as.raw(c(
-    0x12,
-    0x34,
-    0x56,
-    0x78,
-    0x9a,
-    0xbc,
-    0xde,
-    0xf0,
-    0x11,
-    0x22,
-    0x33,
-    0x44,
-    0x55,
-    0x66,
-    0x77,
-    0x88
-  ))
-  expect_identical(
-    qio_format_uuid(list(bytes)),
-    "12345678-9abc-def0-1122-334455667788"
-  )
-  # A null value stays NA rather than becoming a string of zeroes.
-  expect_identical(qio_format_uuid(list(NULL)), NA_character_)
-  expect_identical(
-    qio_format_uuid(list(bytes, NULL)),
-    c("12345678-9abc-def0-1122-334455667788", NA)
-  )
-})
 
-test_that("qio_format_uuid() rejects a wrong byte count", {
-  # A malformed file, not a value to reinterpret silently.
-  expect_error(qio_format_uuid(list(as.raw(1:15))), "exactly 16")
-  expect_error(qio_format_uuid(list(as.raw(1:17))), "exactly 16")
-})
 
 test_that("qio_decode_float16() decodes IEEE binary16", {
   half <- function(lo, hi) list(as.raw(c(lo, hi)))

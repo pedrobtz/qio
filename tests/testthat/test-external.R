@@ -589,6 +589,26 @@ test_that("a UUID column reads as canonical text", {
   )
 })
 
+test_that("a null UUID does not disturb the values around it", {
+  # The text is formatted in C from the raw bytes, indexed by a dense cursor
+  # while the destination is not: the values are packed with nulls removed, so
+  # the two advance independently and an off-by-one shifts everything after
+  # the first null. The fixture's null sits at position 2 for that reason.
+  df <- read_parquet(ext("uuid.parquet"))
+
+  expect_true(is.na(df$id[2]))
+  expect_identical(df$id[1], "12345678-9abc-def0-1122-334455667788")
+  expect_identical(df$id[3], "00000000-0000-0000-0000-000000000000")
+  expect_identical(df$id[5], "6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+  # Every non-null value is the canonical 8-4-4-4-12 shape, lowercase.
+  present <- df$id[!is.na(df$id)]
+  expect_true(all(nchar(present) == 36L))
+  expect_true(all(grepl(
+    "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+    present
+  )))
+})
+
 test_that("UUID reads agree across all three APIs and survive batching", {
   path <- ext("uuid.parquet")
   file <- parquet_open(path)
