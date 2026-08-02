@@ -1,0 +1,72 @@
+# Run the CI benchmark and publish its numbers.
+#
+# This job does not gate on performance. GitHub runners are shared, so wall
+# time moves more between runs than most real regressions do, and a percentage
+# threshold here would fail on noise often enough to be ignored. It fails only
+# on `--max-seconds`, a ceiling high enough that only a hang or an
+# order-of-magnitude regression reaches it.
+#
+# What it is for: the job summary shows the table on every run, and the CSV is
+# archived, so a trend is visible across commits. Gate a change on
+# `bench/benchmark.R --compare` on a quiet machine instead; see bench/README.md.
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      rows:
+        description: Rows per workload
+        default: "300000"
+      reps:
+        description: Timed repetitions per case
+        default: "5"
+
+name: benchmark
+
+permissions: read-all
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      # qio has no Imports, so this installs the build toolchain and nothing
+      # else. The benchmark itself uses only qio and base R.
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          needs: build
+
+      - name: Install qio
+        run: R CMD INSTALL --preclean .
+        shell: bash
+
+      - name: Run benchmark
+        run: |
+          Rscript bench/ci-benchmark.R \
+            --rows "${ROWS:-300000}" \
+            --reps "${REPS:-5}" \
+            --out bench-results.csv \
+            --max-seconds 60
+        shell: bash
+        env:
+          ROWS: ${{ inputs.rows }}
+          REPS: ${{ inputs.reps }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ github.sha }}
+          path: bench-results.csv
+          if-no-files-found: warn

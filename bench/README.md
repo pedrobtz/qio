@@ -8,6 +8,37 @@ Ordered work and exit gates live in [`../.agents/plan.md`](../.agents/plan.md).
 This file owns the benchmark method, the reference workloads, and the
 regression threshold.
 
+## Two benchmarks, two questions
+
+`benchmark.R` is the reference. It answers "did this commit make qio slower on
+my machine", with large workloads, per-case tolerances measured on a quiet
+machine, and `--compare` to gate a change against a saved baseline. It needs
+`arrow` once to generate fixtures, and it is only meaningful on a quiet machine.
+
+`ci-benchmark.R` answers a narrower question, because a shared runner cannot
+answer the first. It:
+
+- needs nothing but qio and base R, generating its own fixtures. That became
+  possible only when `write_parquet(row_group_size =)` landed; before it, a
+  multi-row-group fixture had to come from another writer.
+- prints a table, writes one into the GitHub job summary, and saves a CSV, so
+  the trend is visible across commits;
+- **does not gate on performance**, because the spread recorded below on an idle
+  local machine is 12-21%, and a shared runner is worse. A percentage threshold
+  there fails on noise often enough to be ignored, which is worse than having no
+  gate at all;
+- fails only on `--max-seconds`, a ceiling high enough that only a hang or an
+  order-of-magnitude regression reaches it.
+
+```sh
+Rscript bench/ci-benchmark.R                        # print a table
+Rscript bench/ci-benchmark.R --rows 1000000 --reps 7
+Rscript bench/ci-benchmark.R --out results.csv --max-seconds 60
+```
+
+Run by `.github/workflows/benchmark.yml` on every pull request, on pushes to the
+default branch, and on demand with `rows` and `reps` inputs.
+
 ## Commands
 
 ```sh
