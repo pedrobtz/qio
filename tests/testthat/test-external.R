@@ -860,6 +860,69 @@ test_that("a cached string is a real copy, not a borrowed pointer", {
   expect_true(all(nchar(df$mixed) > 0L))
 })
 
+# --- Dictionary-indexed text -------------------------------------------------
+# Text columns are read by handing carquet's dictionary indices straight to
+# SET_STRING_ELT instead of materializing one byte array per row. Two cases are
+# not covered by string_encodings.parquet, whose "mixed" column turns out to be
+# mixed in content rather than in page encoding: a chunk that opens with a
+# dictionary page and then falls back to PLAIN, and a dictionary column with
+# nulls. Both must agree with the materializing path exactly, because a wrong
+# index returns a plausible neighbouring string rather than failing.
+
+test_that("a chunk that falls back from dictionary to plain reads correctly", {
+  # 5000 distinct 500-byte values push Apache Arrow past its dictionary page
+  # limit partway through the chunk, so the column carries a dictionary page
+  # followed by PLAIN data pages. qio must abandon the index path and re-read
+  # the whole chunk. See SOURCE.md: the row count carries deliberate margin,
+  # since 3000 values do not trigger the fallback.
+  result <- read_parquet(ext("dict_fallback.parquet"))
+  expected <- paste0(sprintf("%07d-", seq_len(5000L)), strrep("y", 500))
+
+  expect_identical(nrow(result), 5000L)
+  expect_identical(result$text, expected)
+})
+
+test_that("dictionary text with nulls keeps values and nulls aligned", {
+  # The index stream is dense -- it holds one entry per non-null value -- while
+  # the destination is not, so the gather has to advance the two cursors
+  # independently. An off-by-one here shifts every value after the first null.
+  result <- read_parquet(ext("dict_nulls.parquet"))
+  expected <- sprintf("label-%03d", seq_len(2000L) %% 40L)
+  expected[seq(1L, 2000L, by = 7L)] <- NA
+
+  expect_identical(nrow(result), 2000L)
+  expect_identical(result$text, expected)
+  expect_identical(sum(is.na(result$text)), 286L)
+})
+
+test_that("dictionary text does not depend on batch size or API", {
+  # batch_size splits a chunk across several reads. The dictionary is loaded
+  # once per chunk, so a split must not restart or shift it.
+  for (name in c("dict_fallback.parquet", "dict_nulls.parquet")) {
+    path <- ext(name)
+    file <- parquet_open(path)
+    withr::defer(parquet_close(file))
+    expected <- collect(file)
+
+    for (batch_size in c(97L, 1000L, 65536L)) {
+      expect_identical(
+        collect(file, batch_size = batch_size),
+        expected,
+        info = paste(name, "batch_size =", batch_size)
+      )
+    }
+
+    batches <- list()
+    walk_batches(
+      file,
+      function(batch, index) batches[[index]] <<- batch,
+      batch_size = 333L
+    )
+    expect_identical(do.call(rbind, batches), expected, info = name)
+    expect_identical(read_parquet(path), expected, info = name)
+  }
+})
+
 # --- Coverage fixtures from the phase 7 audit --------------------------------
 # The audit compared the corpus against what qio claims to support and found
 # four things with no third-party file. Reading them is the point: qio's own

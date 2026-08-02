@@ -956,6 +956,160 @@ static void qio_charcache_put(qio_charcache_t *cache, uint32_t probe,
     cache->entries[probe].slot = slot;
 }
 
+/* ============================================================================
+ * Dictionary-preserved string materialization
+ * ============================================================================
+ *
+ * carquet can return one uint32 index per row plus the dictionary, instead of
+ * materializing a carquet_byte_array_t per row. Building the dictionary's
+ * CHARSXPs once and gathering by index removes two costs at once: carquet's
+ * expansion (16 bytes per row) and the address cache below, which existed only
+ * to rediscover duplicates the dictionary had already identified.
+ *
+ * UTF-8 validation moves rather than disappears: once per distinct value
+ * instead of once per row. The guarantee in ?qio-types is unchanged.
+ */
+
+/* Build the dictionary as a STRSXP. The caller must PROTECT the result
+ * immediately; nothing allocates between the UNPROTECT here and the return. */
+static SEXP qio_dictionary_strings(const uint8_t *data, size_t size,
+                                   int32_t count, const uint32_t *offsets,
+                                   const char *column) {
+    SEXP dict = PROTECT(Rf_allocVector(STRSXP, count));
+    for (int32_t i = 0; i < count; i++) {
+        /* Both the offset and the length prefix come from the file, so every
+         * entry is bounds-checked against the dictionary buffer before it is
+         * read. Without this a malformed -- or merely unexpected -- dictionary
+         * walks off the end of the buffer instead of failing. */
+        if ((size_t)offsets[i] + 4u > size) {
+            Rf_error("qio: column '%s' has a dictionary entry (%d) starting "
+                     "past the end of its %llu-byte dictionary",
+                     column, i + 1, (unsigned long long)size);
+        }
+        /* A PLAIN BYTE_ARRAY dictionary entry is a little-endian 4-byte
+         * length followed by the bytes. Read it byte-wise: the entry is not
+         * guaranteed to be aligned for a uint32 load. */
+        const uint8_t *entry = data + offsets[i];
+        uint32_t length = (uint32_t)entry[0] |
+                          ((uint32_t)entry[1] << 8) |
+                          ((uint32_t)entry[2] << 16) |
+                          ((uint32_t)entry[3] << 24);
+        if (length > (uint32_t)INT32_MAX ||
+            (size_t)offsets[i] + 4u + (size_t)length > size) {
+            Rf_error("qio: column '%s' has a dictionary entry (%d) of %u "
+                     "bytes, which does not fit in its %llu-byte dictionary",
+                     column, i + 1, length, (unsigned long long)size);
+        }
+        carquet_byte_array_t value;
+        value.data = (uint8_t *)(entry + 4);
+        value.length = (int32_t)length;
+        /* Row is reported as the dictionary position: the offending bytes are
+         * a property of the dictionary, and every row using this entry shares
+         * them, so naming one of those rows would be arbitrary. */
+        qio_check_string_bytes(&value, column, i);
+        SET_STRING_ELT(dict, i,
+                       Rf_mkCharLenCE(length > 0 ? (const char *)value.data : "",
+                                      (int)length, CE_UTF8));
+    }
+    UNPROTECT(1);
+    return dict;
+}
+
+static void qio_scatter_dictionary_strings(SEXP destination, R_xlen_t offset,
+                                           SEXP dict, const uint32_t *indices,
+                                           const int16_t *def_levels,
+                                           int16_t max_def, int64_t length,
+                                           const char *column) {
+    R_xlen_t dict_count = XLENGTH(dict);
+    int64_t j = 0;
+    for (int64_t i = 0; i < length; i++) {
+        R_xlen_t out = offset + (R_xlen_t)i;
+        if (def_levels != NULL && def_levels[i] != max_def) {
+            SET_STRING_ELT(destination, out, NA_STRING);
+            continue;
+        }
+        uint32_t index = indices[j++];
+        if ((R_xlen_t)index >= dict_count) {
+            Rf_error("qio: column '%s' has a dictionary index (%u) past the "
+                     "end of its %lld-entry dictionary at row %lld",
+                     column, index, (long long)dict_count, (long long)i + 1);
+        }
+        SET_STRING_ELT(destination, out, STRING_ELT(dict, (R_xlen_t)index));
+    }
+}
+
+/* Read one whole column chunk through the dictionary path.
+ *
+ * Returns 1 when the chunk was read, 0 when the caller must fall back to the
+ * materializing path. A chunk may open with a dictionary page and then switch
+ * to PLAIN or RLE data pages -- rare, but Apache Arrow writes it -- and
+ * preserve mode cannot represent such a page.
+ *
+ * Any read failure returns 0 rather than raising. A genuine decode error then
+ * resurfaces on the fallback path, which reports it with the column, the row
+ * group, and the encodings; distinguishing the two here would duplicate that
+ * message and risk disagreeing with it. Rows already written are simply
+ * overwritten when the caller re-reads the chunk from its first row. */
+static int qio_collect_dictionary_chunk(carquet_reader_t *reader,
+                                        int32_t row_group, int32_t file_column,
+                                        carquet_column_reader_t *col,
+                                        SEXP destination, R_xlen_t offset,
+                                        void *value_buf, int16_t *def_buf,
+                                        int16_t max_def, int64_t rows,
+                                        int64_t chunk, const char *column) {
+    /* Ask the footer first. Preservation is only meaningful for a chunk that
+     * actually carries a dictionary page, and skipping the attempt for the
+     * rest avoids decoding a page just to throw it away. */
+    carquet_column_chunk_metadata_t meta;
+    if (carquet_reader_column_chunk_metadata(reader, row_group, file_column,
+                                             &meta) != CARQUET_OK ||
+        !meta.has_dictionary_page) {
+        return 0;
+    }
+
+    const uint8_t *dict_data = NULL;
+    size_t dict_size = 0;
+    int32_t dict_count = 0;
+    const uint32_t *dict_offsets = NULL;
+
+    if (carquet_column_set_preserve_dictionary(col, true) != CARQUET_OK) {
+        return 0;
+    }
+    /* A zero-length read loads the first page, and with it the dictionary
+     * page, without consuming any rows. */
+    if (carquet_column_read_batch(col, value_buf, 0, NULL, NULL) < 0) {
+        return 0;
+    }
+    if (!carquet_column_get_dictionary(col, &dict_data, &dict_size,
+                                       &dict_count, &dict_offsets)) {
+        return 0; /* no dictionary: a plain chunk, nothing to gain */
+    }
+    if (dict_offsets == NULL || dict_count < 0) {
+        return 0; /* fixed-width dictionary; not a BYTE_ARRAY layout */
+    }
+
+    SEXP dict = PROTECT(qio_dictionary_strings(dict_data, dict_size, dict_count,
+                                               dict_offsets, column));
+    int16_t *def_ptr = (max_def > 0) ? def_buf : NULL;
+    for (int64_t read = 0; read < rows;) {
+        int64_t want = rows - read;
+        if (want > chunk) want = chunk;
+        int64_t n = carquet_column_read_batch(col, value_buf, want, def_ptr,
+                                              NULL);
+        if (n <= 0 || n != want) {
+            UNPROTECT(1);
+            return 0; /* fallback page, short read, or error */
+        }
+        qio_scatter_dictionary_strings(destination,
+                                       offset + (R_xlen_t)read, dict,
+                                       (const uint32_t *)value_buf, def_ptr,
+                                       max_def, n, column);
+        read += n;
+    }
+    UNPROTECT(1);
+    return 1;
+}
+
 static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
                                      carquet_physical_type_t type,
                                      const void *values,
@@ -1789,6 +1943,41 @@ static SEXP qio_collect_body(void *data) {
                              file_col + 1, rg_index[s] + 1, message);
                 }
                 context->column = col;
+
+                /* Text columns try the dictionary path first. It is declined
+                 * for a chunk with no dictionary page, and abandoned for one
+                 * that starts dictionary-encoded and later falls back to
+                 * PLAIN. Either way the chunk is re-read from its first row by
+                 * the materializing path below, overwriting anything the
+                 * attempt wrote. */
+                if (context->selection.kind[i] == QIO_KIND_TEXT &&
+                    type == CARQUET_PHYSICAL_BYTE_ARRAY) {
+                    if (qio_collect_dictionary_chunk(
+                            reader, rg_index[s], file_col, col,
+                            VECTOR_ELT(result, i), rg_offset[s],
+                            value_buf, def_buf, max_def, rg_rows[s], chunk,
+                            carquet_schema_column_name(schema, file_col))) {
+                        carquet_column_reader_free(col);
+                        context->column = NULL;
+                        continue;
+                    }
+                    /* Declined or abandoned. Preserve mode may have consumed
+                     * pages first and a column reader has no rewind, so start
+                     * over on a fresh one; carquet_reader_get_column()
+                     * allocates per call. */
+                    carquet_column_reader_free(col);
+                    context->column = NULL;
+                    col = carquet_reader_get_column(reader, rg_index[s],
+                                                    file_col, &err);
+                    if (!col) {
+                        char message[512];
+                        carquet_error_format(&err, message, sizeof(message));
+                        Rf_error("qio: cannot open column %d of row group "
+                                 "%d: %s",
+                                 file_col + 1, rg_index[s] + 1, message);
+                    }
+                    context->column = col;
+                }
 
                 int16_t *def_ptr = (max_def > 0) ? def_buf : NULL;
                 for (int64_t read = 0; read < rg_rows[s];) {

@@ -379,3 +379,30 @@ because `decimal_types.parquet` already covers the annotation.
   own generator and pyarrow.
 - Null patterns: nullable and required columns, all-null columns, and files with
   no statistics at all.
+
+## Dictionary-indexed text (`dict_fallback.parquet`, `dict_nulls.parquet`)
+
+Written by Apache Arrow (R `arrow`), zstd, for the dictionary-index read path.
+Both must come from another writer: qio's own writer emits no dictionary pages,
+so a qio-written fixture would exercise the plain path instead.
+
+- `dict_fallback.parquet` — 5,000 distinct 500-byte values in one row group.
+  That is enough to push Arrow past its dictionary page limit partway through
+  the chunk, so the column carries a dictionary page **followed by PLAIN data
+  pages**. This is the only fixture covering that combination:
+  `string_encodings.parquet`'s `mixed` column turns out to be mixed in content,
+  not in page encoding, and Arrow keeps its whole chunk dictionary-encoded.
+
+  The row count carries deliberate margin — 3,000 values do **not** trigger the
+  fallback — because the threshold is Arrow's, not ours, and a future version
+  could move it. Verified by instrumenting the reader and confirming the
+  fallback branch is taken; a fixture that silently stopped triggering it would
+  still pass its test while testing nothing. Re-verify the same way if the file
+  is ever regenerated. zstd rather than snappy only to keep it at 16 KB
+  instead of 139 KB.
+
+- `dict_nulls.parquet` — 2,000 rows, 40 distinct labels, every seventh row null,
+  in four row groups. The dictionary index stream is dense (one entry per
+  non-null value) while the destination is not, so this covers the two cursors
+  advancing independently. An off-by-one shifts every value after the first
+  null rather than failing outright.
