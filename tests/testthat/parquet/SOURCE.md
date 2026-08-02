@@ -462,3 +462,49 @@ tests here.
 **The generator hit the same bug while producing the reference.** Passing
 `format` explicitly is required, not stylistic: without it the reference itself
 comes back date-only and would have encoded the bug as the expected answer.
+
+### `all_types.parquet` and `common_types.parquet`
+
+Two more fixtures with committed references, both written by the Apache Arrow R
+package. Generators: `tools/generate-all-types-fixture.R` and
+`tools/generate-common-types-fixture.R`.
+
+`all_types.parquet` is the broad one: 24 columns spanning **seven of the eight
+physical types** and **fifteen converters** in a single file, every column
+nullable, across several row groups. It is the answer to "is every type covered
+by a fixture from a trusted third party, with an expected result" -- for
+everything Arrow can express.
+
+Arrow cannot express six rows of the `?qio-types` table, and they keep their
+own fixtures rather than being approximated here:
+
+| not in `all_types.parquet` | why | owned by |
+|---|---|---|
+| `INT96` | deprecated; Arrow will not write it | `int96_from_spark.parquet` |
+| `UUID` | Arrow's R bindings have no UUID type | `uuid.parquet` |
+| `JSON` | Arrow's R bindings have no JSON type | `text_annotations.parquet` |
+| `NULL` type | no cast path to `arrow::null()` | `null_type.parquet` |
+| `MAP` | Arrow's R bindings cannot build one | `nested_maps.snappy.parquet` |
+| `ENUM` | Arrow writes `dictionary<string>`, a physical encoding, not the annotation | **nothing** |
+
+`ENUM` remains uncovered, as recorded in the phase 7 audit: no writer available
+here emits it.
+
+One thing the fixture disproved while being built: **Arrow stores every DECIMAL
+as `FIXED_LEN_BYTE_ARRAY`**, whatever the precision, so it never reaches the
+INT32 or INT64 storage forms the format allows. The `decimal_int_*` converters
+are therefore covered only by `converter_gaps.parquet`, written by pyarrow with
+`store_decimal_as_integer`.
+
+A second test asserts the coverage itself -- the physical types, the fifteen
+converter names, the column count, and that every column is nullable. Breadth
+is what these fixtures are for and it erodes silently: were a future Arrow to
+store decimals as integers or drop an annotation, the reference comparison
+would still pass while testing less.
+
+`common_types.parquet` is the narrow counterpart: the shape of an ordinary
+table -- 64-bit ids, text, a category, doubles, a float, a count, a flag, a date
+and a timestamp, each with one null, across three row groups. The corpus
+covered each of those types somewhere but nothing held the everyday
+combination, which is the shape real files have. The first real dataset pointed
+at qio was exactly `INT64` plus `TIMESTAMP` plus `DOUBLE` plus `STRING`.

@@ -901,6 +901,124 @@ test_that("temporal types match their independently generated reference", {
   )
 })
 
+test_that("every type Arrow can write matches its reference", {
+  # 24 columns spanning seven of the eight physical types and fifteen
+  # converters, in one file from one trusted third-party writer, compared
+  # against a reference generated without qio. See
+  # tools/generate-all-types-fixture.R for what Arrow cannot express and which
+  # fixture owns each of those instead.
+  result <- suppressWarnings(suppressMessages(
+    read_parquet(ext("all_types.parquet"))
+  ))
+  expect_identical(result, reference("all_types-expected.rds"))
+})
+
+test_that("the all-types fixture still covers what it claims to", {
+  # A coverage assertion, not a behaviour one. The fixture's value is its
+  # breadth, and breadth erodes silently: if a future Arrow stored decimals as
+  # integers, or stopped annotating something, the reference comparison above
+  # would still pass while quietly testing less.
+  plan <- as.data.frame(read_plan(ext("all_types.parquet")))
+
+  expect_setequal(
+    unique(plan$physical_type),
+    c(
+      "BOOLEAN",
+      "INT32",
+      "INT64",
+      "FLOAT",
+      "DOUBLE",
+      "BYTE_ARRAY",
+      "FIXED_LEN_BYTE_ARRAY"
+    )
+  )
+  # INT96 is absent by necessity: Arrow will not write a deprecated type.
+  expect_false("INT96" %in% plan$physical_type)
+
+  expect_setequal(
+    unique(plan$converter),
+    c(
+      "boolean",
+      "int32",
+      "date32",
+      "time_numeric_millis",
+      "uint32",
+      "decimal_binary_2",
+      "int64_double",
+      "timestamp_utc_micros_UTC",
+      "timestamp_local_micros_UTC",
+      "time_numeric_micros",
+      "float",
+      "double",
+      "float16",
+      "text",
+      "binary"
+    )
+  )
+  expect_identical(nrow(plan), 24L)
+  # Every column carries a null, so no mapping is tested only on present values.
+  expect_true(all(plan$nullable))
+})
+
+test_that("all types survive batching and row-group selection", {
+  path <- ext("all_types.parquet")
+  expected <- reference("all_types-expected.rds")
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+
+  for (batch_size in c(1L, 2L, 5L, 1000L)) {
+    expect_identical(
+      suppressWarnings(suppressMessages(collect(
+        file,
+        batch_size = batch_size
+      ))),
+      expected,
+      info = paste("batch_size =", batch_size)
+    )
+  }
+})
+
+test_that("an ordinary table of common types matches its reference", {
+  # 64-bit ids, text, a category, doubles, a float, a count, a flag, a date and
+  # a timestamp -- every one nullable, across three row groups. The corpus
+  # covered each of these somewhere but nothing held the everyday combination,
+  # which is the shape real files actually have.
+  result <- read_parquet(ext("common_types.parquet"))
+  expect_identical(result, reference("common_types-expected.rds"))
+
+  # Stated separately, because a whole-frame comparison does not say which
+  # mapping failed if one does.
+  expect_type(result$id, "double") # INT64 under the default int64 mode
+  expect_type(result$name, "character")
+  expect_type(result$quantity, "integer")
+  expect_type(result$flag, "logical")
+  expect_s3_class(result$day, "Date")
+  expect_s3_class(result$updated, "POSIXct")
+  # One null per column, none of them lost or shifted.
+  expect_identical(
+    unname(vapply(result, function(x) sum(is.na(x)), integer(1))),
+    rep(1L, ncol(result))
+  )
+})
+
+test_that("common types survive batching and row-group selection", {
+  # Three row groups, so a batch boundary and a group projection both land
+  # inside the frame rather than degenerating to one group.
+  path <- ext("common_types.parquet")
+  expected <- reference("common_types-expected.rds")
+  file <- parquet_open(path)
+  withr::defer(parquet_close(file))
+
+  for (batch_size in c(1L, 5L, 12L, 1000L)) {
+    expect_identical(
+      collect(file, batch_size = batch_size),
+      expected,
+      info = paste("batch_size =", batch_size)
+    )
+  }
+  expect_identical(collect(file, row_groups = 1L), expected[1:4, ])
+})
+
 test_that("a mixed flat and nested file matches its reference", {
   # Nested leaves are skipped in v0.1.0, so the reference records their
   # absence. The flat columns are interleaved with them in the schema, which
