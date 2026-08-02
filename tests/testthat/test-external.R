@@ -895,6 +895,62 @@ test_that("dictionary text with nulls keeps values and nulls aligned", {
   expect_identical(sum(is.na(result$text)), 286L)
 })
 
+test_that("each fixture takes the read path it is meant to", {
+  # All three paths return identical data, so every other test here would pass
+  # unchanged if the reader quietly stopped using the index path. These assert
+  # the path itself. Diagnosing which branch ran during development needed a
+  # temporary instrumented build; this is that, made permanent and testable.
+  path_for <- function(name) {
+    invisible(qio_read_path_counters()) # reset
+    invisible(suppressMessages(read_parquet(ext(name))))
+    qio_read_path_counters()
+  }
+
+  # Four row groups, every one dictionary-encoded.
+  counts <- path_for("dict_nulls.parquet")
+  expect_identical(unname(counts[["dictionary"]]), 4)
+  expect_identical(unname(counts[["fallback"]]), 0)
+
+  # One chunk that opens dictionary-encoded and falls back to PLAIN.
+  counts <- path_for("dict_fallback.parquet")
+  expect_identical(unname(counts[["fallback"]]), 1)
+  expect_identical(unname(counts[["dictionary"]]), 0)
+
+  # Three columns, three outcomes: two carry a dictionary page, one does not.
+  counts <- path_for("string_encodings.parquet")
+  expect_identical(unname(counts[["dictionary"]]), 2)
+  expect_identical(unname(counts[["declined"]]), 1)
+
+  # Delta-encoded text has no dictionary page, so the attempt is never made.
+  # This is the shape that overran a buffer before carquet learned to refuse
+  # preservation for non-dictionary encodings.
+  counts <- path_for("delta_encodings.parquet")
+  expect_identical(unname(counts[["dictionary"]]), 0)
+  expect_identical(unname(counts[["fallback"]]), 0)
+  expect_gt(counts[["declined"]], 0)
+})
+
+test_that("the dictionary path survives batch sizes that split a chunk", {
+  # A batch boundary must not push a chunk onto the fallback path: the
+  # dictionary is loaded once per chunk and the indices are read in pieces.
+  # Without this, a change that reloaded per batch would still return correct
+  # data and would only show up as a slowdown.
+  file <- parquet_open(ext("dict_nulls.parquet"))
+  withr::defer(parquet_close(file))
+
+  for (batch_size in c(7L, 128L, 501L, 65536L)) {
+    invisible(qio_read_path_counters())
+    invisible(collect(file, batch_size = batch_size))
+    counts <- qio_read_path_counters()
+    expect_identical(
+      unname(counts[["fallback"]]),
+      0,
+      info = paste("batch_size =", batch_size)
+    )
+    expect_gt(counts[["dictionary"]], 0)
+  }
+})
+
 test_that("dictionary text does not depend on batch size or API", {
   # batch_size splits a chunk across several reads. The dictionary is loaded
   # once per chunk, so a split must not restart or shift it.

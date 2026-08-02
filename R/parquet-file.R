@@ -687,3 +687,11 @@ bloom_filter_may_contain.qio_parquet_file <- function(
   row_group <- qio_whole_number(row_group, "row_group", minimum = 1L)
   .Call(C_qio_parquet_bloom_check, x, index, values, row_group)
 }
+
+# Which read path the last operation took for each text column chunk, and a
+# reset. Internal and undocumented: this exists so tests can tell the paths
+# apart, because all three return identical data and a regression to the
+# slowest one would otherwise be invisible. See src/qio_file.c.
+qio_read_path_counters <- function() {
+  .Call(C_qio_read_path_counters)
+}

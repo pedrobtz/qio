@@ -322,6 +322,136 @@ plain path, so it neither blocks nor is blocked by the dictionary work. Step 5
 comes last: it is the only one whose payoff depends on another step landing
 first.
 
+## Closing the residual gap
+
+Stages 1-4 and 6 landed and dictionary text reached parity. What remains was
+measured rather than assumed, and splits into three findings with three
+different owners. Only one of them is carquet's.
+
+Measured at 1,000,000 rows, one column of distinct 11-byte strings, both builds
+installed at -O2:
+
+| file | qio | nanoparquet | ratio |
+|---|---:|---:|---:|
+| written by qio (PLAIN, no dictionary page) | 0.1290 | 0.1120 | 1.15x |
+| written by arrow (dictionary page, falls back to PLAIN) | 0.1430 | 0.1150 | 1.24x |
+
+### Finding 1 -- the abandoned attempt costs ~10%, and it is qio's design
+
+Apache Arrow emits a dictionary page even for a column of a million distinct
+values: it begins dictionary-encoding, outgrows its page limit, and falls back
+to PLAIN partway through the chunk. qio sees the dictionary page in the footer,
+attempts the index path, meets a PLAIN page, and throws the work away to re-read
+the whole chunk on a fresh column reader.
+
+Isolated with a build that can disable the attempt, same session, control
+included:
+
+| file | attempt on | attempt off | delta |
+|---|---:|---:|---|
+| arrow-written, dictionary falls back | 0.1460 | 0.1320 | **-10%** |
+| qio-written, no dictionary page | 0.1300 | 0.1300 | 0%, the control |
+| dictionary that does not fall back | 0.0110 | 0.0130 | attempt **saves** 15% |
+
+nanoparquet does not pay this. It splits a column chunk into *chunk parts* --
+contiguous runs of pages that are all dictionary-indexed or all not -- and
+materializes each part with the right strategy, never re-reading
+(`RParquetReader.cpp`, `alloc_data_page`, whose comment cites this exact Arrow
+behaviour).
+
+qio cannot do that today because `carquet_column_read_batch()` in preserve mode
+fails the whole read rather than stopping cleanly at the page boundary. That is
+an API limitation, not a decoding-speed one.
+
+**Strategy.** Give the caller the boundary instead of an error, in two parts:
+
+1. *carquet*: when preserve mode reaches a non-dictionary page, return the
+   values decoded so far and leave the reader positioned at that page, with a
+   distinguishable status rather than -1. The refusal added in the stage 1 work
+   already identifies the exact point; it currently discards the position.
+2. *qio*: on that status, flip the reader to `preserve_dictionary = false` and
+   continue from where it stopped, scattering the remainder through the
+   materializing path. The dictionary `STRSXP` built for the first part stays
+   valid, because its CHARSXPs are copies.
+
+The risk is that a reader flipping mode mid-stream must resize its decode
+buffer, and getting that wrong is exactly the 4x overrun that stage 1 hit.
+`decoded_value_size` already exists for this, but it has never been exercised
+mid-chunk. Treat it as the primary hazard, not an afterthought.
+
+Expected: the 10% back on arrow-written text, and nothing elsewhere. This does
+**not** close the 1.15x on qio-written text, which is finding 2.
+
+### Finding 2 -- 73% of a plain-text read is R's, not qio's
+
+Profiling plain text after stage 4: `Rf_mkCharLenCE` 73%, decode 8.5%,
+allocation 7%. That is R interning a million distinct strings into its global
+CHARSXP cache. nanoparquet pays it identically; there is no R API that produces
+a character vector without it.
+
+This is why dictionary text reached parity and plain text did not. In the
+dictionary case `mkCharLenCE` runs once per *distinct* value, so the decode work
+stages 1-3 optimized is most of the cost. In the plain case it runs once per
+*row* and decode is under a tenth of the total.
+
+**Strategy: confirm the floor, then stop.** Measure the cost of building a
+1,000,000-element `STRSXP` from distinct strings with no I/O at all. If that
+figure is close to both readers' times, the remaining difference is not worth
+chasing and the ceiling should be written down rather than re-attacked.
+
+The one real lever is not making the strings at all: returning a dictionary
+column as a `factor` -- integer codes plus a levels vector -- costs one
+`mkCharLenCE` per distinct value instead of per row. nanoparquet already
+carries the dictionary for this (`facdicts`). That is an API change, not an
+optimization, and belongs with the v0.2.0 result-type decisions rather than
+here. It also does nothing for genuinely distinct text.
+
+Explicitly rejected: returning an ALTREP character vector that defers
+materialization. It would win this benchmark by not doing the work, which is
+the trap `bench/compare-readers.R` was built to expose in arrow. qio
+materializes eagerly and should keep saying so.
+
+### Finding 3 -- roughly 5% is unattributed
+
+After removing the fallback penalty, qio-written plain text is 1.15x, and decode
+is only 8.5% of that read, so carquet cannot account for the difference. The
+remainder is spread across allocation, the scatter loop, and per-string call
+overhead.
+
+**Strategy: attribute it before acting on it.** It was inferred by subtraction,
+which is exactly how the "28% validation cost" estimate that stage 4 disproved
+was arrived at. Profile the plain path against nanoparquet's directly, with the
+same fixture and the same sampling, and only then decide whether anything is
+worth changing.
+
+### Test gaps closed before any of this is implemented
+
+The reader has three paths for a text column chunk -- dictionary indices, an
+abandoned attempt with a re-read, and no attempt -- and **all three return
+byte-identical data**. Every test in the suite would therefore pass unchanged if
+a regression sent every column down the slowest path. Diagnosing which branch
+ran during stage 1 needed a temporary `fprintf` build, which is the clearest
+possible evidence that the tests could not see it.
+
+Made observable instead, before changing the implementation:
+
+- `qio_read_path_counters()` (internal, undocumented) reports how many chunks
+  took each path and resets on read. Incremented only on the main thread, where
+  BYTE_ARRAY columns already run.
+- `test-external.R` now asserts the path per fixture: four dictionary chunks for
+  `dict_nulls.parquet`, one fallback for `dict_fallback.parquet`, two dictionary
+  and one declined for `string_encodings.parquet`, and declined-only for
+  `delta_encodings.parquet` -- the shape that overran a buffer before carquet
+  learned to refuse preservation.
+- A batch-size test asserts that splitting a chunk never pushes it onto the
+  fallback path, which a per-batch dictionary reload would do while still
+  returning correct data.
+
+Finding 1 changes which path runs for a mixed chunk. When it lands, the
+`dict_fallback.parquet` expectation must change from one fallback to a new
+"switched mid-chunk" outcome, and that change is the point: it is what proves
+the optimization is live rather than silently inert.
+
 ## Out of scope
 
 Recorded so they are not re-proposed without new evidence.

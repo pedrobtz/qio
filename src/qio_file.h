@@ -25,4 +25,9 @@ SEXP qio_parquet_walk(SEXP file, SEXP columns, SEXP row_groups,
                       SEXP batch_size, SEXP callback, SEXP int64_mode,
                       SEXP column_kinds);
 
+/* Counts of which read path each text column chunk took, for tests. All three
+ * paths produce identical data, so without this a regression to the slowest
+ * one passes every test. Reading resets the counters. */
+SEXP qio_read_path_counters(void);
+
 #endif

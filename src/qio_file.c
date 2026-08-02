@@ -1060,6 +1060,37 @@ static void qio_scatter_dictionary_strings(SEXP destination, R_xlen_t offset,
     }
 }
 
+/* Which read path each text column chunk took.
+ *
+ * The three paths -- dictionary indices, an abandoned attempt followed by a
+ * re-read, and no attempt at all -- produce byte-identical results, so a test
+ * comparing values cannot tell them apart. Without this, a regression that
+ * quietly sent every column down the slowest path would pass the entire suite;
+ * diagnosing exactly that during development needed a temporary fprintf build.
+ *
+ * Only the main thread touches these: BYTE_ARRAY columns never run on the
+ * worker pool, because interning and the write barrier are R API. */
+static struct {
+    int64_t dictionary; /* read through preserved indices */
+    int64_t fallback;   /* attempted, abandoned mid-chunk, chunk re-read */
+    int64_t declined;   /* no dictionary page in the footer, never attempted */
+} qio_read_paths;
+
+SEXP qio_read_path_counters(void) {
+    const char *names[] = {"dictionary", "fallback", "declined", ""};
+    SEXP out = PROTECT(Rf_mkNamed(REALSXP, names));
+    REAL(out)[0] = (double)qio_read_paths.dictionary;
+    REAL(out)[1] = (double)qio_read_paths.fallback;
+    REAL(out)[2] = (double)qio_read_paths.declined;
+    /* Reading resets, so a test states what one operation did rather than
+     * having to subtract a previous total. */
+    qio_read_paths.dictionary = 0;
+    qio_read_paths.fallback = 0;
+    qio_read_paths.declined = 0;
+    UNPROTECT(1);
+    return out;
+}
+
 /* Read one whole column chunk through the dictionary path.
  *
  * Returns 1 when the chunk was read, 0 when the caller must fall back to the
@@ -1086,6 +1117,7 @@ static int qio_collect_dictionary_chunk(carquet_reader_t *reader,
     if (carquet_reader_column_chunk_metadata(reader, row_group, file_column,
                                              &meta) != CARQUET_OK ||
         !meta.has_dictionary_page) {
+        qio_read_paths.declined++;
         return 0;
     }
 
@@ -1095,18 +1127,22 @@ static int qio_collect_dictionary_chunk(carquet_reader_t *reader,
     const uint32_t *dict_offsets = NULL;
 
     if (carquet_column_set_preserve_dictionary(col, true) != CARQUET_OK) {
+        qio_read_paths.fallback++;
         return 0;
     }
     /* A zero-length read loads the first page, and with it the dictionary
      * page, without consuming any rows. */
     if (carquet_column_read_batch(col, value_buf, 0, NULL, NULL) < 0) {
+        qio_read_paths.fallback++;
         return 0;
     }
     if (!carquet_column_get_dictionary(col, &dict_data, &dict_size,
                                        &dict_count, &dict_offsets)) {
+        qio_read_paths.fallback++;
         return 0; /* no dictionary: a plain chunk, nothing to gain */
     }
     if (dict_offsets == NULL || dict_count < 0) {
+        qio_read_paths.fallback++;
         return 0; /* fixed-width dictionary; not a BYTE_ARRAY layout */
     }
 
@@ -1120,6 +1156,7 @@ static int qio_collect_dictionary_chunk(carquet_reader_t *reader,
                                               NULL);
         if (n <= 0 || n != want) {
             UNPROTECT(1);
+            qio_read_paths.fallback++;
             return 0; /* fallback page, short read, or error */
         }
         qio_scatter_dictionary_strings(destination,
@@ -1129,6 +1166,7 @@ static int qio_collect_dictionary_chunk(carquet_reader_t *reader,
         read += n;
     }
     UNPROTECT(1);
+    qio_read_paths.dictionary++;
     return 1;
 }
 
