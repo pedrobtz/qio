@@ -406,3 +406,59 @@ so a qio-written fixture would exercise the plain path instead.
   non-null value) while the destination is not, so this covers the two cursors
   advancing independently. An off-by-one shifts every value after the first
   null rather than failing outright.
+
+## Expectations stored as data (`*-expected*.rds`)
+
+Three fixtures carry a committed `.rds` of what qio should return. The tests
+compare against those rather than against literals typed into the test file
+while looking at the reader's output.
+
+| fixture | reference | generator |
+|---|---|---|
+| `temporal_types.parquet` | `temporal_types-expected.rds` | `tools/generate-temporal-fixture.R` |
+| `nested_mixed.parquet` | `nested_mixed-expected.rds` | `tools/generate-nested-mixed-fixture.R` |
+| `timestamp_dst.parquet` | `timestamp_dst-expected-utc.rds`, `-new-york.rds` | `tools/generate-timestamp-dst-fixture.R` |
+
+Two rules make this worth having, and breaking either makes it worthless.
+
+**The reference is never produced by reading the file with qio.** Every value is
+derived in base R from what the generator wrote, applying the contracts in
+`.agents/TYPES.md` by hand. A reference read back through qio would pin current
+behaviour, bugs included, and pass forever.
+
+**RDS, not CSV.** A CSV round trip cannot carry an `INT64` past 2^53,
+sub-second timestamp precision, a raw byte column, or `NA` distinguished from
+the string `"NA"` -- which is the set of things these fixtures exist to pin. It
+would be blind at every boundary that matters here.
+
+Regenerate with the scripts above; do not edit an `.rds` by hand. They are
+opaque and not diffable, which is the cost of exact type fidelity.
+
+### `nested_mixed.parquet`
+
+Flat columns interleaved with the ones qio skips: a `LIST` of integers, and a
+struct with two leaves. Written by the Apache Arrow R package, whose bindings
+cannot construct a `MAP` array -- `MAP` is covered by
+`nested_maps.snappy.parquet` from the Apache corpus instead.
+
+The reference holds the six flat columns only. **The absence of the nested ones
+is the assertion**, alongside the requirement that skipping them does not
+disturb the order, position or values of the flat columns around them.
+
+### `timestamp_dst.parquet`
+
+A non-UTC `TIMESTAMP` holding a civil time inside a spring-forward gap, which
+has no instant in the target zone, and one inside a fall-back overlap, which
+has two. Neither appears in `temporal_types.parquet`. A UTC-adjusted column
+sits alongside as the control: it is an instant, so `tz` must move nothing but
+the printed zone.
+
+This exists because of a bug that shipped: re-anchoring through formatted text
+let one unrepresentable value strip the time of day from every value in the
+column, because `as.POSIXct.character` picks a format by requiring all values
+to parse. Verified non-vacuous by reintroducing that code, which fails three
+tests here.
+
+**The generator hit the same bug while producing the reference.** Passing
+`format` explicitly is required, not stylistic: without it the reference itself
+comes back date-only and would have encoded the bug as the expected answer.

@@ -880,6 +880,63 @@ test_that("a cached string is a real copy, not a borrowed pointer", {
   expect_true(all(nchar(df$mixed) > 0L))
 })
 
+# --- Expectations stored as data ------------------------------------------
+# Three fixtures carry a committed .rds of what qio should return, written by
+# the generator in tools/ from the values it wrote to the Parquet file. qio is
+# never loaded there, so these compare against the data rather than against a
+# literal typed while looking at the reader's output.
+#
+# RDS rather than CSV deliberately. CSV cannot carry an INT64 past 2^53,
+# sub-second timestamp precision, raw bytes, or NA distinguished from the
+# string "NA" -- the set of things these fixtures exist to pin.
+
+reference <- function(name) readRDS(ext(name))
+
+test_that("temporal types match their independently generated reference", {
+  expect_identical(
+    read_parquet(temporal_fixture()),
+    reference(
+      "temporal_types-expected.rds"
+    )
+  )
+})
+
+test_that("a mixed flat and nested file matches its reference", {
+  # Nested leaves are skipped in v0.1.0, so the reference records their
+  # absence. The flat columns are interleaved with them in the schema, which
+  # is the point: skipping must not disturb the order, position or values of
+  # what surrounds them.
+  result <- suppressMessages(read_parquet(ext("nested_mixed.parquet")))
+  expect_identical(result, reference("nested_mixed-expected.rds"))
+  expect_false(any(c("numbers", "person", "name", "score") %in% names(result)))
+})
+
+test_that("DST boundaries match their reference in two zones", {
+  # The fixture holds a civil time inside a spring-forward gap, which has no
+  # instant in New York, and one inside a fall-back overlap, which has two.
+  # Reading through formatted text used to let the first of those strip the
+  # time of day from every value in the column; these pin that it does not.
+  path <- ext("timestamp_dst.parquet")
+
+  expect_identical(
+    read_parquet(path),
+    reference("timestamp_dst-expected-utc.rds")
+  )
+  expect_identical(
+    read_parquet(path, tz = "America/New_York"),
+    reference("timestamp_dst-expected-new-york.rds")
+  )
+
+  # Stated directly as well, because the reference alone would not say which
+  # property failed if it ever did.
+  in_new_york <- read_parquet(path, tz = "America/New_York")
+  expect_true(is.na(in_new_york$wall_us[2]))
+  expect_identical(
+    format(in_new_york$wall_us[1], "%H:%M:%S"),
+    "09:15:30"
+  )
+})
+
 # --- Dictionary-indexed text -------------------------------------------------
 # Text columns are read by handing carquet's dictionary indices straight to
 # SET_STRING_ELT instead of materializing one byte array per row. Two cases are
