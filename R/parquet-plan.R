@@ -298,26 +298,47 @@ qio_apply_decimal_scale <- function(x, scale) {
 # Big-endian two's-complement bytes to double. Parquet stores byte-array
 # decimals this way, most significant byte first, with the sign in the top bit.
 qio_decimal_from_binary <- function(x, scale) {
-  values <- vapply(
-    x,
-    function(bytes) {
-      if (is.null(bytes) || length(bytes) == 0L) {
-        return(NA_real_)
-      }
-      digits <- as.integer(bytes)
-      negative <- digits[[1L]] >= 128L
-      if (negative) {
-        digits <- 255L - digits # one's complement; add one after accumulating
-      }
-      value <- 0
-      for (digit in digits) {
-        value <- value * 256 + digit
-      }
-      if (negative) -(value + 1) else value
-    },
-    numeric(1),
-    USE.NAMES = FALSE
-  )
+  # Vectorized rather than one closure call per value, the same change made to
+  # the UUID and FLOAT16 converters. The inner loop below runs once per *byte*
+  # of width -- at most sixteen -- not once per value.
+  #
+  # Unlike those two, the byte width is not fixed: a DECIMAL stored as
+  # BYTE_ARRAY uses the fewest bytes each value needs, so the values are
+  # grouped by width and each group reshaped on its own. FIXED_LEN_BYTE_ARRAY
+  # decimals are all one width and take a single pass.
+  count <- length(x)
+  values <- rep(NA_real_, count)
+  sizes <- lengths(x)
+  present <- sizes > 0L
+  if (!any(present)) {
+    return(qio_apply_decimal_scale(values, scale))
+  }
+
+  for (width in unique(sizes[present])) {
+    at <- which(present & sizes == width)
+    # Big-endian: row 1 is the most significant byte, columns are the values.
+    digits <- matrix(
+      as.integer(unlist(x[at], use.names = FALSE)),
+      nrow = width
+    )
+    # Two's complement, so the sign lives in the top bit of the first byte.
+    negative <- digits[1L, ] >= 128L
+
+    # Both interpretations are accumulated for every value and chosen between
+    # afterwards. Rewriting only the negative columns in place would be fewer
+    # operations but needs matrix subassignment that changes shape when a
+    # group holds a single value, and this is already vectorized over values.
+    magnitude <- numeric(length(at))
+    complement <- numeric(length(at))
+    for (row in seq_len(width)) {
+      byte <- digits[row, ]
+      magnitude <- magnitude * 256 + byte
+      complement <- complement * 256 + (255L - byte)
+    }
+    # One's complement plus one, negated: the standard two's complement value.
+    values[at] <- ifelse(negative, -(complement + 1), magnitude)
+  }
+
   qio_apply_decimal_scale(values, scale)
 }
 

@@ -466,6 +466,40 @@ test_that("qio_select_columns() returns NULL when every column is selectable", {
 # moved into C entirely and is covered through the read path in
 # test-external.R.
 
+test_that("binary DECIMAL decoding handles widths, signs, and nulls", {
+  # Big-endian two's complement of arbitrary width. Vectorized by grouping the
+  # values by byte width, because a BYTE_ARRAY decimal uses the fewest bytes
+  # each value needs -- unlike UUID and FLOAT16, the width is not fixed.
+  dec <- function(x, scale = 0L) qio_decimal_from_binary(x, scale)
+
+  expect_identical(dec(list(as.raw(c(0x00, 0x7b)))), 123)
+  expect_identical(dec(list(as.raw(rep(0x00, 4L)))), 0)
+  expect_identical(dec(list(as.raw(rep(0xff, 4L)))), -1)
+  # The sign lives in the top bit of the first byte, at either boundary.
+  expect_identical(dec(list(as.raw(c(0x7f, 0xff, 0xff, 0xff)))), 2147483647)
+  expect_identical(dec(list(as.raw(c(0x80, 0x00, 0x00, 0x00)))), -2147483648)
+  # One byte wide, both signs.
+  expect_identical(dec(list(as.raw(0x05), as.raw(0xfb))), c(5, -5))
+
+  # Nulls, including one first: a NULL contributes nothing to unlist(), so
+  # reshaping without excluding nulls first shifts every later value.
+  expect_identical(
+    dec(list(NULL, as.raw(c(0x01, 0x00)), NULL, as.raw(c(0xff, 0x00)), NULL)),
+    c(NA, 256, NA, -256, NA)
+  )
+  # Mixed widths in one column, which the grouping exists for.
+  expect_identical(
+    dec(list(as.raw(0x7f), as.raw(c(0x80, 0x01)), as.raw(c(0x00, 0x00, 0xff)))),
+    c(127, -32767, 255)
+  )
+  expect_identical(dec(list(NULL, NULL)), c(NA_real_, NA_real_))
+  expect_identical(dec(list()), numeric(0))
+
+  # The scale divides, and applies to negatives too.
+  expect_equal(dec(list(as.raw(c(0x04, 0xd2))), 2L), 12.34)
+  expect_equal(dec(list(as.raw(c(0xfb, 0x2e))), 2L), -12.34)
+})
+
 test_that("vectorized FLOAT16 decoding covers every class of value", {
   half <- function(bits) list(as.raw(c(bits %% 256L, bits %/% 256L)))
   # Bit patterns from the IEEE 754 binary16 definition.
@@ -490,7 +524,6 @@ test_that("vectorized FLOAT16 decoding covers every class of value", {
     "requires exactly 2"
   )
 })
-
 
 
 test_that("qio_decode_float16() decodes IEEE binary16", {
