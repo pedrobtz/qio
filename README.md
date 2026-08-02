@@ -90,6 +90,11 @@ not only by round-tripping qio's own output. Each fixture's provenance is in
 | Page versions | V1 and V2 |
 | Parallelism | Column-parallel decode on both mapped and buffered handles |
 
+`?qio-types` is the complete table: every physical type, the logical
+annotations qio applies to it, the R type it produces, where precision is lost,
+and whether it can be written. `read_plan()` answers the same question for one
+real file before reading it.
+
 Column selection resolves by complete schema path, so two leaves sharing a name
 under different parents stay distinct.
 

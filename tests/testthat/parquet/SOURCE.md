@@ -320,10 +320,23 @@ All four were written by `tools/generate-coverage-fixtures.py` with `pyarrow`
 - Contents: a `STRING` column and a `JSON` column, each with a null.
 - Why it matters: qio reads `STRING`, `ENUM`, and `JSON` as character.
 
-**Known gap:** `ENUM` has no fixture. No writer available here emits it --
-pyarrow maps a dictionary to a dictionary-encoded `STRING`, not to the `ENUM`
-annotation -- so the branch is exercised only by unit-level reasoning, not by a
-real file. Recorded rather than papered over.
+**Known gaps.** Two rows of the type mapping in `?qio-types` have no fixture.
+Both are implemented and share a verified code path with a neighbouring row,
+but neither is exercised by a real file:
+
+- `ENUM`. No writer available here emits it -- No writer available here emits it --
+  pyarrow maps a dictionary to a dictionary-encoded `STRING`, not to the `ENUM`
+  annotation. It shares the `text` converter with `STRING` and `JSON`, both of
+  which are covered.
+- `DECIMAL` stored as `BYTE_ARRAY`. pyarrow writes `FIXED_LEN_BYTE_ARRAY` even
+  for `decimal256`, so the variable-length storage cannot be produced here. It
+  shares the `decimal_binary_` converter with the fixed-length form, which is
+  covered by `decimal_types.parquet`.
+
+Integer-backed decimals (`INT32` and `INT64` storage) were verified separately
+against pyarrow with `store_decimal_as_integer`, including that
+`123456789012.30` survives exactly; they are not committed as a fixture only
+because `decimal_types.parquet` already covers the annotation.
 
 ### What the audit found covered
 

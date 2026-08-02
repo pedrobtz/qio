@@ -10,6 +10,7 @@ reference:
       - parquet_schema
       - infer_parquet_schema
       - parquet_type_mapping
+      - qio-types
   - title: Lazy reading
     contents:
       - parquet_open

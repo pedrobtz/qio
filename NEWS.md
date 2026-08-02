@@ -1,5 +1,9 @@
 # qio 0.0.0.9000
 
+* New `?qio-types` consolidates the Parquet-to-R type mapping into one table:
+  every physical type, the logical annotations qio applies to it, the R type it
+  produces, where precision is lost and why, and whether it can be written.
+
 * 64-bit integer columns written with `DELTA_BINARY_PACKED` now read. Apache
   Arrow uses a larger block size for 64-bit columns than for 32-bit ones, and
   the bundled decoder rejected it, so such a column failed as an unsupported

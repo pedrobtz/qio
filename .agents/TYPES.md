@@ -23,6 +23,12 @@ precedence over physical fallbacks.
 8. `qio_type_registry()` is authoritative for physical fallbacks;
    `parquet_type_mapping()` must be generated from it.
 
+The user-facing consolidation of everything below is `?qio-types`, generated
+from `R/types.R`: one table of physical type, logical annotation, resulting R
+type, precision notes, and write support. This file remains the owner of the
+contracts and the reasoning; that topic is the reference a user reads. Change
+this file first, then keep the table in step.
+
 ## Current behavior
 
 Nulls become the corresponding R `NA`. Materializing reads accept `int64`,
