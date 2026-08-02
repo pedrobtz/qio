@@ -543,6 +543,43 @@ nothing to `unlist()`, so reshaping without excluding nulls first silently
 shifts every later value into the wrong slot. Every one of these tests puts a
 null **first** for that reason.
 
+### Finding 4 -- parallel granularity, from the second and third real files
+
+Two more public files were run after the taxi one: 5.8M x 4 numeric columns in
+a single row group (2015 US flights), and 67k x 3 across 68 row groups
+(GLUE SST-2). Neither had a converter pathology; both agreed with arrow and
+nanoparquet on every value.
+
+The narrow one is 1.78x slower than arrow with **no per-column outlier**, which
+rules out the per-value class of defect entirely and points at something
+structural. qio schedules one worker task per *(row group x column)*. A file
+with one row group and four columns therefore has four tasks, whatever the core
+count:
+
+| threads | seconds |
+|---:|---:|
+| 1 | 0.1260 |
+| 2 | 0.0840 |
+| 4 | 0.0760 |
+| 8 | 0.0660 |
+
+1.91x from eight cores, plateauing at four, exactly where the task count runs
+out.
+
+**Strategy: split a row group across threads.** The unit of work should be a
+page range within a column chunk, not a whole chunk. That is a larger change
+than anything in steps 1-6 and it interacts with the buffered private-reader
+path, so it needs its own design. Note it does *not* have step 5's problem --
+this is numeric decode, which already runs off the main thread, so the
+parallelizable fraction is large rather than 20%.
+
+Tall and narrow is a common analytics shape. qio currently cannot use a
+machine's cores on it.
+
+SST-2 is the useful control: 68 row groups for 67k rows, about a thousand each,
+where per-group overhead might have dominated. It does not; qio is at parity.
+So the granularity problem is having too few tasks, not too many.
+
 ### What follows from it
 
 - `bench/real-file.R` exists now, and its per-column table with a `SLOW` marker
@@ -553,10 +590,11 @@ null **first** for that reason.
   not wasted -- dictionary text is genuinely at parity now -- but the ranking
   was set by generated shapes, and the single largest defect was somewhere the
   generated shapes could not reach.
-- The measured finding rate is four defects from one real file. There is no
-  basis for assuming the second one finds nothing. Run `bench/real-file.R`
-  against files from other writers -- Spark, DuckDB, pandas -- before ranking
-  any further read work by these numbers.
+- The measured finding rate is four defects from the first real file, and a
+  fifth -- parallel granularity -- from the second. The third found nothing,
+  which is the first evidence that the corpus is converging. Keep running
+  `bench/real-file.R` against files from writers not yet represented before
+  ranking any further read work by generated numbers.
 
 ## Out of scope
 

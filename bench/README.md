@@ -186,6 +186,41 @@ time, in R. Chasing that also turned up a silent correctness bug in the same
 code and two more converters with the same shape. After the fix those columns
 sit at 3.5x the median and the whole file reads in 0.205 s, 1.13x arrow.
 
+### Measured on three public files
+
+Different writers, deliberately different shapes. Median seconds to
+materialized data, values verified to agree across all three readers first.
+
+| file | shape | qio | arrow | nanoparquet | qio vs best |
+|---|---|---:|---:|---:|---:|
+| NYC taxi, Jan 2023 | 3.1M x 19, 1 group, GZIP | 0.205 | 0.192 | 0.523 | 1.07x |
+| 2015 US flights | 5.8M x 4, 1 group, Snappy | 0.089 | 0.050 | 0.120 | **1.78x** |
+| GLUE SST-2 | 67k x 3, **68 groups**, Snappy | 0.016 | 0.017 | 0.016 | 1.00x |
+
+The taxi file is the one that read 83.2 s before the converter fixes.
+
+**The flights file found something new, and it is structural.** No column is an
+outlier -- all four are within 1.1x of the median -- so this is not a converter
+pathology. It is parallel granularity: qio schedules one task per *(row group x
+column)*, and this file is one row group of four columns, so at most four tasks
+exist however many cores are available.
+
+| threads | seconds |
+|---:|---:|
+| 1 | 0.1260 |
+| 2 | 0.0840 |
+| 4 | 0.0760 |
+| 8 | 0.0660 |
+
+1.91x from eight cores, plateauing at four. Tall-and-narrow is a common
+analytics shape, and qio cannot currently use a machine's cores on it. Splitting
+a row group across threads is the fix and is not scheduled; recorded in
+`.agents/read-performance.md`.
+
+SST-2 is the control for the opposite extreme: 68 row groups for 67k rows,
+about a thousand rows each, where per-group overhead could have dominated. It
+does not -- qio is at parity there.
+
 A column costing far more than its neighbours is the signature of per-value
 work in R, and it disappears into the total once averaged across a wide frame.
 Anything at **20x the median column** is marked `SLOW` and is worth profiling

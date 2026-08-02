@@ -38,15 +38,26 @@ argv <- commandArgs(trailingOnly = TRUE)
 
 if ("--fetch" %in% argv || length(argv) == 0L) {
   cat(
-    "Point this at any Parquet file. Public files worth trying:\n\n",
-    "  NYC taxi trips (~47 MB, 3.1M rows, 19 columns, GZIP, all dictionary-\n",
-    "  encoded, two TIMESTAMP columns):\n",
-    "    curl -O https://d37ci6vzurychx.cloudfront.net/trip-data/",
+    "Point this at any Parquet file. Three public ones, deliberately different\n",
+    "in shape and from different writers:\n\n",
+    "  1. NYC taxi trips -- 47 MB, 3.1M rows, 19 columns, one row group, GZIP,\n",
+    "     every column dictionary-encoded, two TIMESTAMP columns. Wide.\n",
+    "     https://d37ci6vzurychx.cloudfront.net/trip-data/",
     "yellow_tripdata_2023-01.parquet\n\n",
-    "  Then:\n",
-    "    Rscript bench/real-file.R yellow_tripdata_2023-01.parquet\n\n",
+    "  2. 2015 US flights -- 24 MB, 5.8M rows, 4 numeric columns, one row\n",
+    "     group, Snappy. Tall and narrow, which is the shape that exposes\n",
+    "     qio's parallel granularity.\n",
+    "     https://github.com/plotly/datasets/raw/master/2015_flights.parquet\n\n",
+    "  3. GLUE SST-2 -- 3 MB, 67k rows, 3 columns, but 68 row groups. Text\n",
+    "     heavy with many small groups, so per-group overhead dominates.\n",
+    "     https://huggingface.co/datasets/nyu-mll/glue/resolve/main/sst2/",
+    "train-00000-of-00001.parquet\n\n",
+    "  curl -O <url>, then:\n",
+    "    Rscript bench/real-file.R <file>.parquet\n\n",
     "Nothing is downloaded automatically and no data is committed: the point\n",
-    "is to run against files this repository did not choose.\n",
+    "is to run against files this repository did not choose. Committing them\n",
+    "would fix in advance the shapes qio is measured on, which is the problem\n",
+    "this script exists to solve.\n",
     sep = ""
   )
   quit(status = if (length(argv) == 0L) 1L else 0L)
