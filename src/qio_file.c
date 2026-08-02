@@ -404,9 +404,31 @@ static double qio_int96_to_seconds(carquet_int96_t value) {
  * have, misbehaving later rather than failing here. Overlong forms, surrogate
  * halves, and anything above U+10FFFF are rejected: they are all invalid UTF-8
  * even though a naive length-only check accepts them. */
+/* Any byte below 0x80 is a complete, valid UTF-8 sequence on its own, and real
+ * text is overwhelmingly made of them. Testing eight at a time turns the common
+ * case into one load and one mask per eight bytes instead of a decode step per
+ * byte.
+ *
+ * The mask is byte-wise, so it holds on either endianness, and memcpy is used
+ * rather than a cast because the bytes come from a page buffer with no
+ * alignment guarantee -- compilers fold it into a single unaligned load. */
+#define QIO_ASCII_HIGH_BITS 0x8080808080808080ULL
+
+static int32_t qio_skip_ascii(const uint8_t *bytes, int32_t length, int32_t i) {
+    while (length - i >= 8) {
+        uint64_t word;
+        memcpy(&word, bytes + i, sizeof(word));
+        if (word & QIO_ASCII_HIGH_BITS) break;
+        i += 8;
+    }
+    return i;
+}
+
 static int64_t qio_utf8_invalid_at(const uint8_t *bytes, int32_t length) {
     int32_t i = 0;
     while (i < length) {
+        i = qio_skip_ascii(bytes, length, i);
+        if (i >= length) break;
         uint8_t byte = bytes[i];
         int32_t extra;
         uint32_t code;
