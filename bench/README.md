@@ -87,23 +87,27 @@ reading, which costs all three readers the same.
 
 ### Where qio stands
 
-Measured at 200,000 rows, snappy, four row groups, on one Apple silicon laptop
-with 8 cores. Median seconds to materialized data, files written by qio:
+Measured at 1,000,000 rows, snappy, four row groups, on one Apple silicon
+laptop with 8 cores. Median seconds to materialized data, files written by qio:
 
-| workload | qio | arrow | nanoparquet |
-|---|---:|---:|---:|
-| `numeric` | 0.0060 | 0.0050 | 0.0070 |
-| `text_dictionary` | 0.0390 | 0.0220 | 0.0150 |
-| `text_unique` | 0.0460 | 0.0290 | 0.0220 |
-| `mixed_nulls` | 0.0270 | 0.0170 | 0.0160 |
+| workload | qio | arrow | nanoparquet | qio vs best other |
+|---|---:|---:|---:|---:|
+| `numeric` | 0.0110 | 0.0090 | 0.0200 | 1.22x slower |
+| `text_dictionary` | 0.0200 | 0.0680 | 0.0190 | 1.05x slower |
+| `text_unique` | 0.1030 | 0.1070 | 0.0950 | 1.08x slower |
+| `mixed_nulls` | 0.0200 | 0.0520 | 0.0320 | **0.62x faster** |
 
-qio is 1.2x to 2.6x slower than the best alternative on these shapes, closest on
-dense numerics and furthest on dictionary-encoded text. nanoparquet is fastest
-on text while single-threaded, which is the clearest signal in the table and the
-first thing to look at if read performance becomes a priority.
+qio is at or near parity on these shapes and ahead on the nullable mixed frame.
+It was 1.2x to 2.6x slower before the read work recorded in
+`.agents/read-performance.md`; that table is kept there rather than here.
 
-Nothing qio documents claims otherwise. Recorded here so the position is known
-rather than assumed, and so a future optimization has a starting point.
+Two things this table does **not** say, both learned the hard way:
+
+- It is generated data. It says nothing about files this repository did not
+  design -- see "Real files" below, where one public dataset was 426x slower
+  than the best alternative while every one of these numbers looked healthy.
+- It is reads only. qio's writer has never been compared against arrow or
+  nanoparquet at all.
 
 ### The dictionary bit width sweep
 
@@ -120,10 +124,13 @@ fixture:
 
 | cardinality | index bits | qio | arrow | nanoparquet | qio vs best |
 |---:|---:|---:|---:|---:|---:|
-| 200 | 8 | 0.0230 | 0.0560 | 0.0150 | 1.53x |
-| 257 | 9 | 0.0270 | 0.0570 | 0.0160 | 1.69x |
-| 65536 | 16 | 0.0600 | 0.0630 | 0.0280 | 2.14x |
-| 65537 | 17 | 0.0670 | 0.0630 | 0.0280 | 2.39x |
+| 200 | 8 | 0.0090 | 0.0350 | 0.0090 | 1.00x |
+| 257 | 9 | 0.0110 | 0.0350 | 0.0100 | 1.10x |
+| 65536 | 16 | 0.0170 | 0.0380 | 0.0180 | **0.94x faster** |
+| 65537 | 17 | 0.0190 | 0.0390 | 0.0180 | 1.06x |
+
+Before the kernel work those four rows read 1.53x, 1.69x, 2.14x and 2.39x, so
+the column is now flat as well as lower -- which was the actual goal.
 
 **A build that fixes this flattens the ratio column, not merely lowers it.**
 That is the point of the sweep: a change that speeds up every width equally has
@@ -142,6 +149,49 @@ Two cautions for anyone rerunning it:
 The full analysis, root causes traced through both codebases, and the ordered
 plan are in `.agents/read-performance.md`, which does not ship in the source
 package.
+
+## Real files
+
+`real-file.R` points the same three readers at a file this repository did not
+choose, and reports where the time goes **per column**.
+
+```sh
+Rscript bench/real-file.R --fetch                 # how to get a public file
+Rscript bench/real-file.R path/to/file.parquet
+Rscript bench/real-file.R path/to/file.parquet --reps 7 --out real.csv
+```
+
+Nothing is downloaded automatically and no data is committed; the point is to
+run against shapes nobody here designed.
+
+**This exists because the generated benchmarks missed a 426x pathology.**
+`compare-readers.R` fixes the shape and varies the reader, which is the right
+tool for a controlled A/B but can only contain what someone thought to
+generate. The first real file ever pointed at qio -- January 2023 NYC taxi trip
+data, 3.07M rows, 19 columns, GZIP, every column dictionary-encoded -- read in
+83.2 s against arrow's 0.195 and nanoparquet's 0.541, with every value correct.
+
+Two of nineteen columns held 85 of those 83 seconds, and the per-column table
+is what showed it:
+
+| column | seconds | x median | converter |
+|---|---:|---:|---|
+| `tpep_dropoff_datetime` | 42.340 | **2646x** | `timestamp_local_micros_UTC` |
+| `tpep_pickup_datetime` | 42.000 | **2625x** | `timestamp_local_micros_UTC` |
+| `total_amount` | 0.039 | 2.4x | `double` |
+| … | | | |
+
+Both were re-anchoring civil components through formatted text, one value at a
+time, in R. Chasing that also turned up a silent correctness bug in the same
+code and two more converters with the same shape. After the fix those columns
+sit at 3.5x the median and the whole file reads in 0.205 s, 1.13x arrow.
+
+A column costing far more than its neighbours is the signature of per-value
+work in R, and it disappears into the total once averaged across a wide frame.
+Anything at **20x the median column** is marked `SLOW` and is worth profiling
+before anything else is tuned. The marker was checked against the build from
+before the fix, where it fires on exactly those two columns and nothing else --
+a threshold that never fires is not a check.
 
 ## Method
 
