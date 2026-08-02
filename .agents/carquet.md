@@ -189,11 +189,48 @@ column failed. It names the column's encodings from
 ## Dictionary reads
 
 Dictionary preservation is chosen from the first page. It works only while the
-whole chunk remains dictionary encoded. A later `PLAIN` page fails with
-`CARQUET_ERROR_INVALID_ENCODING`; carquet does not retry materialized output.
+whole chunk remains dictionary encoded. A later `PLAIN` page fails; carquet
+does not retry materialized output, and it does not report where it stopped.
 
 qio's public text result is always character. Any dictionary optimization must
 fall back safely for plain or mixed chunks and copy strings into R-owned memory.
+
+**qio uses this for text columns as of v0.1.0.** Upstream exposes preservation
+only through the batch reader's config, so two accessors were added locally
+(see [`VENDORED.md`](VENDORED.md)) to reach it from a column reader, which is
+what `collect()` uses. The flow per column chunk is:
+
+1. Consult the footer. Skip the attempt entirely unless the chunk advertises a
+   dictionary page, which also keeps non-dictionary encodings away from
+   preserve mode.
+2. Enable preservation, then read zero values -- that loads the first page, and
+   with it the dictionary, without consuming rows.
+3. Build the dictionary's CHARSXPs once, validating UTF-8 once per distinct
+   value rather than once per row.
+4. Read `uint32` indices and gather with `SET_STRING_ELT`.
+
+If any step declines, or a later page is not dictionary encoded, qio frees the
+reader and re-reads the whole chunk on a fresh one. A column reader has no
+rewind, and preserve mode may have consumed pages before failing. That re-read
+costs about 10% on files Apache Arrow writes, because Arrow emits a dictionary
+page even for all-distinct columns and then falls back to `PLAIN` mid-chunk.
+Switching at the page boundary instead is v0.2.0 work and needs carquet to
+report the boundary rather than failing the read.
+
+**Two hazards worth knowing before touching this.**
+
+The value buffer is sized for `uint32` indices whenever preservation is on, but
+`decode_phase3_values()` writes materialized physical values -- a
+`carquet_byte_array_t` is four times wider. Upstream guarded `PLAIN` and `RLE`
+at their own call sites but not `DELTA_*` or `BYTE_STREAM_SPLIT`, so a delta
+page read in preserve mode overran the buffer and corrupted the heap. Patched
+to refuse at the function's entry, and the footer check in step 1 means qio
+never reaches it anyway.
+
+The three paths -- indices, an abandoned attempt with a re-read, and no attempt
+-- return byte-identical data, so no test comparing values can tell them apart.
+`qio_read_path_counters()` exists for that, and `test-external.R` asserts the
+path each fixture takes.
 
 ## Writer boundary
 

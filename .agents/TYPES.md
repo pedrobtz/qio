@@ -225,7 +225,13 @@ or creating a file.
 - A non-UTC `TIMESTAMP` is a wall clock. Read it in `tz`; write it by rendering
   the input in `tz`, then discard the zone. Never use the machine's local zone
   implicitly.
-- Base R decides ambiguous or nonexistent civil times at DST boundaries.
+- A civil time that is **ambiguous** at a DST boundary -- one that occurs twice
+  -- resolves to whichever instant the platform's `mktime` chooses.
+- A civil time that is **nonexistent** -- inside a spring-forward gap -- has no
+  instant in `tz` and reads as `NA`. It affects only itself: an earlier
+  implementation re-anchored through formatted text, where one such value made
+  `as.POSIXct.character` fall back to a date-only format and silently dropped
+  the time of day from every value in the column.
 - A non-UTC write with `tz != "UTC"` emits one operation-level message:
   `Converting POSIXct values to local time in "<tz>" before writing a non-UTC
   Parquet TIMESTAMP; the timezone is not stored in the file.`

@@ -803,7 +803,9 @@ would have held up everything else here.
 
 ## Phase 8: release validation
 
-Status: not started
+Status: local gates green; external submissions and the tag outstanding. Re-run
+once after the read-performance work landed, and **not yet re-run after the
+converter fixes that followed it**.
 
 ### Work
 
@@ -816,22 +818,38 @@ Status: not started
   been missing. `check_pkgdown()` reports no problems and `build_site()`
   completes with no warnings across 34 reference pages. Publishing the built
   site is still outstanding.
-- [ ] Clean all native objects and build from a fresh checkout.
-- [ ] Run `devtools::document()`, the complete test suite, `devtools::check()`,
-  and `pkgdown::check_pkgdown()`.
-- [ ] Require green macOS, Windows, and Linux `R-CMD-check` runs. Dispatch
+- [x] Clean all native objects and build from a fresh checkout.
+- [x] Run `devtools::document()`, the complete test suite, `devtools::check()`,
+  and `pkgdown::check_pkgdown()`. `--as-cran` reports two NOTEs, both benign:
+  a new submission whose pkgdown URL is not published yet, and a local HTML
+  Tidy too old to validate the manual. Running `document()` from clean also
+  caught the `URL` and `BugReports` added to `DESCRIPTION` in phase 7 never
+  reaching `man/qio-package.Rd`.
+- [x] Require green macOS, Windows, and Linux `R-CMD-check` runs. Dispatch
   `native-checks` against the release commit itself and require green
   sanitizer, Valgrind, LTO, gctorture, and rchk jobs; it does not run on every
-  commit.
+  commit. All five green. The `vendor` workflow failed first and was right to:
+  four carquet patches had been made without regenerating the patch record.
 - [ ] Run win-builder and R-hub, including a sanitizer platform; resolve every
   actionable ERROR, WARNING, and NOTE.
-- [ ] Inspect the source tarball for object files, build products, patch
+- [x] Inspect the source tarball for object files, build products, patch
   records, and local artifacts; confirm that required vendored sources,
-  licenses, generated documentation, and tests are present.
-- [ ] Install and test from that source tarball, not only from the working tree.
+  licenses, generated documentation, and tests are present. `bench/`,
+  `.agents/` and `.github/` are absent; `tools/` ships by design.
+- [x] Install and test from that source tarball, not only from the working
+  tree. Run it with `NOT_CRAN=true`, or the thirteen `skip_on_cran()` tests
+  stay skipped and the run proves less than it appears to.
 - [ ] Set `Version: 0.1.0`, finalize NEWS and release metadata, then rerun the
-  complete release matrix.
+  complete release matrix. **NEWS still describes none of the read-performance
+  work, and now has a user-facing correctness fix to describe as well**: a
+  local `TIMESTAMP` column read with a DST-observing `tz` could silently lose
+  the time of day from every value.
 - [ ] Tag and publish v0.1.0 only from the verified release commit.
+
+**Phase 8 has found a real omission on each of its two runs so far** -- the
+missing documentation URLs, then the undocumented vendored patches. Treat a
+clean run as the exception rather than the expectation, and re-run it in full
+after the last code change rather than assuming an earlier pass still holds.
 
 ### Exit gate
 

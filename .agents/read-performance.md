@@ -9,11 +9,15 @@ this document says what to change and why.
 
 **Match or beat nanoparquet on read, on the workloads where qio is behind.**
 
-qio is already ahead on numerics and on nullable mixed frames. **Two gaps
-remain, and they have different causes** -- an early draft of this plan covered
-only the first, which would have left qio short of the target:
+**Status: met on the shapes this document set out to fix, and the target has
+since been shown to be the wrong shape of question.** Steps 1-4 and 6 landed in
+v0.1.0; step 5 was measured and declined. See "Where this ended up" below, and
+then "What the generated benchmarks could not see", which is the part worth
+reading first if you are picking this up cold.
 
-| gap | ratio | cause | steps |
+The original framing, kept because the reasoning still applies:
+
+| gap | ratio then | cause | steps |
 |---|---:|---|---|
 | dictionary-encoded text | 1.5x-2.6x | index decode and string materialization | 1-3 |
 | plain-encoded text | 1.14x-1.22x | per-row UTF-8 validation | 4 |
@@ -21,6 +25,31 @@ only the first, which would have left qio short of the target:
 The parallel decode qio already has is what should take it *past* parity rather
 than merely to it, since nanoparquet is single-threaded by design (confirmed:
 no threading primitives anywhere in its sources).
+
+## Where this ended up
+
+1,000,000 rows, both builds installed at -O2, median of 9, same machine state.
+
+| workload | before | after | nanoparquet | ratio |
+|---|---:|---:|---:|---|
+| dictionary text, 200 values (8 bits) | 0.0140 | 0.0090 | 0.0100 | 1.40x -> **0.90x** |
+| dictionary text, 257 values (9 bits) | 0.0170 | 0.0110 | 0.0100 | 1.70x -> **1.10x** |
+| dictionary text, 65536 values (16 bits) | 0.0460 | 0.0200 | 0.0200 | 2.30x -> **1.00x** |
+| dictionary text, 65537 values (17 bits) | 0.0510 | 0.0220 | 0.0200 | 2.55x -> **1.10x** |
+| plain text, all distinct | 0.1340 | 0.1310 | 0.1130 | 1.13x -> 1.16x |
+| doubles | 0.0040 | 0.0040 | 0.0070 | **0.57x** |
+
+The ratio column is flat as well as lower, which was the actual criterion: a
+change that lowered every width equally would not have addressed the kernel
+gap.
+
+Two estimates in this document were wrong, and the corrections are recorded at
+their steps rather than quietly fixed. Step 1 predicted 28% and less benefit at
+high cardinality; it delivered 47% there, the largest win, because the address
+cache it replaced held only 512 entries and switched itself off above that.
+Step 4 predicted plain text would drop below parity from a "28% validation
+cost"; that figure came from a pre-step-1 profile and over-attributed, and
+plain text is now known to be 73% Rf_mkCharLenCE, which nanoparquet pays too.
 
 ## Where qio stands
 
@@ -303,30 +332,39 @@ Exit: independent-oracle verification across the type matrix; a size and time
 figure for each reference workload; a `NEWS.md` entry, since it changes default
 output.
 
-## Sequencing
+## Sequencing, and what actually happened
 
-Steps 1-6 are v0.2.0 and **should not start before v0.1.0 is tagged.** Step 1
-restructures how text is materialized, which invalidates phase 8's release
-validation.
+This document originally deferred every step to v0.2.0, on the grounds that
+step 1 restructures text materialization and invalidates phase 8. **The
+maintainer decided to include them in v0.1.0 instead**, and phase 8 was re-run
+afterwards rather than skipped.
 
-Step 6 is the exception worth considering for v0.1.0: it changes a shipped
-default, and defaults are the expensive thing to revisit after release --
-not for compatibility, since old files stay readable, but because users' stored
-files and their own measurements anchor on whatever 0.1.0 wrote. It is cheap to
-verify, so the decision should follow the verification result rather than
-precede it.
+| step | outcome | commit |
+|---|---|---|
+| 0, comparison harness | done | `33e4d6c` |
+| 1, dictionary text from indexes | done | `9cc56cc` |
+| 2, RLE literal-run copy | done, two commits | `b6a1209`, `25cd8f7` |
+| 3, bit widths 9-32 | done, one generic routine rather than 24 kernels | `29482b3` |
+| 4, ASCII skip when validating UTF-8 | done | `c44a84d` |
+| 5, parallelize text columns | **measured and declined** | — |
+| 6, write dictionary-encoded text | done | `d38d03d` |
 
-Within v0.2.0, do step 0 first, then 1, then 2, then 3. Step 4 is independent
-of all of them and can be done at any point -- it is the only step touching the
-plain path, so it neither blocks nor is blocked by the dictionary work. Step 5
-comes last: it is the only one whose payoff depends on another step landing
-first.
+**Step 5 was declined on measurement, not on schedule.** Profiling after steps
+1-3 put only ~20% of a dictionary read outside the R API: SET_STRING_ELT 30%,
+the gather loop 27%, allocation and GC 18%. Amdahl at eight threads gives a
+1.21x ceiling, not the ~1.8x this document assumed. Steps 1-3 succeeding is
+what consumed step 5's value -- they removed the work threads would have
+absorbed. Against a 1.21x ceiling sits the most dangerous change in the plan,
+in the code path where step 1 had already introduced a heap-corrupting buffer
+overrun. Revisit only if the parallelizable fraction grows again.
 
 ## Closing the residual gap
 
 Stages 1-4 and 6 landed and dictionary text reached parity. What remains was
 measured rather than assumed, and splits into three findings with three
-different owners. Only one of them is carquet's.
+different owners. **Only one of them is carquet's**, which is the answer to
+"is the gap the vendored library?": on dictionary text, where decoding actually
+dominates, carquet plus its patches now matches or beats nanoparquet.
 
 Measured at 1,000,000 rows, one column of distinct 11-byte strings, both builds
 installed at -O2:
@@ -451,6 +489,74 @@ Finding 1 changes which path runs for a mixed chunk. When it lands, the
 `dict_fallback.parquet` expectation must change from one fallback to a new
 "switched mid-chunk" outcome, and that change is the point: it is what proves
 the optimization is live rather than silently inert.
+
+## What the generated benchmarks could not see
+
+**Read this before planning any further read work.** Everything above was
+measured with `bench/compare-readers.R`, which generates its own data. It can
+only contain what someone thought to generate, and what nobody thought to
+generate was a real file.
+
+The first one ever pointed at qio -- January 2023 NYC taxi trip data, 3,066,766
+rows, 19 columns, GZIP, every column dictionary-encoded -- read in **83.2
+seconds** against arrow's 0.195 and nanoparquet's 0.541. Every value was
+correct. That is 426x, on a mainstream public dataset, at a point when the
+generated benchmarks showed qio at or near parity everywhere.
+
+Timing each column separately put 85 of those 83 seconds in two of nineteen
+columns. Both were `TIMESTAMP`, and the cost was not in carquet at all: a
+profile showed no `qio.so` frames whatsoever. `qio_as_posixct()` re-anchored a
+non-UTC-adjusted timestamp by formatting every value to text and reparsing it,
+in R.
+
+### The correctness bug underneath the slowness
+
+Worse than the 42 seconds, and it would not have been found by profiling.
+`as.POSIXct.character` picks a format by requiring **every** value to parse. A
+civil time inside a spring-forward gap has no instant in the target zone, so
+`strptime` returns NA for it, which rejected `"%Y-%m-%d %H:%M:%OS"` and fell
+through to `"%Y-%m-%d"`. That parses everything -- so **one unrepresentable
+value silently reduced every other value in the column to midnight**.
+
+Reproduced on the build from before any of this work, so it shipped. Reaching
+it needs `tz` set to a DST-observing zone; the default of UTC has no gaps.
+Fixed in `e6c7d95`: a value with no instant in `tz` is now NA on its own
+account and its neighbours are untouched, and the whole file reads in 0.209 s.
+
+### The pattern, and the audit it prompted
+
+Per-value work in R rather than over the vector. Auditing every converter for
+the same shape found three more:
+
+| converter | before | after | commit |
+|---|---:|---:|---|
+| local `TIMESTAMP` | 42.7 s/1M | 0.106 s | `e6c7d95` |
+| `UUID` | 22.8 s/1M | 0.339 s, moved into C | `330d601`, `ee9531b` |
+| `FLOAT16` | 1.18 s/1M | 0.276 s | `330d601` |
+| binary `DECIMAL` | 1.06 s/1M | 0.903 s | `b8f370b` |
+
+An ordinary 1M-value column reads in roughly 0.05 s, so `UUID` cost several
+hundred times one of those.
+
+The shared hazard when vectorizing these is nulls: a `NULL` element contributes
+nothing to `unlist()`, so reshaping without excluding nulls first silently
+shifts every later value into the wrong slot. Every one of these tests puts a
+null **first** for that reason.
+
+### What follows from it
+
+- `bench/real-file.R` exists now, and its per-column table with a `SLOW` marker
+  at 20x the median column is the automation of the diagnosis above. The
+  threshold was checked against the pre-fix build, where it fires on exactly
+  those two columns and nothing else.
+- **Six stages of read optimization were worth nothing on that file.** They were
+  not wasted -- dictionary text is genuinely at parity now -- but the ranking
+  was set by generated shapes, and the single largest defect was somewhere the
+  generated shapes could not reach.
+- The measured finding rate is four defects from one real file. There is no
+  basis for assuming the second one finds nothing. Run `bench/real-file.R`
+  against files from other writers -- Spark, DuckDB, pandas -- before ranking
+  any further read work by these numbers.
 
 ## Out of scope
 

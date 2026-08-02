@@ -1,6 +1,6 @@
 # qio status and roadmap
 
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-02
 
 This file owns implemented R API, release scope, priorities, and open product
 choices. Type behavior belongs in [`TYPES.md`](TYPES.md); carquet mechanics in
@@ -51,7 +51,11 @@ materializing reads share one R conversion plan. Current type support is in
 | `infer_parquet_schema()` | Show the inferred schema |
 
 qio supports Snappy, Zstandard, Gzip, LZ4 Raw, and uncompressed output. Snappy
-is the default. Dictionary encoding is not yet exposed.
+is the default. `BYTE_ARRAY` columns are dictionary-encoded, which carquet
+abandons for PLAIN by itself once a chunk's dictionary outgrows its page limit;
+there is no user-facing control over encoding, and the numeric types are left
+PLAIN. Choosing encodings per column belongs with the writer configuration
+deferred to v0.2.0.
 
 Standard R CMD check runs on macOS, Windows, and Linux. Native workflows cover
 sanitizers, Valgrind, LTO, gctorture, and rchk.
@@ -95,11 +99,28 @@ sanitizers, Valgrind, LTO, gctorture, and rchk.
 - [x] Sub-batch strings so scratch space does not scale with the largest row
   group and `collect(batch_size =)` has real behavior.
 - [x] Materialize dictionary text efficiently, with a safe fallback for mixed
-  encoding. Shipped as an address-keyed CHARSXP cache. **Reopened for v0.2.0**:
-  profiling against nanoparquet shows that cache is itself 20% of a
-  dictionary-text read, because carquet expands the dictionary before qio
-  re-deduplicates it. See
-  [`read-performance.md`](read-performance.md#1-dictionary-text-is-expanded-then-re-deduplicated).
+  encoding. First shipped as an address-keyed CHARSXP cache, then reopened when
+  profiling showed that cache was itself 20% of a dictionary-text read, and
+  finally replaced in v0.1.0 by reading carquet's dictionary indices directly.
+  A chunk that falls back from dictionary to PLAIN mid-way is re-read on a
+  fresh column reader. See [`read-performance.md`](read-performance.md).
+- [x] Reach parity with nanoparquet on dictionary-encoded text. Done in
+  v0.1.0 across six ordered steps, one of which was measured and declined.
+  Dictionary text moved from 1.4x-2.55x to 0.90x-1.10x, and the ratio is now
+  flat across index bit widths rather than stepping at each kernel boundary.
+- [x] Remove per-value work from the read plan's converters. Found by pointing
+  the reader at a real public dataset rather than generated fixtures, which
+  exposed a 426x slowdown and a silent correctness bug in the same code. Four
+  converters were affected: local `TIMESTAMP`, `UUID`, `FLOAT16` and binary
+  `DECIMAL`. See
+  [`read-performance.md`](read-performance.md#what-the-generated-benchmarks-could-not-see).
+- [ ] **v0.2.0.** Switch encoding at the page boundary instead of re-reading a
+  chunk that falls back from dictionary to PLAIN. Worth ~10% on files Apache
+  Arrow writes, which emit a dictionary page even for all-distinct columns.
+  Needs carquet to report the boundary rather than failing the read.
+- [ ] **v0.2.0.** Benchmark the writer against arrow and nanoparquet. Every
+  comparison so far has been reads; the writer has never been measured against
+  another implementation at all.
 - [x] Use statistics for a measured no-null fast path. **Measured and
   declined**; see [`plan.md`](plan.md#phase-4-bound-reader-memory-and-optimize-measured-hot-paths).
 - [x] Decode suitable numeric columns into R memory and expand nullable values
