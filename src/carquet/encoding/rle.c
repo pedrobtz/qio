@@ -11,6 +11,13 @@
 /* SIMD dispatch for optimized level fill (AVX2/AVX-512/NEON/SVE) */
 extern void carquet_dispatch_fill_def_levels(int16_t* def_levels, int64_t count, int16_t value);
 
+/* Resolving the unpack kernel costs a lazy-init check, a bounds test and a
+ * table lookup. carquet_bitunpack8_32() does it on every call, which is once
+ * per eight values; the batch decoder below resolves it once per batch
+ * instead. NULL means this width has no specialized kernel, so the general
+ * function is called and does its own dispatch. */
+extern carquet_bitunpack8_fn carquet_dispatch_get_bitunpack8_fn(int bit_width);
+
 /* ============================================================================
  * Internal Helpers
  * ============================================================================
@@ -179,6 +186,11 @@ int64_t carquet_rle_decoder_get_batch(
 
     int64_t read = 0;
 
+    /* Resolved once for the whole batch rather than once per eight values. */
+    carquet_bitunpack8_fn unpack8 =
+        dec->bit_width > 0 ? carquet_dispatch_get_bitunpack8_fn(dec->bit_width)
+                           : NULL;
+
     while (read < count && carquet_rle_decoder_has_next(dec)) {
         /* Need new run? */
         if (dec->run_remaining <= 0) {
@@ -223,8 +235,12 @@ int64_t carquet_rle_decoder_get_batch(
                     dec->status = CARQUET_ERROR_INVALID_RLE;
                     break;
                 }
-                carquet_bitunpack8_32(dec->data + dec->pos, dec->bit_width,
-                                      output + read);
+                if (unpack8 != NULL) {
+                    unpack8(dec->data + dec->pos, output + read);
+                } else {
+                    carquet_bitunpack8_32(dec->data + dec->pos, dec->bit_width,
+                                          output + read);
+                }
                 dec->pos += bytes_needed;
                 read += 8;
                 dec->run_remaining -= 8;
