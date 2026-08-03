@@ -93,15 +93,33 @@ for (log in logs) {
   }
   emit("")
   emit("**Status: ", status, "**")
+  # The check runs with --as-cran (the action's default), so a NOTE here is a
+  # NOTE CRAN would raise. NOTEs do not fail the job, which is exactly why the
+  # summary has to say so rather than leaving a green tick to speak for itself.
+  if (any(names(counts) == "NOTE")) {
+    emit("")
+    emit(
+      "> This run is green but carries ",
+      counts[["NOTE"]],
+      " NOTE",
+      if (counts[["NOTE"]] == 1L) "" else "s",
+      ". `--as-cran` is on, so these are the NOTEs a CRAN submission would",
+      " have to answer for."
+    )
+  }
 
   if (length(blocks)) {
     any_not_ok <- TRUE
     emit("")
     for (block in blocks) {
+      # `open` on purpose. A NOTE does not fail the job -- the action's
+      # error-on default is "warning" -- so a run carrying one is green, and a
+      # NOTE hidden behind a disclosure triangle on a green run is a NOTE
+      # nobody reads. Every one of them blocks a CRAN submission.
       emit(
-        "<details><summary>",
+        "<details open><summary><b>",
         block$severity,
-        ": ",
+        "</b>: ",
         sub("^\\* checking ", "", sub(" \\.\\.\\..*$", "", block$text[[1L]])),
         "</summary>"
       )
