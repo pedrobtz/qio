@@ -14,8 +14,8 @@ on:
         required: false
         type: string
       retention_days:
-        description: 'Days to keep the Rprof.out artifact'
-        default: '7'
+        description: 'Days to keep the Rprof.out artifact (1 is the minimum)'
+        default: '1'
         required: false
         type: string
 
@@ -103,5 +103,5 @@ jobs:
           name: Rprof-out-${{ github.run_id }}
           path: /tmp/Rprof.out
           if-no-files-found: warn
-          retention-days: ${{ inputs.retention_days || '7' }}
+          retention-days: ${{ inputs.retention_days || '1' }}
           compression-level: 9

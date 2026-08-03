@@ -74,6 +74,10 @@ jobs:
           name: bench-results-${{ github.sha }}
           path: bench-results.csv
           if-no-files-found: warn
+          # 1 is the minimum GitHub allows. The tables are in the job summary,
+          # which is kept with the run itself, so the CSV only has to survive
+          # long enough to download if someone wants to diff two runs.
+          retention-days: 1
 
   # qio against arrow and nanoparquet, in its own job because it needs both of
   # them installed and the qio-only benchmark above must not wait for that.
@@ -127,3 +131,4 @@ jobs:
           name: compare-readers-${{ github.sha }}
           path: compare-readers.csv
           if-no-files-found: warn
+          retention-days: 1
