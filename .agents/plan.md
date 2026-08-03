@@ -778,6 +778,15 @@ release validation rather than treating it as documentation.
 - [x] Add a README feature matrix that separates read, write, inspect, and
   deferred support. Also corrected the install instructions, which told readers
   to `install.packages("qio")` from CRAN, where qio is not published.
+
+  **Superseded on 2026-08-03.** The README was rewritten short, in the style of
+  a tidyverse package: a five-line introduction, install, usage built around
+  `read_parquet()` and `open_parquet()`, and one default type-mapping table.
+  The matrix went with it. Nothing was lost, only relocated to where a user
+  looks it up rather than scrolls past it: `?qio-types` owns the complete type
+  matrix, `?qio-limitations` owns the deferred and excluded features, and the
+  README names the remaining functions in a short paragraph. A README is read
+  once, before installing; a reference page is read when the question comes up.
 - [x] Publish reproducible read/write benchmark instructions and results without
   presenting development measurements as guarantees. Commands and the caveat in
   the README; method, workloads, measured tolerances, and recorded figures in
