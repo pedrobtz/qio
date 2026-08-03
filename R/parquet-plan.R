@@ -29,7 +29,11 @@ qio_type_registry <- function() {
       "POSIXct",
       "double",
       "double",
-      "character",
+      # Bytes, not text: an unannotated BYTE_ARRAY is arbitrary bytes, and a
+      # `STRING`, `ENUM`, or `JSON` annotation is what makes it character. This
+      # is the physical fallback, so it must state the unannotated case --
+      # `parquet_type_mapping()` reports it directly.
+      "list",
       "list"
     ),
     converter = c(
@@ -39,7 +43,7 @@ qio_type_registry <- function() {
       "int96",
       "float",
       "double",
-      "byte_array",
+      "binary",
       "binary"
     ),
     written_from = c(
@@ -374,10 +378,23 @@ qio_parse_time_details <- function(details) {
 #' schema, so it is cheap to compute and inspect before reading any data.
 #'
 #' The plan reflects what [collect()], [read_parquet()], and [walk_batches()]
-#' actually do today. Supported logical annotations override the physical type:
-#' `DATE`, UTC-adjusted `TIMESTAMP`, and legacy physical `INT96` timestamps are
-#' converted to their R date-time classes. Unimplemented annotations are
-#' reported in `note` and retain their physical fallback type.
+#' actually do today. A logical annotation overrides the physical fallback in
+#' [parquet_type_mapping()], and the annotations qio resolves are:
+#'
+#' - `DATE` to `Date`, and legacy physical `INT96` to `POSIXct`.
+#' - `TIMESTAMP` to `POSIXct`, UTC-adjusted or interpreted in `tz`.
+#' - `TIME` to seconds or [hms::hms], selected by `time`.
+#' - `INTEGER` at any width and sign, including unsigned 64-bit, which with
+#'   `INT64` is selected by `int64`.
+#' - `STRING`, `ENUM`, and `JSON` to character; everything else stored as bytes
+#'   stays a list of raw vectors.
+#' - `UUID` to canonical text and `FLOAT16` to double.
+#' - `DECIMAL` to double with the scale applied, from either integer or binary
+#'   storage.
+#'
+#' Unimplemented annotations are reported in `note` and retain their physical
+#' fallback type. `converter` names the exact conversion the reader will run,
+#' so it distinguishes cases that share an `r_type`.
 #'
 #' A path is enough -- `read_plan()` opens the file, reads the footer, and
 #' closes it again, so no handle is needed to inspect a file before reading it.

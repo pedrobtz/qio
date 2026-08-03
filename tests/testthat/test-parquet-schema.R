@@ -50,7 +50,7 @@ test_that("write_parquet() applies partial schema overrides", {
 
   info <- schema(pf)
   expect_equal(info$physical_type, c("INT64", "FLOAT", "BYTE_ARRAY"))
-  expect_equal(info$repetition, c("REQUIRED", "OPTIONAL", "REQUIRED"))
+  expect_equal(info$repetition_type, c("REQUIRED", "OPTIONAL", "REQUIRED"))
   actual <- collect(pf)
   expect_equal(actual$id, as.double(x$id))
   expect_equal(actual$price, x$price, tolerance = 1e-6)
@@ -132,7 +132,7 @@ test_that("AUTO preserves inference and can override nullability", {
   on.exit(close_parquet(pf), add = TRUE)
 
   expect_equal(schema(pf)$physical_type, "INT32")
-  expect_equal(schema(pf)$repetition, "OPTIONAL")
+  expect_equal(schema(pf)$repetition_type, "OPTIONAL")
 })
 
 test_that("an inferred schema can be reused", {
@@ -259,4 +259,56 @@ test_that("timestamp validation rejects values that cannot fit in INT64", {
 test_that("print.qio_parquet_schema() returns its input invisibly", {
   value <- parquet_schema(x = "INT32")
   expect_output(expect_invisible(print(value)), "qio_parquet_schema")
+})
+
+test_that("unequal list columns are refused, not recycled", {
+  # as.data.frame() would recycle `b` to 10, 11, 10, 11 and write four rows.
+  # Writing values the caller never supplied is worse than refusing.
+  path <- withr::local_tempfile(fileext = ".parquet")
+  expect_error(
+    write_parquet(list(a = 1:4, b = 10:11), path),
+    "equal-length"
+  )
+  expect_false(file.exists(path))
+
+  # The error names the offending column and both lengths.
+  expect_error(write_parquet(list(a = 1:4, b = 10:11), path), "`b` has 2")
+  expect_error(write_parquet(list(a = 1:4, b = 10:11), path), "Longest is 4")
+
+  # Equal lengths still work, including length one.
+  expect_invisible(write_parquet(list(a = 1:3, b = 4:6), path))
+  expect_equal(nrow(read_parquet(path)), 3L)
+})
+
+test_that("duplicate column names are refused with or without a schema", {
+  # qio can write such a file and read it in full, but collect(columns =)
+  # resolves by path and then cannot name either leaf.
+  path <- withr::local_tempfile(fileext = ".parquet")
+  frame <- data.frame(x = 1:2, y = 3:4)
+  names(frame) <- c("dup", "dup")
+
+  expect_error(write_parquet(frame, path), "unique column names")
+  expect_error(write_parquet(frame, path), "`dup`")
+  expect_false(file.exists(path))
+
+  expect_error(
+    write_parquet(frame, path, schema = parquet_schema(dup = "INT32")),
+    "unique column names"
+  )
+})
+
+test_that("row_group_size requires a whole number", {
+  # batch_size and threads already reject a fraction; flooring 1.9 to 1 wrote
+  # a different file from the one asked for.
+  path <- withr::local_tempfile(fileext = ".parquet")
+  frame <- data.frame(a = 1:4)
+
+  expect_error(write_parquet(frame, path, row_group_size = 1.9), "whole number")
+  expect_error(write_parquet(frame, path, row_group_size = 0), "whole number")
+  expect_error(write_parquet(frame, path, row_group_size = -1), "whole number")
+
+  write_parquet(frame, path, row_group_size = 2)
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
+  expect_equal(nrow(row_groups(file)), 2L)
 })

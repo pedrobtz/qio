@@ -3,8 +3,11 @@
 #' Reads an Apache Parquet file into a data frame.
 #'
 #' Column types are mapped from Parquet as follows: `BOOLEAN` to logical,
-#' `INT32` to integer, `INT64`/`FLOAT`/`DOUBLE` to double, and `BYTE_ARRAY`
-#' (assumed UTF-8) to character. An `INT32` column annotated `DATE` is returned
+#' `INT32` to integer, and `INT64`/`FLOAT`/`DOUBLE` to double. A `BYTE_ARRAY`
+#' becomes character only when the file annotates it `STRING`, `ENUM`, or
+#' `JSON`; without an annotation it is arbitrary bytes and is returned as a
+#' list of raw vectors, because assuming UTF-8 the file never claimed would
+#' corrupt binary data. An `INT32` column annotated `DATE` is returned
 #' as a `Date`, a UTC-adjusted `TIMESTAMP` (physical `INT64`) as a `POSIXct` in
 #' UTC, and a legacy `INT96` timestamp as a `POSIXct` in UTC (interpreting its
 #' Julian-day and nanosecond-of-day parts as an instant). Parquet nulls become
@@ -95,7 +98,7 @@ read_parquet <- function(
 #' `append` adds row groups to a file that already exists, rather than replacing
 #' it. Because it writes into data the user already has, qio checks
 #' compatibility itself and refuses anything it cannot prove safe. The bundled
-#' library compares column count, order, names, physical types, repetition, and
+#' library compares column count, order, names, physical types, repetition type, and
 #' logical type *identity* -- but not logical *parameters*, so it would happily
 #' append microsecond timestamps to a millisecond file, or a decimal of one
 #' scale to another. qio compares the full declaration, including those
@@ -197,19 +200,23 @@ qio_row_group_size <- function(row_group_size) {
   if (is.null(row_group_size)) {
     return(NULL)
   }
+  # A row count is whole by nature, and `batch_size` and `threads` already
+  # reject a fraction. Flooring silently turned `row_group_size = 1.9` into 1,
+  # which is a different file from the one asked for.
   if (
     !is.numeric(row_group_size) ||
       length(row_group_size) != 1L ||
       is.na(row_group_size) ||
       !is.finite(row_group_size) ||
-      row_group_size < 1
+      row_group_size < 1 ||
+      row_group_size != trunc(row_group_size)
   ) {
     stop(
-      "`row_group_size` must be a single positive number, or NULL.",
+      "`row_group_size` must be a single positive whole number, or NULL.",
       call. = FALSE
     )
   }
-  as.double(floor(row_group_size))
+  as.double(row_group_size)
 }
 
 # Split a named character vector into the parallel key/value pair the native
@@ -315,7 +322,7 @@ qio_prepare_append <- function(file, prepared) {
   # Nullability comes from the file: a batch with no NA in it must still be
   # written as OPTIONAL if that is how the column was declared, or the row
   # groups would disagree with the footer.
-  required <- existing$repetition == "REQUIRED"
+  required <- existing$repetition_type == "REQUIRED"
   writing_nulls <- intended$repetition_type == "OPTIONAL"
   bad <- which(required & writing_nulls)
   if (length(bad) > 0L) {
@@ -327,7 +334,7 @@ qio_prepare_append <- function(file, prepared) {
     )
   }
   prepared$native$nullable <- !required
-  prepared$schema$repetition_type <- existing$repetition
+  prepared$schema$repetition_type <- existing$repetition_type
   prepared
 }
 

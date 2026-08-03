@@ -1,4 +1,49 @@
-# qio 0.0.0.9000
+# qio 0.1.0
+
+* **Fixed a four-byte write into a one-byte flag** in the INT64 coercion path,
+  introduced by the per-column warning change earlier in this cycle. It wrote
+  over the following columns' flags, or past the allocation for the last
+  selected column.
+
+* `write_parquet()` refuses a list of unequal-length vectors instead of
+  recycling the short ones. `list(a = 1:4, b = 10:11)` previously wrote four
+  rows with `b` as `10, 11, 10, 11` -- values the caller never supplied.
+
+* `write_parquet()` refuses duplicate column names whether or not a schema is
+  supplied. Such a file could be written and read in full, but `collect()`
+  could not select either duplicated column, so the file was only ever
+  readable whole.
+
+* `collect()` now works when dplyr is attached. dplyr exports its own
+  `collect()` generic, and a method registered on qio's was invisible to it,
+  so `collect(pf)` and `dplyr::collect(pf)` both failed with "no applicable
+  method". qio registers on dplyr's generic when dplyr is present, with no new
+  dependency.
+
+* `row_group_size` requires a whole number. `1.9` was silently floored to `1`,
+  writing a different file from the one requested, while `batch_size` and
+  `threads` already rejected fractions.
+
+* Result column names are consistent across the inspection functions.
+  `column_chunks()`, `column_statistics()`, and `page_index()` report `path`
+  rather than `name`, since the value is the complete dotted path and
+  `schema()$name` is the bare, non-unique leaf name. `column_chunks()$type` is
+  now `physical_type`, `schema()$repetition` is `repetition_type` to match
+  `parquet_schema()`, and `parquet_type_mapping()` returns `physical_type` and
+  `r_type` rather than `parquet_type` and `read_as`.
+
+* `parquet_type_mapping()` reports `BYTE_ARRAY` as a list of raw vectors, which
+  is what an unannotated byte array actually reads as. It claimed `character`,
+  contradicting `read_plan()` and the reader; `read_parquet()`'s help made the
+  same "assumed UTF-8" claim.
+
+* Documentation corrections: `walk_batches()`'s `...` is passed to `FUN` rather
+  than "reserved for future use"; `bit64::integer64` covers the signed 64-bit
+  range *except* `INT64_MIN`, which is bit64's own `NA`; `read_plan()` lists
+  every logical annotation it resolves rather than three of them; `schema()`
+  documents all ten result columns and the `name`/`path` distinction; and
+  `bloom_filter_may_contain(column =)` takes a complete path, which is what it
+  always matched.
 
 * `parquet_open()`, `parquet_close()`, and `parquet_validate()` are renamed to
   `open_parquet()`, `close_parquet()`, and `validate_parquet()`, so every verb

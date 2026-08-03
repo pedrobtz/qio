@@ -352,11 +352,11 @@ test_that("parquet_type_mapping() is generated from the registry", {
   registry <- qio_type_registry()
   mapping <- parquet_type_mapping()
 
-  expect_identical(mapping$parquet_type, registry$physical_type)
-  expect_identical(mapping$read_as, registry$r_type)
+  expect_identical(mapping$physical_type, registry$physical_type)
+  expect_identical(mapping$r_type, registry$r_type)
   expect_identical(mapping$written_from, registry$written_from)
   expect_identical(nrow(mapping), nrow(registry))
-  expect_identical(names(mapping), c("parquet_type", "read_as", "written_from"))
+  expect_identical(names(mapping), c("physical_type", "r_type", "written_from"))
 })
 
 test_that("the registry covers every physical type carquet can report", {

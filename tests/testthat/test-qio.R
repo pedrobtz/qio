@@ -104,7 +104,7 @@ test_that("parquet_type_mapping() describes read and write support", {
   expect_identical(
     parquet_type_mapping(),
     data.frame(
-      parquet_type = c(
+      physical_type = c(
         "BOOLEAN",
         "INT32",
         "INT64",
@@ -114,14 +114,17 @@ test_that("parquet_type_mapping() describes read and write support", {
         "BYTE_ARRAY",
         "FIXED_LEN_BYTE_ARRAY"
       ),
-      read_as = c(
+      r_type = c(
         "logical",
         "integer",
         "double",
         "POSIXct",
         "double",
         "double",
-        "character",
+        # Both byte types are bytes here. This table reports the physical
+        # fallback, and a BYTE_ARRAY is character only once the file annotates
+        # it STRING, ENUM, or JSON.
+        "list",
         "list"
       ),
       written_from = c(

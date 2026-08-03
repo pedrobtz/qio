@@ -44,8 +44,13 @@ qio::write_parquet(
 
 Open a file for inspection and selective reading:
 
+`schema()`, `row_groups()`, and `collect()` are S3 generics, so this block
+attaches the package rather than qualifying every call:
+
 ```r
-pf <- qio::open_parquet("mtcars.parquet")
+library(qio)
+
+pf <- open_parquet("mtcars.parquet")
 pf
 #> <qio_parquet_file>
 #> /path/to/mtcars.parquet
@@ -57,8 +62,12 @@ row_groups(pf)           # row counts and sizes
 column_statistics(pf)    # per-group bounds and null counts
 
 df <- collect(pf, columns = c("mpg", "cyl"))
-qio::close_parquet(pf)
+close_parquet(pf)
 ```
+
+`collect()` also works when dplyr is attached and masks it: qio registers its
+method on dplyr's generic too, so `collect(pf)` and `dplyr::collect(pf)` both
+read the file.
 
 Read a large file in batches, without holding it all in memory:
 

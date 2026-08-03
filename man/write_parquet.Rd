@@ -65,7 +65,7 @@ supported declarations.
 \code{append} adds row groups to a file that already exists, rather than replacing
 it. Because it writes into data the user already has, qio checks
 compatibility itself and refuses anything it cannot prove safe. The bundled
-library compares column count, order, names, physical types, repetition, and
+library compares column count, order, names, physical types, repetition type, and
 logical type \emph{identity} -- but not logical \emph{parameters}, so it would happily
 append microsecond timestamps to a millisecond file, or a decimal of one
 scale to another. qio compares the full declaration, including those

@@ -60,7 +60,7 @@ test_that("schema() describes every physical leaf", {
       "physical_type",
       "logical_type",
       "logical_details",
-      "repetition",
+      "repetition_type",
       "type_length",
       "max_definition_level",
       "max_repetition_level"
@@ -74,7 +74,7 @@ test_that("schema() describes every physical leaf", {
   )
   expect_identical(result$logical_type, c(NA, NA, NA, NA, "STRING", NA))
   expect_identical(
-    result$repetition,
+    result$repetition_type,
     c("REQUIRED", "REQUIRED", "REQUIRED", "OPTIONAL", "OPTIONAL", "REQUIRED")
   )
   expect_equal(result$max_definition_level, c(0L, 0L, 0L, 1L, 1L, 0L))
@@ -885,4 +885,24 @@ test_that("per-column coercion flags survive the parallel decode path", {
   expect_match(read$warnings[[2L]], "column 'c'", fixed = TRUE)
   expect_match(read$warnings[[3L]], "column 'e'", fixed = TRUE)
   expect_identical(nrow(read$value), n)
+})
+
+test_that("collect() is registered on dplyr's generic when dplyr is present", {
+  # dplyr exports its own collect() generic, so attaching dplyr masks qio's and
+  # a method registered only on qio's is invisible to it. Without the
+  # registration in .onLoad, both collect(pf) and dplyr::collect(pf) failed
+  # with "no applicable method".
+  skip_if_not_installed("dplyr")
+  file <- local_parquet_file()
+
+  method <- utils::getS3method(
+    "collect",
+    "qio_parquet_file",
+    optional = TRUE,
+    envir = asNamespace("dplyr")
+  )
+  expect_true(is.function(method))
+  expect_equal(dplyr::collect(file), collect(file))
+  # Read arguments must survive the dispatch.
+  expect_named(dplyr::collect(file, columns = "id"), "id")
 })

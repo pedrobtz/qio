@@ -40,7 +40,7 @@ path <- tempfile(fileext = ".parquet")
 write_parquet(data.frame(n = 1:100), path, row_group_size = 25)
 pf <- open_parquet(path)
 stats <- column_statistics(pf)
-stats[c("row_group", "name", "null_count")]
+stats[c("row_group", "path", "null_count")]
 unlist(stats$min)
 close_parquet(pf)
 }

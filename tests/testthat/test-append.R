@@ -58,7 +58,7 @@ test_that("nullability comes from the file, not from the new batch", {
   expect_identical(read_parquet(path)$v, c(1, NA, 3, 4, 5, 6))
   file <- open_parquet(path)
   withr::defer(close_parquet(file))
-  expect_identical(schema(file)$repetition, "OPTIONAL")
+  expect_identical(schema(file)$repetition_type, "OPTIONAL")
 })
 
 test_that("append refuses to put NA into a REQUIRED column", {

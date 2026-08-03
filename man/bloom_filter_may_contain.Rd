@@ -12,7 +12,9 @@ bloom_filter_may_contain(x, column, values, row_group = 1L, ...)
 \arguments{
 \item{x}{A \code{qio_parquet_file} object.}
 
-\item{column}{A single column name, as \code{\link[=schema]{schema()}} reports it.}
+\item{column}{A single complete column path, as \code{\link[=schema]{schema()}} reports it in
+\code{path} and \code{\link[=names]{names()}} returns it -- not the bare \code{name}, which is not
+unique across a nested file.}
 
 \item{values}{Values to test. Numeric for numeric columns, character for
 byte-array columns. \code{NA} returns \code{NA}.}

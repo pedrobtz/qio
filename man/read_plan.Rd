@@ -74,10 +74,24 @@ schema, so it is cheap to compute and inspect before reading any data.
 }
 \details{
 The plan reflects what \code{\link[=collect]{collect()}}, \code{\link[=read_parquet]{read_parquet()}}, and \code{\link[=walk_batches]{walk_batches()}}
-actually do today. Supported logical annotations override the physical type:
-\code{DATE}, UTC-adjusted \code{TIMESTAMP}, and legacy physical \code{INT96} timestamps are
-converted to their R date-time classes. Unimplemented annotations are
-reported in \code{note} and retain their physical fallback type.
+actually do today. A logical annotation overrides the physical fallback in
+\code{\link[=parquet_type_mapping]{parquet_type_mapping()}}, and the annotations qio resolves are:
+\itemize{
+\item \code{DATE} to \code{Date}, and legacy physical \code{INT96} to \code{POSIXct}.
+\item \code{TIMESTAMP} to \code{POSIXct}, UTC-adjusted or interpreted in \code{tz}.
+\item \code{TIME} to seconds or \link[hms:hms]{hms::hms}, selected by \code{time}.
+\item \code{INTEGER} at any width and sign, including unsigned 64-bit, which with
+\code{INT64} is selected by \code{int64}.
+\item \code{STRING}, \code{ENUM}, and \code{JSON} to character; everything else stored as bytes
+stays a list of raw vectors.
+\item \code{UUID} to canonical text and \code{FLOAT16} to double.
+\item \code{DECIMAL} to double with the scale applied, from either integer or binary
+storage.
+}
+
+Unimplemented annotations are reported in \code{note} and retain their physical
+fallback type. \code{converter} names the exact conversion the reader will run,
+so it distinguishes cases that share an \code{r_type}.
 
 A path is enough -- \code{read_plan()} opens the file, reads the footer, and
 closes it again, so no handle is needed to inspect a file before reading it.

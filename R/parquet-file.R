@@ -71,10 +71,37 @@ close_parquet <- function(x) {
 
 #' Inspect a Parquet schema
 #'
+#' Reports every physical leaf column in the file, in file order.
+#'
+#' **`name` and `path` are not interchangeable.** `name` is the bare leaf name
+#' and is not unique: two leaves under different parents may share one, and a
+#' map's key/value leaves routinely do. `path` is the complete dotted path and
+#' is what identifies a column everywhere else in qio -- [collect()],
+#' [read_parquet()], [walk_batches()], and [bloom_filter_may_contain()] all
+#' select by path, and [column_chunks()], [column_statistics()], and
+#' [page_index()] report it under the same name.
+#'
 #' @param x A `qio_parquet_file` object.
 #' @param ... Reserved for future use.
 #'
-#' @return A data frame with one row per physical leaf column.
+#' @return A data frame with one row per physical leaf column and the columns:
+#'   \describe{
+#'     \item{`column`}{1-based physical column index.}
+#'     \item{`name`}{Bare leaf name; not unique. See Details.}
+#'     \item{`path`}{Complete dotted path; unique, and what selection uses.}
+#'     \item{`physical_type`}{Parquet physical type.}
+#'     \item{`logical_type`}{Logical annotation, or `NA` when absent.}
+#'     \item{`logical_details`}{Annotation parameters, such as a timestamp unit
+#'       or a decimal precision and scale; `NA` when there are none.}
+#'     \item{`repetition_type`}{`"REQUIRED"`, `"OPTIONAL"`, or `"REPEATED"`.}
+#'     \item{`type_length`}{Declared width of a `FIXED_LEN_BYTE_ARRAY`, else 0.}
+#'     \item{`max_definition_level`}{Above 0 when the leaf is nullable.}
+#'     \item{`max_repetition_level`}{Above 0 when the leaf is repeated.}
+#'   }
+#'
+#' @seealso [read_plan()] for the R type each column will produce,
+#'   [column_chunks()] for how each is stored, and [parquet_type_mapping()] for
+#'   the physical fallbacks.
 #' @export
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
@@ -175,8 +202,10 @@ metadata.qio_parquet_file <- function(x, ...) {
 #'   [walk_batches()] additionally uses it as the size of each batch.
 #' @param int64 How 64-bit integer columns reach R. `"double"` (the default)
 #'   is exact from `-2^53` through `2^53` and returns `NA` outside it.
-#'   `"integer64"` returns [bit64::integer64], which covers the full signed
-#'   64-bit range, and needs the suggested `bit64` package. Either way values
+#'   `"integer64"` returns [bit64::integer64], which needs the suggested
+#'   `bit64` package and covers the signed 64-bit range **except its lowest
+#'   value**: `bit64` reserves `-9223372036854775808` as its own `NA`, so a
+#'   column storing `INT64_MIN` reads as `NA` in either mode. Either way values
 #'   that cannot be represented become `NA`, and one warning naming the column
 #'   is emitted for each column that lost values -- once per column, however
 #'   many values, row groups, or batches were affected, and never for a column
@@ -264,6 +293,9 @@ collect.qio_parquet_file <- function(
 #' @inheritParams collect
 #' @param FUN Function called with a data frame and a 1-based global batch
 #'   index, followed by `...`.
+#' @param ... Passed on to `FUN` after the batch and its index. This differs
+#'   from [collect()], where `...` must be empty: here it is how a callback
+#'   receives extra arguments. Every argument after it is still name-only.
 #' @param batch_size Positive number of rows decoded per batch.
 #'
 #' @return `x`, invisibly.
@@ -709,7 +741,7 @@ column_chunks.qio_parquet_file <- function(x, ...) {
 #' write_parquet(data.frame(n = 1:100), path, row_group_size = 25)
 #' pf <- open_parquet(path)
 #' stats <- column_statistics(pf)
-#' stats[c("row_group", "name", "null_count")]
+#' stats[c("row_group", "path", "null_count")]
 #' unlist(stats$min)
 #' close_parquet(pf)
 column_statistics <- function(x, ...) {
@@ -780,7 +812,9 @@ page_index.qio_parquet_file <- function(x, ...) {
 #' [column_chunks()] to find out whether a chunk has one.
 #'
 #' @param x A `qio_parquet_file` object.
-#' @param column A single column name, as [schema()] reports it.
+#' @param column A single complete column path, as [schema()] reports it in
+#'   `path` and [names()] returns it -- not the bare `name`, which is not
+#'   unique across a nested file.
 #' @param values Values to test. Numeric for numeric columns, character for
 #'   byte-array columns. `NA` returns `NA`.
 #' @param row_group Row group to test, 1-based. A bloom filter belongs to one

@@ -778,8 +778,8 @@ release validation rather than treating it as documentation.
   Holders are in `DESCRIPTION`'s `Authors@R` with the license each covers;
   licenses ship at `src/*/LICENSE`; pins and patches are in `VENDORED.md`, with
   a README pointer noting it is not shipped.
-- [x] Regenerate roxygen output and complete the v0.1.0 `NEWS.md` section. The
-  heading is still `0.0.0.9000`; renaming it belongs with the version bump in
+- [x] Regenerate roxygen output and complete the v0.1.0 `NEWS.md` section. Both
+  the heading and `DESCRIPTION` now read `0.1.0`, done with the version bump in
   phase 8.
 
 ### Exit gate
@@ -849,17 +849,21 @@ converter fixes that followed it**.
 - [x] Install and test from that source tarball, not only from the working
   tree. Run it with `NOT_CRAN=true`, or the thirteen `skip_on_cran()` tests
   stay skipped and the run proves less than it appears to.
-- [ ] Set `Version: 0.1.0`, finalize NEWS and release metadata, then rerun the
-  complete release matrix. **NEWS still describes none of the read-performance
-  work, and now has a user-facing correctness fix to describe as well**: a
-  local `TIMESTAMP` column read with a DST-observing `tz` could silently lose
-  the time of day from every value.
+- [x] Set `Version: 0.1.0`. `DESCRIPTION` and the `NEWS.md` heading agree, and
+  the help topics that describe behavior as "qio 0.1.0" are now accurate rather
+  than aspirational.
+- [ ] Finalize NEWS and release metadata, then rerun the complete release
+  matrix. **NEWS still describes none of the read-performance work, and has a
+  user-facing correctness fix to describe as well**: a local `TIMESTAMP` column
+  read with a DST-observing `tz` could silently lose the time of day from every
+  value.
 - [ ] Tag and publish v0.1.0 only from the verified release commit.
 
-**Phase 8 has found a real omission on each of its two runs so far** -- the
-missing documentation URLs, then the undocumented vendored patches. Treat a
-clean run as the exception rather than the expectation, and re-run it in full
-after the last code change rather than assuming an earlier pass still holds.
+**Phase 8 has found a real omission on each of its runs so far** -- the missing
+documentation URLs, then the undocumented vendored patches, then an external
+API review that found a heap write introduced the same day. Treat a clean run
+as the exception rather than the expectation, and re-run it in full after the
+last code change rather than assuming an earlier pass still holds.
 
 ### Exit gate
 

@@ -39,8 +39,10 @@ reader's scratch memory, not the size of the result (see Details);
 
 \item{int64}{How 64-bit integer columns reach R. \code{"double"} (the default)
 is exact from \code{-2^53} through \code{2^53} and returns \code{NA} outside it.
-\code{"integer64"} returns \link[bit64:integer64]{bit64::integer64}, which covers the full signed
-64-bit range, and needs the suggested \code{bit64} package. Either way values
+\code{"integer64"} returns \link[bit64:integer64]{bit64::integer64}, which needs the suggested
+\code{bit64} package and covers the signed 64-bit range \strong{except its lowest
+value}: \code{bit64} reserves \code{-9223372036854775808} as its own \code{NA}, so a
+column storing \code{INT64_MIN} reads as \code{NA} in either mode. Either way values
 that cannot be represented become \code{NA}, and one warning naming the column
 is emitted for each column that lost values -- once per column, however
 many values, row groups, or batches were affected, and never for a column

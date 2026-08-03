@@ -145,10 +145,13 @@ test_that("column_chunks() reports one row per column per row group", {
   chunks <- column_chunks(file)
   expect_identical(nrow(chunks), 9L)
   expect_identical(sort(unique(chunks$row_group)), 1:3)
-  expect_identical(unique(chunks$name), c("n", "x", "s"))
-  expect_identical(unique(chunks$type), c("INT32", "DOUBLE", "BYTE_ARRAY"))
+  expect_identical(unique(chunks$path), c("n", "x", "s"))
+  expect_identical(
+    unique(chunks$physical_type),
+    c("INT32", "DOUBLE", "BYTE_ARRAY")
+  )
   expect_true(all(chunks$compression == "ZSTD"))
-  expect_equal(sum(chunks$num_values[chunks$name == "n"]), 60)
+  expect_equal(sum(chunks$num_values[chunks$path == "n"]), 60)
   expect_true(all(nzchar(chunks$encodings)))
   expect_type(chunks$dictionary_page, "logical")
   expect_type(chunks$bloom_filter, "logical")
@@ -191,18 +194,18 @@ test_that("statistics report per-group bounds in the column's own type", {
   expect_equal(stats$num_values, rep(50, 8))
 
   first <- stats[stats$row_group == 1, ]
-  expect_identical(first$min[[which(first$name == "n")]], 1L)
-  expect_identical(first$max[[which(first$name == "n")]], 50L)
-  expect_equal(first$min[[which(first$name == "x")]], 0.25)
-  expect_equal(first$max[[which(first$name == "x")]], 12.5)
-  expect_identical(first$min[[which(first$name == "s")]], "v001")
-  expect_identical(first$max[[which(first$name == "s")]], "v050")
-  expect_identical(first$min[[which(first$name == "b")]], FALSE)
-  expect_identical(first$max[[which(first$name == "b")]], TRUE)
+  expect_identical(first$min[[which(first$path == "n")]], 1L)
+  expect_identical(first$max[[which(first$path == "n")]], 50L)
+  expect_equal(first$min[[which(first$path == "x")]], 0.25)
+  expect_equal(first$max[[which(first$path == "x")]], 12.5)
+  expect_identical(first$min[[which(first$path == "s")]], "v001")
+  expect_identical(first$max[[which(first$path == "s")]], "v050")
+  expect_identical(first$min[[which(first$path == "b")]], FALSE)
+  expect_identical(first$max[[which(first$path == "b")]], TRUE)
 
   second <- stats[stats$row_group == 2, ]
-  expect_identical(second$min[[which(second$name == "n")]], 51L)
-  expect_identical(second$max[[which(second$name == "s")]], "v100")
+  expect_identical(second$min[[which(second$path == "n")]], 51L)
+  expect_identical(second$max[[which(second$path == "s")]], "v100")
 })
 
 test_that("null counts are reported per row group", {
@@ -225,12 +228,12 @@ test_that("statistics decode third-party files, including boundary values", {
   withr::defer(close_parquet(file))
   stats <- column_statistics(file)
 
-  value <- stats[stats$name == "value", ]
+  value <- stats[stats$path == "value", ]
   expect_equal(value$min[[1]], -2147483648)
   expect_equal(value$max[[1]], 2147483647)
   expect_false(is.na(value$min[[1]]))
 
-  label <- stats[stats$name == "label", ]
+  label <- stats[stats$path == "label", ]
   expect_identical(label$min[[1]], "max")
   expect_identical(label$max[[1]], "zero")
 })
@@ -242,9 +245,9 @@ test_that("non-text byte columns give raw bounds, not character", {
   withr::defer(close_parquet(file))
   stats <- column_statistics(file)
 
-  expect_type(stats$min[[which(stats$name == "bytes")]], "raw")
-  expect_type(stats$min[[which(stats$name == "fixed")]], "raw")
-  expect_type(stats$min[[which(stats$name == "text")]], "character")
+  expect_type(stats$min[[which(stats$path == "bytes")]], "raw")
+  expect_type(stats$min[[which(stats$path == "fixed")]], "raw")
+  expect_type(stats$min[[which(stats$path == "text")]], "character")
 })
 
 test_that("a file without statistics reports NULL bounds, not an error", {
@@ -340,7 +343,7 @@ test_that("page_index() reports pages with locations and bounds", {
     c(
       "row_group",
       "column",
-      "name",
+      "path",
       "page",
       "first_row",
       "offset",
@@ -359,7 +362,7 @@ test_that("page_index() reports pages with locations and bounds", {
   expect_true(all(pages$page >= 1L))
   expect_true(all(pages$first_row[pages$page == 1L] == 0))
   # Offsets increase within a column chunk.
-  key <- pages[pages$name == "key" & pages$row_group == 1L, ]
+  key <- pages[pages$path == "key" & pages$row_group == 1L, ]
   expect_false(is.unsorted(key$offset))
 })
 
@@ -368,13 +371,13 @@ test_that("page bounds decode in the column's own type", {
   withr::defer(close_parquet(file))
   pages <- page_index(file)
 
-  key <- pages[pages$name == "key", ]
+  key <- pages[pages$path == "key", ]
   expect_true(all(vapply(key$min, is.numeric, logical(1))))
   # The fixture's key column is 0..3999 ascending, so the first page of the
   # first row group must start at zero.
   expect_equal(key$min[[1]], 0)
 
-  label <- pages[pages$name == "label", ]
+  label <- pages[pages$path == "label", ]
   expect_type(label$min[[1]], "character")
   expect_identical(label$min[[1]], "item-00000")
 })

@@ -2492,8 +2492,11 @@ SEXP qio_parquet_schema(SEXP file) {
     int32_t rows = carquet_reader_num_columns(handle->reader);
 
     const char *column_names[] = {
+        /* `repetition_type` matches both the Parquet spec's
+         * FieldRepetitionType and parquet_schema()'s writer argument, so the
+         * same concept is spelled one way on the read and write sides. */
         "column", "name", "path", "physical_type", "logical_type",
-        "logical_details", "repetition", "type_length",
+        "logical_details", "repetition_type", "type_length",
         "max_definition_level", "max_repetition_level"};
 
     SEXP result = PROTECT(Rf_allocVector(VECSXP, 10));
@@ -2679,7 +2682,11 @@ SEXP qio_parquet_column_chunks(SEXP file) {
 
     const int ncol = 12;
     const char *column_names[] = {
-        "row_group",       "column",      "name",         "type",
+        /* `path`, not `name`: this is the complete dotted leaf path, which is
+         * what schema() calls `path`. schema()$name is the bare leaf name and
+         * is not unique across a nested file. `physical_type` matches
+         * schema() and read_plan() rather than spelling it a third way. */
+        "row_group",       "column",      "path",         "physical_type",
         "compression",     "num_values",  "compressed_bytes",
         "uncompressed_bytes", "encodings", "dictionary_page",
         "bloom_filter",    "page_index"};
@@ -2758,7 +2765,7 @@ SEXP qio_parquet_column_statistics(SEXP file) {
     R_xlen_t rows = (R_xlen_t)groups * columns;
 
     const int ncol = 8;
-    const char *column_names[] = {"row_group", "column",   "name",
+    const char *column_names[] = {"row_group", "column",   "path",
                                   "num_values", "null_count", "distinct_count",
                                   "min",        "max"};
     SEXP result = PROTECT(Rf_allocVector(VECSXP, ncol));
@@ -2904,7 +2911,7 @@ SEXP qio_parquet_page_index(SEXP file) {
 
     const int ncol = 11;
     const char *column_names[] = {
-        "row_group", "column",     "name",        "page",
+        "row_group", "column",     "path",        "page",
         "first_row", "offset",     "compressed_bytes", "null_count",
         "null_page", "min",        "max"};
     SEXP result = PROTECT(Rf_allocVector(VECSXP, ncol));

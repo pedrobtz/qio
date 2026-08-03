@@ -44,8 +44,11 @@ Reads an Apache Parquet file into a data frame.
 }
 \details{
 Column types are mapped from Parquet as follows: \code{BOOLEAN} to logical,
-\code{INT32} to integer, \code{INT64}/\code{FLOAT}/\code{DOUBLE} to double, and \code{BYTE_ARRAY}
-(assumed UTF-8) to character. An \code{INT32} column annotated \code{DATE} is returned
+\code{INT32} to integer, and \code{INT64}/\code{FLOAT}/\code{DOUBLE} to double. A \code{BYTE_ARRAY}
+becomes character only when the file annotates it \code{STRING}, \code{ENUM}, or
+\code{JSON}; without an annotation it is arbitrary bytes and is returned as a
+list of raw vectors, because assuming UTF-8 the file never claimed would
+corrupt binary data. An \code{INT32} column annotated \code{DATE} is returned
 as a \code{Date}, a UTC-adjusted \code{TIMESTAMP} (physical \code{INT64}) as a \code{POSIXct} in
 UTC, and a legacy \code{INT96} timestamp as a \code{POSIXct} in UTC (interpreting its
 Julian-day and nanosecond-of-day parts as an instant). Parquet nulls become

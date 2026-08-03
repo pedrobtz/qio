@@ -15,10 +15,32 @@ schema(x, ...)
 \item{...}{Reserved for future use.}
 }
 \value{
-A data frame with one row per physical leaf column.
+A data frame with one row per physical leaf column and the columns:
+\describe{
+\item{\code{column}}{1-based physical column index.}
+\item{\code{name}}{Bare leaf name; not unique. See Details.}
+\item{\code{path}}{Complete dotted path; unique, and what selection uses.}
+\item{\code{physical_type}}{Parquet physical type.}
+\item{\code{logical_type}}{Logical annotation, or \code{NA} when absent.}
+\item{\code{logical_details}}{Annotation parameters, such as a timestamp unit
+or a decimal precision and scale; \code{NA} when there are none.}
+\item{\code{repetition_type}}{\code{"REQUIRED"}, \code{"OPTIONAL"}, or \code{"REPEATED"}.}
+\item{\code{type_length}}{Declared width of a \code{FIXED_LEN_BYTE_ARRAY}, else 0.}
+\item{\code{max_definition_level}}{Above 0 when the leaf is nullable.}
+\item{\code{max_repetition_level}}{Above 0 when the leaf is repeated.}
+}
 }
 \description{
-Inspect a Parquet schema
+Reports every physical leaf column in the file, in file order.
+}
+\details{
+\strong{\code{name} and \code{path} are not interchangeable.} \code{name} is the bare leaf name
+and is not unique: two leaves under different parents may share one, and a
+map's key/value leaves routinely do. \code{path} is the complete dotted path and
+is what identifies a column everywhere else in qio -- \code{\link[=collect]{collect()}},
+\code{\link[=read_parquet]{read_parquet()}}, \code{\link[=walk_batches]{walk_batches()}}, and \code{\link[=bloom_filter_may_contain]{bloom_filter_may_contain()}} all
+select by path, and \code{\link[=column_chunks]{column_chunks()}}, \code{\link[=column_statistics]{column_statistics()}}, and
+\code{\link[=page_index]{page_index()}} report it under the same name.
 }
 \examples{
 path <- tempfile(fileext = ".parquet")
@@ -26,4 +48,9 @@ write_parquet(mtcars, path)
 pf <- open_parquet(path)
 schema(pf)
 close_parquet(pf)
+}
+\seealso{
+\code{\link[=read_plan]{read_plan()}} for the R type each column will produce,
+\code{\link[=column_chunks]{column_chunks()}} for how each is stored, and \code{\link[=parquet_type_mapping]{parquet_type_mapping()}} for
+the physical fallbacks.
 }

@@ -1,6 +1,6 @@
 Package: qio
 Title: Read and Write 'Apache Parquet' Files
-Version: 0.0.1
+Version: 0.1.0
 Authors@R: c(
     person("Pedro", "Baltazar", email = "pedrobtz@gmail.com",
            role = c("aut", "cre", "cph")),
@@ -27,6 +27,7 @@ Roxygen: list(markdown = TRUE)
 RoxygenNote: 8.0.0
 Suggests:
     bit64,
+    dplyr,
     hms,
     testthat (>= 3.0.0),
     withr

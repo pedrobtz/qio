@@ -192,6 +192,31 @@ qio_as_data_frame <- function(x) {
     return(x)
   }
   if (is.list(x)) {
+    # as.data.frame() recycles a short column to the longest one, so
+    # `list(a = 1:4, b = 10:11)` would silently be written as four rows with
+    # `b` repeated. Writing values the caller never supplied is worse than
+    # refusing, and the documented contract is equal-length vectors.
+    lengths <- lengths(x)
+    if (length(lengths) && length(unique(lengths)) > 1L) {
+      names(lengths) <- names(x)
+      longest <- max(lengths)
+      short <- lengths[lengths != longest]
+      stop(
+        "`x` must be a list of equal-length vectors. ",
+        "Longest is ",
+        longest,
+        "; ",
+        paste0(
+          "`",
+          names(short),
+          "` has ",
+          short,
+          collapse = ", "
+        ),
+        ".",
+        call. = FALSE
+      )
+    }
     return(as.data.frame(x, stringsAsFactors = FALSE, optional = TRUE))
   }
   stop("`x` must be a data frame.", call. = FALSE)
@@ -252,17 +277,25 @@ qio_infer_column <- function(x, name) {
 }
 
 qio_resolve_write_schema <- function(x, schema) {
+  # Checked whether or not a schema is supplied. qio can write a file with two
+  # leaves of the same name and read every column back, but `collect(columns =)`
+  # resolves by path and then cannot name either of them: the file is only
+  # readable in full. Refusing to write it is better than writing one that
+  # cannot be projected.
+  duplicated <- unique(names(x)[duplicated(names(x))])
+  if (length(duplicated)) {
+    stop(
+      "`x` must have unique column names. Duplicated: ",
+      paste0("`", duplicated, "`", collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
   inferred <- qio_infer_schema(x)
   if (is.null(schema)) {
     schema <- inferred
   } else {
     qio_validate_schema_object(schema)
-    if (anyDuplicated(names(x))) {
-      stop(
-        "`x` must have unique column names when `schema` is supplied.",
-        call. = FALSE
-      )
-    }
     missing <- setdiff(schema$name, names(x))
     if (length(missing)) {
       stop(

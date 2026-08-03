@@ -23,7 +23,9 @@ walk_batches(
 \item{FUN}{Function called with a data frame and a 1-based global batch
 index, followed by \code{...}.}
 
-\item{...}{Reserved for future use.}
+\item{...}{Passed on to \code{FUN} after the batch and its index. This differs
+from \code{\link[=collect]{collect()}}, where \code{...} must be empty: here it is how a callback
+receives extra arguments. Every argument after it is still name-only.}
 
 \item{columns}{Character vector of complete column paths, or \code{NULL} for all
 columns. Paths are matched exactly as \code{\link[=schema]{schema()}} and \code{\link[=names]{names()}} report
@@ -38,8 +40,10 @@ row groups.}
 
 \item{int64}{How 64-bit integer columns reach R. \code{"double"} (the default)
 is exact from \code{-2^53} through \code{2^53} and returns \code{NA} outside it.
-\code{"integer64"} returns \link[bit64:integer64]{bit64::integer64}, which covers the full signed
-64-bit range, and needs the suggested \code{bit64} package. Either way values
+\code{"integer64"} returns \link[bit64:integer64]{bit64::integer64}, which needs the suggested
+\code{bit64} package and covers the signed 64-bit range \strong{except its lowest
+value}: \code{bit64} reserves \code{-9223372036854775808} as its own \code{NA}, so a
+column storing \code{INT64_MIN} reads as \code{NA} in either mode. Either way values
 that cannot be represented become \code{NA}, and one warning naming the column
 is emitted for each column that lost values -- once per column, however
 many values, row groups, or batches were affected, and never for a column

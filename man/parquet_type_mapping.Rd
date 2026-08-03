@@ -7,16 +7,34 @@
 parquet_type_mapping()
 }
 \value{
-A data frame with columns \code{parquet_type}, \code{read_as}, and
-\code{written_from}.
+A data frame with one row per Parquet physical type and the columns:
+\describe{
+\item{\code{physical_type}}{Parquet physical type, spelled as \code{\link[=schema]{schema()}} and
+\code{\link[=read_plan]{read_plan()}} report it.}
+\item{\code{r_type}}{R type produced with no logical annotation, spelled as
+\code{\link[=read_plan]{read_plan()}} reports it. \code{NA} when the type cannot be read.}
+\item{\code{written_from}}{R input that infers this physical type, or \code{NA}
+when \code{\link[=write_parquet]{write_parquet()}} cannot produce it.}
+}
 }
 \description{
-Lists every Parquet physical type and the corresponding R storage type used
-by qio when reading or writing. Missing values indicate unsupported
-mappings. \code{INT96} is a deprecated physical type used only for timestamps and
-is read as \code{POSIXct}. Other logical annotations, such as \code{DATE} and
-\code{TIMESTAMP}, are applied on top of the physical type and are not shown by
-this table; use \code{\link[=read_plan]{read_plan()}} to see the resolved R type per column.
+Lists every Parquet physical type and the R storage type qio uses for it
+\strong{when the column carries no logical annotation}. Missing values indicate
+unsupported mappings.
+}
+\details{
+These are physical fallbacks, and most real columns are annotated, so this
+table is not a prediction of what a given file will produce. Use
+\code{\link[=read_plan]{read_plan()}} for that: it resolves the annotation, the \code{int64}, \code{time}, and
+\code{tz} options, and reports the R type each column will actually materialize
+as.
+
+Two entries are worth reading carefully. \code{BYTE_ARRAY} and
+\code{FIXED_LEN_BYTE_ARRAY} are bytes here, returned as a list of raw vectors,
+because bytes are only text when the file says so; a \code{STRING}, \code{ENUM}, or
+\code{JSON} annotation is what makes a \code{BYTE_ARRAY} character. \code{INT96} is a
+deprecated physical type used only for timestamps, so it is read as
+\code{POSIXct} with no annotation involved.
 }
 \examples{
 parquet_type_mapping()
