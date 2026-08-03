@@ -137,3 +137,21 @@ if (!any_not_ok) {
   emit("")
   emit("No errors, warnings, or notes.")
 }
+
+# Links last, so the tables above stay the thing you read first. The artifact
+# holds the untruncated 00check.log, 00install.out, and test output; the run
+# link reaches the raw job log when the failure is in the build rather than in
+# the check.
+artifact <- Sys.getenv("QIO_CHECK_ARTIFACT_URL", "")
+run <- Sys.getenv("QIO_RUN_URL", "")
+if (nzchar(artifact) || nzchar(run)) {
+  emit("")
+  parts <- character()
+  if (nzchar(artifact)) {
+    parts <- c(parts, paste0("[full check logs](", artifact, ")"))
+  }
+  if (nzchar(run)) {
+    parts <- c(parts, paste0("[job log](", run, ")"))
+  }
+  emit(paste(parts, collapse = " | "))
+}

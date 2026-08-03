@@ -62,9 +62,28 @@ jobs:
       # counts, the Status line, and the full text of anything not OK into the
       # job summary, per matrix entry. `if: always()` so a failing check is
       # reported rather than skipped.
+      # The action uploads the check directory only when the check fails, and
+      # that directory includes the installed package. This uploads just the
+      # logs, always, so the summary can link to them on a green run too --
+      # which is the run where a NOTE would otherwise go unread.
+      - name: Upload check logs
+        id: check-logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-logs-${{ matrix.config.os }}-${{ matrix.config.r }}
+          path: |
+            check/**/00check.log
+            check/**/00install.out
+            check/**/tests/**/*.Rout*
+          if-no-files-found: warn
+          retention-days: 1
+
       - name: Summarize check results
         if: always()
         run: Rscript tools/summarize-check.R check
         shell: bash
         env:
           QIO_CHECK_LABEL: ${{ matrix.config.os }} (${{ matrix.config.r }})
+          QIO_CHECK_ARTIFACT_URL: ${{ steps.check-logs.outputs.artifact-url }}
+          QIO_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
