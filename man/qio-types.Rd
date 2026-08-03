@@ -34,7 +34,7 @@ writable.\tabular{lllll}{
    \code{INT32} \tab \code{INTEGER(8/16, unsigned)} \tab \code{integer} \tab Exact; both fit in R's signed 32-bit integer. \tab no \cr
    \code{INT32} \tab \code{INTEGER(32, unsigned)} \tab \code{double} \tab Exact. Widened so the upper half stays positive: \code{4294967295} reads as itself, not \code{-1}. \tab no \cr
    \code{INT32} \tab \code{DECIMAL(p, s)} \tab \code{double} \tab Scale applied, so unscaled \code{1230} scale 2 reads \code{12.30}. Approximate; one message per read. \tab no \cr
-   \code{INT64} \tab none \tab \code{double}, or \code{integer64} \tab Default \code{int64 = "double"} is exact in \verb{[-2^53, 2^53]} and \code{NA} outside it. \code{int64 = "integer64"} covers the full signed range and needs \code{bit64}. One warning per affected column when anything is dropped. \tab from \code{numeric}, explicit schema \cr
+   \code{INT64} \tab none \tab \code{double}, or \code{integer64} \tab Default \code{int64 = "double"} is exact in \verb{[-2^53, 2^53]} and \code{NA} outside it. \code{int64 = "integer64"} needs \code{bit64} and covers the signed range except \code{-2^63}, which is bit64's own \code{NA}. One warning per affected column when anything is dropped. \tab from \code{numeric}, explicit schema \cr
    \code{INT64} \tab \code{TIMESTAMP(unit, UTC)} \tab \code{POSIXct} \tab An instant; \code{tz} changes only display. Stored as \code{double} seconds, so sub-second precision degrades far from the epoch, most visibly for \code{NANOS}. \tab from \code{POSIXct}, UTC only \cr
    \code{INT64} \tab \code{TIMESTAMP(unit, local)} \tab \code{POSIXct} \tab A wall clock with no zone stored. Civil components are read in \code{tz}; the machine's local zone is never used implicitly. \tab no \cr
    \code{INT64} \tab \code{TIME(MICROS/NANOS)} \tab \code{double} or \code{hms} \tab As \code{INT32} \code{TIME} above. \tab no \cr
@@ -71,7 +71,9 @@ a pure function of the schema, and a data-dependent type would let one
 column arrive as different types in different batches.}
 \item{64-bit integers past 2^53}{R's \code{double} is exact only within
 \verb{[-2^53, 2^53]}. Values outside it read as \code{NA} with one warning naming
-the column; pass \code{int64 = "integer64"} to keep the full signed range.}
+the column; pass \code{int64 = "integer64"} to keep the signed range, except
+\code{-9223372036854775808}, which \code{bit64} reserves as its own \code{NA} and which
+therefore reads as \code{NA} in either mode.}
 \item{\code{DECIMAL}}{Read as \code{double} with the declared scale applied, which is
 exact only while the unscaled integer stays within \verb{[-2^53, 2^53]}. Larger
 precisions lose low-order digits. One message per read. Exact fixed-point

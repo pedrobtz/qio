@@ -212,7 +212,8 @@ test_that("flat columns of a nested file read once the nested ones are skipped",
 # --- INT32 sentinel (bare INT32 written by Apache Arrow) --------------------
 # R's integer reserves -2147483648 as NA_integer_, so a legal Parquet value is
 # unrepresentable. qio keeps the integer mapping and reports the substitution
-# once per read. See .agents/TYPES.md and parquet/SOURCE.md.
+# once per affected column, naming it. See .agents/TYPES.md and
+# parquet/SOURCE.md.
 
 test_that("a third-party bare INT32 sentinel warns and preserves other values", {
   path <- ext("int32_min.parquet")
@@ -329,7 +330,7 @@ test_that("double mode keeps the exact range and reports the rest", {
   expect_false(any(df$unsigned < 0, na.rm = TRUE))
 })
 
-test_that("integer64 mode preserves the full 64-bit range", {
+test_that("integer64 mode preserves the 64-bit range except bit64's NA", {
   skip_if_not_installed("bit64")
   read <- collect_warnings(read_parquet(int64_fixture(), int64 = "integer64"))
   expect_match(

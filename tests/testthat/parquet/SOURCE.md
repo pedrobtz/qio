@@ -111,10 +111,11 @@ cannot: qio's writer has no unsigned 64-bit type and no NULL logical type.
   rows each, covering `INT64_MIN`, the exact double bounds at `+/-2^53`,
   `2^53 + 1`, `INT64_MAX`, `INT64_MAX + 1`, and `UINT64_MAX`.
 - Expected behavior: with `int64 = "double"` only `[-2^53, 2^53]` survives; with
-  `int64 = "integer64"` the full signed range survives, `INT64_MIN` becomes
+  `int64 = "integer64"` the signed range survives except `INT64_MIN`, which is
   bit64's reserved `NA`, and unsigned values above `INT64_MAX` become `NA`.
-  Either way the unsigned column never yields a negative number, and exactly
-  one warning is emitted per read. See `.agents/TYPES.md`.
+  Either way the unsigned column never yields a negative number, and one
+  warning is emitted per affected column -- so this fixture, whose two columns
+  both lose values, produces two. See `.agents/TYPES.md`.
 
 `null_type.parquet`
 
