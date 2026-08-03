@@ -642,7 +642,7 @@ static void qio_place_int64_na(double *dst, int mode) {
 static void qio_scatter_int64(double *dst, const void *values,
                               const int16_t *def_levels, int16_t max_def,
                               int64_t length, int mode, int is_unsigned,
-                              int *coerced) {
+                              uint8_t *coerced) {
     const int64_t *src = (const int64_t *)values;
     int any = 0;
     if (def_levels == NULL) {
