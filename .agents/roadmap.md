@@ -193,9 +193,13 @@ generated numbers alone; every defect that mattered was found by pointing
   `https://pedrobtz.github.io/qio/`, `check_pkgdown()` reports no problems, and
   the site builds without warnings; only publishing it remains.
 - [x] Add an honest README feature matrix and reproducible benchmarks.
-- [x] Document vendored-code licensing. Holders, licenses, pins, and local
-  patches are in `DESCRIPTION`, `src/*/LICENSE`, the README, and
-  [`VENDORED.md`](VENDORED.md).
+- [x] Document vendored-code licensing. `inst/COPYRIGHTS` is authoritative --
+  every holder, the files each covers, the license, and the modifications qio
+  makes -- and `DESCRIPTION` points at it with `Copyright: file
+  inst/COPYRIGHTS`. `Authors@R` keeps only qio's author and carquet's, since
+  listing four more `cph` entries there duplicated the file without adding
+  anything a reader could act on. Licenses ship at `src/*/LICENSE`; pins and
+  local patches are in [`VENDORED.md`](VENDORED.md), which does not ship.
 - [x] ~~Run final win-builder and R-hub checks.~~ **Not required for v0.1.0**:
   both are CRAN-submission tooling and qio is not being submitted. Their one
   unique contribution here, Windows R-devel, is now a row in the

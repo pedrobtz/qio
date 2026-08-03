@@ -6,7 +6,7 @@
 \alias{qio-package}
 \title{qio: Read and Write 'Apache Parquet' Files}
 \description{
-Read and write files in the 'Apache Parquet' columnar storage format. Provides a native interface built on the fast C-based 'carquet' library. Bundles its C dependencies to avoid external runtime library requirements other than system 'zlib'.
+Read and write 'Apache Parquet' files. Whole files are read with a single call, and larger ones can be opened to inspect their schema and read selected columns, row groups, or batches. Built on the bundled C library 'carquet', with no required R package dependencies.
 }
 \seealso{
 Useful links:
@@ -28,10 +28,6 @@ Authors:
 Other contributors:
 \itemize{
   \item Johan HG Natter (carquet source code (MIT license)) [copyright holder]
-  \item Google Inc. (Snappy source code in carquet (BSD-3-Clause license)) [copyright holder]
-  \item Yann Collet (LZ4 and Zstandard source code (BSD licenses)) [copyright holder]
-  \item Tino Reichardt (Zstandard threading source code (BSD-3-Clause license)) [copyright holder]
-  \item Meta Platforms, Inc. and affiliates (Zstandard source code (BSD-3-Clause license)) [copyright holder]
 }
 
 }

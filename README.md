@@ -160,10 +160,13 @@ license and shipped with its license file:
 | Bundled | License | Location |
 |---|---|---|
 | carquet | MIT | `src/carquet/LICENSE` |
+| Snappy (in carquet) | BSD-3-Clause | `src/carquet/compression/snappy.c` |
 | Zstandard | BSD-3-Clause | `src/zstd/LICENSE` |
 | LZ4 | BSD-2-Clause | `src/lz4/LICENSE` |
 
-Each is pinned to an exact upstream commit. qio carries local patches to
+`inst/COPYRIGHTS` lists every copyright holder, the files each covers, and the
+modifications qio makes; `DESCRIPTION` points at it through its `Copyright`
+field. Each is pinned to an exact upstream commit. qio carries local patches to
 carquet; most fix defects that silently corrupted or rejected valid data. The
 pins, the patches, and the reason for each are recorded in the repository's
 `.agents/VENDORED.md`, which is not shipped in the source package.
