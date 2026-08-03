@@ -63,6 +63,11 @@ patches. After changing a vendored header, remove stale objects with
 `find src -name '*.o' -delete` before rebuilding; stale struct layouts can
 corrupt memory without a linker error.
 
+`load_all()` compiles at `-O0`, so never time anything built with it; pass
+`debug = FALSE`, or install. It also decides whether to rebuild from `qio.so`
+rather than the object files, so deleting only `src/*.o` leaves it reusing
+whatever flags built the library. See `bench/README.md`.
+
 Treat native changes as platform-sensitive. ARM64 uses NEON; typical x86 builds
 use scalar fallbacks. The workflows under `.github/workflows/` cover Linux,
 Windows, sanitizers, Valgrind, LTO, rchk, and gctorture. `gctorture` is its own
@@ -75,7 +80,8 @@ change that alters how C is called without changing C.
 Run commands from the repository root:
 
 ```sh
-Rscript -e 'devtools::load_all()'                  # compile and load
+Rscript -e 'devtools::load_all()'                  # compile and load (-O0)
+Rscript -e 'devtools::load_all(debug = FALSE)'     # same, but -O2
 Rscript -e 'devtools::test(filter = "parquet-plan")' # focused tests
 Rscript -e 'devtools::test()'                      # full test suite
 Rscript -e 'devtools::document()'                  # regenerate docs

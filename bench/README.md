@@ -51,24 +51,36 @@ Rscript bench/benchmark.R --reps 20 --filter read- # subset, more repetitions
 `--compare` exits non-zero if any case regresses past the threshold, so it can
 gate a change without a human reading the table.
 
-## Benchmark the installed package, in a fresh session
+## Never benchmark a `-O0` build
 
-**`devtools::load_all()` compiles at `-O0`.** Timing that build measures an
-unoptimized qio, and the numbers are not comparable with anything. This is not
+**`devtools::load_all()` compiles at `-O0` by default.** Timing that build
+measures an unoptimized qio and the numbers compare with nothing. This is not
 theoretical: an A/B of a real optimization once reported it as **50% slower**
-because the "after" build came from `load_all()`.
+purely because the "after" build came from `load_all()`.
 
-It is worse than a one-off, because `load_all()` leaves `-O0` objects in `src/`
-that a later `R CMD INSTALL` silently reuses. Clean first:
+The flags, confirmed by reading the compiler invocation:
+
+| call | flags |
+|---|---|
+| `devtools::load_all()` | `-g -O2 -UNDEBUG -g -O0` -- the later `-O0` wins |
+| `devtools::load_all(debug = FALSE)` | `-g -O2` |
+| `R CMD INSTALL .` | `-g -O2` |
+
+So the cheap fix is `load_all(debug = FALSE)`, which `devtools` forwards to
+`pkgload::load_all(debug =)`. Use it for anything timed. `R CMD INSTALL .` in a
+fresh session remains the reference, because it is what a user installs.
+
+**Deleting `src/*.o` is not enough to force a rebuild.** `load_all()` decides
+from the shared library, so with `qio.so` still present it skips compilation
+entirely and silently keeps whichever flags built it. Switching between debug
+and optimized needs both:
 
 ```sh
 find src \( -name '*.o' -o -name '*.so' \) -delete
-R CMD INSTALL .
 ```
 
-Then **restart R**. Reinstalling on disk does not swap the DLL a live session
-has already loaded, so a session that ran `load_all()` keeps timing the `-O0`
-build no matter what you install afterwards.
+And when moving from `load_all()` to `R CMD INSTALL`, **restart R**: installing
+on disk does not swap the DLL a live session has already loaded.
 
 Two more rules for comparing runs:
 
