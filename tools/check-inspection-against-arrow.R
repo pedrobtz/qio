@@ -58,8 +58,8 @@ check("arrow reads back the input values", isTRUE(all.equal(back, data)))
 
 # 2. Layout agreement.
 reader <- arrow::ParquetFileReader$create(path)
-handle <- qio::parquet_open(path)
-on.exit(qio::parquet_close(handle), add = TRUE)
+handle <- qio::open_parquet(path)
+on.exit(qio::close_parquet(handle), add = TRUE)
 
 groups <- qio::row_groups(handle)
 check(
@@ -85,7 +85,7 @@ expected_min_n <- vapply(
   },
   numeric(1)
 )
-got_min_n <- unlist(stats$min[stats$name == "n"])
+got_min_n <- unlist(stats$min[stats$path == "n"])
 check(
   "INT32 bounds match the input",
   identical(as.integer(expected_min_n), got_min_n)
@@ -100,7 +100,7 @@ expected_nulls <- vapply(
 )
 check(
   "null counts match the input",
-  identical(expected_nulls, stats$null_count[stats$name == "n"])
+  identical(expected_nulls, stats$null_count[stats$path == "n"])
 )
 
 expected_min_s <- vapply(
@@ -112,7 +112,7 @@ expected_min_s <- vapply(
 )
 check(
   "text bounds match the input",
-  identical(expected_min_s, unlist(stats$min[stats$name == "s"]))
+  identical(expected_min_s, unlist(stats$min[stats$path == "s"]))
 )
 
 # 4. Footer metadata survives a round trip.

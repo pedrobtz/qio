@@ -15,9 +15,31 @@ column_chunks(x, ...)
 \item{...}{Reserved for future use.}
 }
 \value{
-A data frame with one row per column chunk. \code{encodings} lists the
-encodings the chunk declares, comma separated. \code{page_index} is \code{TRUE} when
-either a column index or an offset index is present.
+A data frame with one row per column chunk, ordered by row group and
+then by column, with the columns:
+\describe{
+\item{\code{row_group}}{1-based row-group ID, as \code{\link[=row_groups]{row_groups()}} reports it.}
+\item{\code{column}}{1-based physical column index, as \code{\link[=schema]{schema()}} reports it.}
+\item{\code{path}}{Complete dotted column path; see \code{\link[=schema]{schema()}} for why this is
+the identifier rather than the bare leaf name.}
+\item{\code{physical_type}}{Parquet physical type of the leaf.}
+\item{\code{compression}}{Codec name, such as \code{"SNAPPY"} or \code{"UNCOMPRESSED"}.
+Set per chunk, so one file may mix codecs.}
+\item{\code{num_values}}{Values stored in the chunk, nulls included.}
+\item{\code{compressed_bytes}, \code{uncompressed_bytes}}{Size of the chunk on disk
+and after decompression. Equal for an uncompressed chunk.}
+\item{\code{encodings}}{Encodings the chunk declares, comma separated. A
+dictionary-encoded chunk typically lists \code{RLE_DICTIONARY} alongside the
+\code{PLAIN} its dictionary page uses.}
+\item{\code{dictionary_page}}{Whether the chunk has a dictionary page.}
+\item{\code{bloom_filter}}{Whether a bloom filter is present, which is what
+\code{\link[=bloom_filter_may_contain]{bloom_filter_may_contain()}} needs.}
+\item{\code{page_index}}{Whether a column index or an offset index is present;
+\code{\link[=page_index]{page_index()}} reports either.}
+}
+
+Sizes and counts are doubles rather than integers, because a chunk can
+exceed \code{.Machine$integer.max}.
 }
 \description{
 Reports how each column is stored in each row group: its physical type,

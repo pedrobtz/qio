@@ -142,7 +142,7 @@ qio_bench_cases <- function(paths, workloads) {
   }
 
   # These share the mixed fixture so their cost is comparable with read-mixed,
-  # and each varies exactly one thing against collect-buffered. parquet_open()
+  # and each varies exactly one thing against collect-buffered. open_parquet()
   # defaults to mmap = FALSE, and parallel collect requires mmap, so the
   # persistent default is serial today.
   local({
@@ -150,8 +150,8 @@ qio_bench_cases <- function(paths, workloads) {
     collect_with <- function(...) {
       dots <- list(...)
       function() {
-        file <- do.call(parquet_open, c(list(p), dots$open))
-        on.exit(parquet_close(file))
+        file <- do.call(open_parquet, c(list(p), dots$open))
+        on.exit(close_parquet(file))
         invisible(do.call(collect, c(list(file), dots$collect)))
       }
     }
@@ -171,8 +171,8 @@ qio_bench_cases <- function(paths, workloads) {
     )
     add("collect-row-groups", collect_with(collect = list(row_groups = 1L)))
     add("walk-batches", function() {
-      file <- parquet_open(p)
-      on.exit(parquet_close(file))
+      file <- open_parquet(p)
+      on.exit(close_parquet(file))
       invisible(walk_batches(file, function(batch, index) NULL))
     })
   })

@@ -139,12 +139,12 @@ read_with <- list(
 
 # --------------------------------------------------------------- the file --
 
-file <- qio::parquet_open(path)
+file <- qio::open_parquet(path)
 shape <- dim(file)
 groups <- nrow(qio::row_groups(file))
 chunks <- qio::column_chunks(file)
 plan <- qio::read_plan(file)
-qio::parquet_close(file)
+qio::close_parquet(file)
 
 cat(sprintf("\n%s\n", basename(path)))
 cat(sprintf(
@@ -241,8 +241,8 @@ cat("\n--- qio, per column ---\n")
 per_column <- vapply(
   plan$name,
   function(name) {
-    handle <- qio::parquet_open(path)
-    on.exit(qio::parquet_close(handle), add = TRUE)
+    handle <- qio::open_parquet(path)
+    on.exit(qio::close_parquet(handle), add = TRUE)
     time_it(
       function() {
         invisible(suppressWarnings(suppressMessages(

@@ -389,7 +389,7 @@ Two results are worth carrying into phase 4 rather than rediscovering:
   faster than both. Mapping alone buys nothing here; the worker pool buys
   everything. Phase 4 asks whether private-reader parallelism for buffered reads
   is justified -- on this evidence it is worth about 2.7x for every persistent
-  handle, since `parquet_open()` defaults to `mmap = FALSE`.
+  handle, since `open_parquet()` defaults to `mmap = FALSE`.
 - **`walk_batches()` is the slowest way to read the same file.** 0.2405 against
   0.179 for `collect-buffered`, so the batch reader costs roughly 34% more than
   the direct column path for a full pass.
@@ -423,7 +423,7 @@ Measured on `mixed.parquet`:
 
 | | before | after |
 |---|---|---|
-| buffered, serial decode (the `parquet_open()` default) | 0.181 s | **0.063 s** |
+| buffered, serial decode (the `open_parquet()` default) | 0.181 s | **0.063 s** |
 | memory-mapped, serial decode | 0.179 s | 0.179 s |
 | memory-mapped, parallel decode | 0.067 s | 0.067 s |
 

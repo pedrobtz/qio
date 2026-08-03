@@ -15,7 +15,17 @@ row_groups(x, ...)
 \item{...}{Reserved for future use.}
 }
 \value{
-A data frame with row counts and compressed and uncompressed sizes.
+A data frame with one row per row group and the columns:
+\describe{
+\item{\code{row_group}}{1-based row-group ID, which is what \verb{row_groups =}
+selects on in \code{\link[=collect]{collect()}}, \code{\link[=read_parquet]{read_parquet()}}, and \code{\link[=walk_batches]{walk_batches()}}.}
+\item{\code{rows}}{Rows in the group.}
+\item{\code{compressed_bytes}, \code{uncompressed_bytes}}{Total size of the group's
+column chunks on disk and after decompression.}
+}
+
+Counts and sizes are doubles rather than integers, because a row group can
+exceed \code{.Machine$integer.max}.
 }
 \description{
 Inspect Parquet row groups
@@ -26,4 +36,8 @@ write_parquet(mtcars, path)
 pf <- open_parquet(path)
 row_groups(pf)
 close_parquet(pf)
+}
+\seealso{
+\code{\link[=column_chunks]{column_chunks()}} for the same sizes per column, and
+\code{\link[=column_statistics]{column_statistics()}} for what the writer claims about each chunk.
 }

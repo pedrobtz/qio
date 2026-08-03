@@ -27,7 +27,7 @@ Keep physical decoding in C and logical reinterpretation in the shared R read
 plan. `qio_type_registry()` owns physical fallbacks; `qio_apply_plan()` must
 keep `read_parquet()`, `collect()`, and `walk_batches()` consistent.
 
-`read_parquet()` is `parquet_open()` plus `collect()`. Open files are external
+`read_parquet()` is `open_parquet()` plus `collect()`. Open files are external
 pointers with finalizers. Native entry points must validate the pointer and
 respect the open/busy guards; close must remain idempotent. Eager reads request
 mmap and may decode numeric columns in parallel. Persistent handles default to
@@ -44,6 +44,12 @@ buffered I/O.
   internal helpers.
 - Regenerate `man/` and `NAMESPACE`; never edit generated `.Rd` files.
 - Wrap roxygen text at 80 characters and run `air format .` for R sources.
+- **Renaming anything public means a sweep of the whole repository, not of
+  `R/` and `tests/`.** `bench/`, `tools/`, `README.md`, `AGENTS.md`, `.agents/`
+  and C comments all name public functions and result columns, and none of them
+  is compiled or tested, so a stale reference there survives a green suite and
+  a clean `R CMD check`. `tools/check-inspection-against-arrow.R` is the one
+  that fails loudly; run it after any rename.
 - **Do not add `NEWS.md` entries until 0.1.0 is released.** Its section is one
   line, `* Initial release.`, and stays that way: nothing before 0.1.0 was ever
   published, so there is no installed version for a change to be described

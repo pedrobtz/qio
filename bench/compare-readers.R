@@ -290,9 +290,9 @@ for (k in args$cardinalities) {
   )
 
   # Assert the fixture is what the sweep claims to measure.
-  handle <- qio::parquet_open(path)
+  handle <- qio::open_parquet(path)
   chunks <- qio::column_chunks(handle)
-  qio::parquet_close(handle)
+  qio::close_parquet(handle)
   if (!any(chunks$dictionary_page)) {
     stop(
       "cardinality ",

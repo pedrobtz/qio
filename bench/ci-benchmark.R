@@ -139,8 +139,8 @@ time_it <- function(case, reps, warmup) {
 
 # Open a handle, do something with it, always close it.
 with_handle <- function(path, ..., action) {
-  handle <- parquet_open(path, ...)
-  on.exit(parquet_close(handle), add = TRUE)
+  handle <- open_parquet(path, ...)
+  on.exit(close_parquet(handle), add = TRUE)
   action(handle)
 }
 

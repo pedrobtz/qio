@@ -15,11 +15,29 @@ page_index(x, ...)
 \item{...}{Reserved for future use.}
 }
 \value{
-A data frame with one row per page. \code{first_row}, \code{offset}, and
-\code{compressed_bytes} come from the offset index and are \code{NA} when only a
-column index is present; \code{null_count}, \code{null_page}, \code{min}, and \code{max} come
-from the column index and are \code{NA} or \code{NULL} when only an offset index is.
-\code{min} and \code{max} are list columns, decoded as in \code{\link[=column_statistics]{column_statistics()}}.
+A data frame with one row per page, ordered by row group, then
+column, then page, with the columns:
+\describe{
+\item{\code{row_group}}{1-based row-group ID, as \code{\link[=row_groups]{row_groups()}} reports it.}
+\item{\code{column}}{1-based physical column index, as \code{\link[=schema]{schema()}} reports it.}
+\item{\code{path}}{Complete dotted column path; see \code{\link[=schema]{schema()}}.}
+\item{\code{page}}{1-based page number within this column chunk, restarting at
+1 for every chunk.}
+\item{\code{first_row}}{0-based row within the row group where the page
+starts. The first page of a chunk is 0.}
+\item{\code{offset}}{Byte offset of the page from the start of the file.}
+\item{\code{compressed_bytes}}{Size of the page on disk.}
+\item{\code{null_count}}{Nulls on the page, or \code{NA} when not recorded.}
+\item{\code{null_page}}{Whether the page holds only nulls, in which case its
+bounds carry no information.}
+\item{\code{min}, \code{max}}{List columns of physical-level bounds, decoded as in
+\code{\link[=column_statistics]{column_statistics()}}; \code{NULL} when absent.}
+}
+
+The two indexes are independent and either may be missing. \code{first_row},
+\code{offset}, and \code{compressed_bytes} come from the offset index and are \code{NA}
+without it; \code{null_count}, \code{null_page}, \code{min}, and \code{max} come from the
+column index and are \code{NA} or \code{NULL} without it.
 }
 \description{
 Reports the per-page index of each column chunk: where each data page sits

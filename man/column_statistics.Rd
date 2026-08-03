@@ -15,8 +15,23 @@ column_statistics(x, ...)
 \item{...}{Reserved for future use.}
 }
 \value{
-A data frame with one row per column chunk. \code{null_count} and
-\code{distinct_count} are \code{NA} when the file does not record them.
+A data frame with one row per column chunk, ordered by row group and
+then by column, with the columns:
+\describe{
+\item{\code{row_group}}{1-based row-group ID, as \code{\link[=row_groups]{row_groups()}} reports it.}
+\item{\code{column}}{1-based physical column index, as \code{\link[=schema]{schema()}} reports it.}
+\item{\code{path}}{Complete dotted column path; see \code{\link[=schema]{schema()}}.}
+\item{\code{num_values}}{Values the statistics cover, nulls included.}
+\item{\code{null_count}}{Nulls the writer recorded, or \code{NA} when it recorded
+none. \code{NA} means unknown, not zero.}
+\item{\code{distinct_count}}{Distinct values the writer recorded, or \code{NA}.
+Most writers omit it, so \code{NA} is the common case.}
+\item{\code{min}, \code{max}}{List columns of physical-level bounds, one element
+per row; \code{NULL} when absent or undecodable. See Details.}
+}
+
+Counts are doubles rather than integers, because a chunk can hold more
+values than \code{.Machine$integer.max}.
 }
 \description{
 Reports the per-column, per-row-group statistics recorded in the file: value

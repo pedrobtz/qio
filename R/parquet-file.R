@@ -125,7 +125,19 @@ schema.qio_parquet_file <- function(x, ...) {
 #' @param x A `qio_parquet_file` object.
 #' @param ... Reserved for future use.
 #'
-#' @return A data frame with row counts and compressed and uncompressed sizes.
+#' @return A data frame with one row per row group and the columns:
+#'   \describe{
+#'     \item{`row_group`}{1-based row-group ID, which is what `row_groups =`
+#'       selects on in [collect()], [read_parquet()], and [walk_batches()].}
+#'     \item{`rows`}{Rows in the group.}
+#'     \item{`compressed_bytes`, `uncompressed_bytes`}{Total size of the group's
+#'       column chunks on disk and after decompression.}
+#'   }
+#'
+#'   Counts and sizes are doubles rather than integers, because a row group can
+#'   exceed `.Machine$integer.max`.
+#' @seealso [column_chunks()] for the same sizes per column, and
+#'   [column_statistics()] for what the writer claims about each chunk.
 #' @export
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
@@ -690,9 +702,31 @@ qio_empty_dots <- function(...) {
 #' @param x A `qio_parquet_file` object.
 #' @param ... Reserved for future use.
 #'
-#' @return A data frame with one row per column chunk. `encodings` lists the
-#'   encodings the chunk declares, comma separated. `page_index` is `TRUE` when
-#'   either a column index or an offset index is present.
+#' @return A data frame with one row per column chunk, ordered by row group and
+#'   then by column, with the columns:
+#'   \describe{
+#'     \item{`row_group`}{1-based row-group ID, as [row_groups()] reports it.}
+#'     \item{`column`}{1-based physical column index, as [schema()] reports it.}
+#'     \item{`path`}{Complete dotted column path; see [schema()] for why this is
+#'       the identifier rather than the bare leaf name.}
+#'     \item{`physical_type`}{Parquet physical type of the leaf.}
+#'     \item{`compression`}{Codec name, such as `"SNAPPY"` or `"UNCOMPRESSED"`.
+#'       Set per chunk, so one file may mix codecs.}
+#'     \item{`num_values`}{Values stored in the chunk, nulls included.}
+#'     \item{`compressed_bytes`, `uncompressed_bytes`}{Size of the chunk on disk
+#'       and after decompression. Equal for an uncompressed chunk.}
+#'     \item{`encodings`}{Encodings the chunk declares, comma separated. A
+#'       dictionary-encoded chunk typically lists `RLE_DICTIONARY` alongside the
+#'       `PLAIN` its dictionary page uses.}
+#'     \item{`dictionary_page`}{Whether the chunk has a dictionary page.}
+#'     \item{`bloom_filter`}{Whether a bloom filter is present, which is what
+#'       [bloom_filter_may_contain()] needs.}
+#'     \item{`page_index`}{Whether a column index or an offset index is present;
+#'       [page_index()] reports either.}
+#'   }
+#'
+#'   Sizes and counts are doubles rather than integers, because a chunk can
+#'   exceed `.Machine$integer.max`.
 #' @seealso [column_statistics()], [row_groups()]
 #' @export
 #' @examples
@@ -732,8 +766,23 @@ column_chunks.qio_parquet_file <- function(x, ...) {
 #' @param x A `qio_parquet_file` object.
 #' @param ... Reserved for future use.
 #'
-#' @return A data frame with one row per column chunk. `null_count` and
-#'   `distinct_count` are `NA` when the file does not record them.
+#' @return A data frame with one row per column chunk, ordered by row group and
+#'   then by column, with the columns:
+#'   \describe{
+#'     \item{`row_group`}{1-based row-group ID, as [row_groups()] reports it.}
+#'     \item{`column`}{1-based physical column index, as [schema()] reports it.}
+#'     \item{`path`}{Complete dotted column path; see [schema()].}
+#'     \item{`num_values`}{Values the statistics cover, nulls included.}
+#'     \item{`null_count`}{Nulls the writer recorded, or `NA` when it recorded
+#'       none. `NA` means unknown, not zero.}
+#'     \item{`distinct_count`}{Distinct values the writer recorded, or `NA`.
+#'       Most writers omit it, so `NA` is the common case.}
+#'     \item{`min`, `max`}{List columns of physical-level bounds, one element
+#'       per row; `NULL` when absent or undecodable. See Details.}
+#'   }
+#'
+#'   Counts are doubles rather than integers, because a chunk can hold more
+#'   values than `.Machine$integer.max`.
 #' @seealso [column_chunks()], [row_groups()]
 #' @export
 #' @examples
@@ -772,11 +821,29 @@ column_statistics.qio_parquet_file <- function(x, ...) {
 #' @param x A `qio_parquet_file` object.
 #' @param ... Reserved for future use.
 #'
-#' @return A data frame with one row per page. `first_row`, `offset`, and
-#'   `compressed_bytes` come from the offset index and are `NA` when only a
-#'   column index is present; `null_count`, `null_page`, `min`, and `max` come
-#'   from the column index and are `NA` or `NULL` when only an offset index is.
-#'   `min` and `max` are list columns, decoded as in [column_statistics()].
+#' @return A data frame with one row per page, ordered by row group, then
+#'   column, then page, with the columns:
+#'   \describe{
+#'     \item{`row_group`}{1-based row-group ID, as [row_groups()] reports it.}
+#'     \item{`column`}{1-based physical column index, as [schema()] reports it.}
+#'     \item{`path`}{Complete dotted column path; see [schema()].}
+#'     \item{`page`}{1-based page number within this column chunk, restarting at
+#'       1 for every chunk.}
+#'     \item{`first_row`}{0-based row within the row group where the page
+#'       starts. The first page of a chunk is 0.}
+#'     \item{`offset`}{Byte offset of the page from the start of the file.}
+#'     \item{`compressed_bytes`}{Size of the page on disk.}
+#'     \item{`null_count`}{Nulls on the page, or `NA` when not recorded.}
+#'     \item{`null_page`}{Whether the page holds only nulls, in which case its
+#'       bounds carry no information.}
+#'     \item{`min`, `max`}{List columns of physical-level bounds, decoded as in
+#'       [column_statistics()]; `NULL` when absent.}
+#'   }
+#'
+#'   The two indexes are independent and either may be missing. `first_row`,
+#'   `offset`, and `compressed_bytes` come from the offset index and are `NA`
+#'   without it; `null_count`, `null_page`, `min`, and `max` come from the
+#'   column index and are `NA` or `NULL` without it.
 #' @seealso [column_statistics()], [column_chunks()]
 #' @export
 #' @examples

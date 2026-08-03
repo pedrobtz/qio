@@ -1940,7 +1940,7 @@ static SEXP qio_collect_body(void *data) {
      * buffered reader is not, so each worker gets a private reader opened on
      * the same path with the same options, and tasks are grouped into lanes so
      * that one reader is only ever used by one lane at a time. Measured worth
-     * about 2.6x on a buffered handle, which is what parquet_open() defaults
+     * about 2.6x on a buffered handle, which is what open_parquet() defaults
      * to; see bench/README.md.
      *
      * Opening a private reader re-parses the footer, so the buffered path is

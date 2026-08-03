@@ -6,7 +6,7 @@
  *       -> invisible(path)
  *
  * The read path lives in qio_file.c (the persistent handle and its collect /
- * walk / metadata entry points); read_parquet() is parquet_open() + collect().
+ * walk / metadata entry points); read_parquet() is open_parquet() + collect().
  *
  * Type mapping (flat schemas only):
  *
