@@ -550,11 +550,19 @@ a single row group (2015 US flights), and 67k x 3 across 68 row groups
 (GLUE SST-2). Neither had a converter pathology; both agreed with arrow and
 nanoparquet on every value.
 
-The narrow one is 1.78x slower than arrow with **no per-column outlier**, which
-rules out the per-value class of defect entirely and points at something
-structural. qio schedules one worker task per *(row group x column)*. A file
-with one row group and four columns therefore has four tasks, whatever the core
-count:
+**This finding was first recorded with a wrong number and the correction is
+kept here rather than quietly applied.** The flights file was reported as 1.78x
+slower than arrow, and that gap was the entire reason the finding was raised.
+The benchmark's forcing function summed each column, and `sum()` over an arrow
+numeric column is answered from the ALTREP `Sum` method without allocating the
+vector -- so arrow was timed not doing the work. Forced with
+`sum(unclass(column) + 0)` the file is **1.11x**, and the taxi file moves from
+1.07x slower to 0.81x *faster* than the best alternative. See `bench/README.md`
+for the mechanism.
+
+The scaling measurement is qio-only and therefore survives intact. qio schedules
+one worker task per *(row group x column)*. A file with one row group and four
+columns has four tasks, whatever the core count:
 
 | threads | seconds |
 |---:|---:|
@@ -573,8 +581,10 @@ path, so it needs its own design. Note it does *not* have step 5's problem --
 this is numeric decode, which already runs off the main thread, so the
 parallelizable fraction is large rather than 20%.
 
-Tall and narrow is a common analytics shape. qio currently cannot use a
-machine's cores on it.
+Tall and narrow is a common analytics shape and qio leaves cores idle on it.
+But the corrected numbers change what that is worth: this is headroom qio is not
+taking, not a deficit against the alternatives. It should be ranked as an
+efficiency improvement against other candidates, not treated as urgent.
 
 SST-2 is the useful control: 68 row groups for 67k rows, about a thousand each,
 where per-group overhead might have dominated. It does not; qio is at parity.
@@ -595,6 +605,14 @@ So the granularity problem is having too few tasks, not too many.
   which is the first evidence that the corpus is converging. Keep running
   `bench/real-file.R` against files from writers not yet represented before
   ranking any further read work by generated numbers.
+- **The benchmark itself was the sixth defect, and the most expensive one.**
+  Every ratio against arrow measured before the `sum(unclass(c) + 0)` fix was
+  inflated, and finding 4 was raised on the strength of one of them. The ALTREP
+  hazard was known and documented for strings from the day the script was
+  written; it was not carried across to numerics. A measurement harness needs
+  the same adversarial check as a decoder -- the working test is to assert that
+  a deliberately deferred read costs the same as an eager one, which is exactly
+  what a `.Internal(inspect())` on the returned column would have shown.
 
 ## Out of scope
 

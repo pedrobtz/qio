@@ -84,17 +84,35 @@ available <- readers_wanted[vapply(
 
 # ------------------------------------------------------------------ helpers --
 
-# Touch every value, so a reader that returns a promise is charged for keeping
-# it. arrow's R package uses ALTREP: without this it is timed on returning
-# rather than on reading. See bench/README.md.
+# Force every column into a plain R vector, which is what qio always returns.
+#
+# This is subtler than it looks and the obvious version is wrong. arrow's R
+# package returns ALTREP columns backed by Arrow buffers, and R answers some
+# operations from ALTREP methods without ever allocating the vector -- sum() is
+# one of them. An earlier version of this function used sum() and therefore
+# timed arrow *not doing the allocation*, while qio did it. On a 5.8M x 4
+# numeric file that reported qio 1.78x slower than arrow; forced properly it is
+# 1.11x, and a 3.1M x 19 file moves from 1.07x slower to 0.81x faster.
+#
+# as.data.frame() does not help either: arrow::read_parquet() already returns a
+# tibble whose columns are ALTREP, so converting it only changes the class --
+# the column pointer is identical before and after.
+#
+# `c + 0` allocates a real double vector and was verified to leave no ALTREP
+# behind. Strings need their CHARSXPs built, which nchar() forces. Both cost
+# every reader the same.
 materialize <- function(frame) {
   total <- 0
   for (column in frame) {
     total <- total +
       if (is.character(column)) {
         sum(nchar(column, type = "bytes"), na.rm = TRUE)
+      } else if (is.list(column)) {
+        sum(lengths(column))
       } else {
-        sum(as.numeric(column), na.rm = TRUE)
+        # unclass() first: a Date or POSIXct column stays classed through
+        # `+ 0`, and sum() is not defined for POSIXt. The `+ 0` forces ALTREP.
+        sum(unclass(column) + 0, na.rm = TRUE)
       }
   }
   invisible(total)

@@ -51,8 +51,10 @@ parse_args <- function(argv = commandArgs(trailingOnly = TRUE)) {
 
 args <- parse_args()
 stopifnot(
-  is.finite(args$rows), args$rows > 0L,
-  is.finite(args$reps), args$reps > 0L
+  is.finite(args$rows),
+  args$rows > 0L,
+  is.finite(args$reps),
+  args$reps > 0L
 )
 
 # ----------------------------------------------------------------- workloads --
@@ -129,7 +131,9 @@ time_it <- function(case, reps, warmup) {
     case()
     proc.time()[["elapsed"]] - started
   }
-  for (i in seq_len(warmup)) run()
+  for (i in seq_len(warmup)) {
+    run()
+  }
   vapply(seq_len(reps), function(i) run(), numeric(1))
 }
 
@@ -199,13 +203,16 @@ results <- data.frame(
 
 for (name in names(cases)) {
   timings <- time_it(cases[[name]], args$reps, args$warmup)
-  results <- rbind(results, data.frame(
-    case = name,
-    median = median(timings),
-    min = min(timings),
-    max = max(timings),
-    stringsAsFactors = FALSE
-  ))
+  results <- rbind(
+    results,
+    data.frame(
+      case = name,
+      median = median(timings),
+      min = min(timings),
+      max = max(timings),
+      stringsAsFactors = FALSE
+    )
+  )
 }
 
 # The spread is printed because it is the only honest way to read a single CI
@@ -297,11 +304,14 @@ if (args$max_seconds > 0) {
   over <- results[results$median > args$max_seconds, ]
   if (nrow(over) > 0) {
     cat("FAIL: over the", args$max_seconds, "second ceiling:\n")
-    cat(sprintf(
-      "  %s: %s s\n",
-      over$case,
-      format_seconds(over$median)
-    ), sep = "")
+    cat(
+      sprintf(
+        "  %s: %s s\n",
+        over$case,
+        format_seconds(over$median)
+      ),
+      sep = ""
+    )
     quit(status = 1L)
   }
   cat("all cases under the", args$max_seconds, "second ceiling\n")

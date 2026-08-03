@@ -85,6 +85,19 @@ slower on text where the forced figures are close to level. Every case is
 therefore timed to *materialized* data, by summing over every column after
 reading, which costs all three readers the same.
 
+**The trap has a second edge, and this script fell into it.** Forcing a column
+is not the same as touching it. `sum()` over an arrow numeric column is answered
+from the ALTREP `Sum` method **without ever allocating the vector**, so a
+forcing function built on `sum()` forces strings (via `nchar()`) but silently
+leaves numerics deferred. Measured on the flights file: `sum()` over arrow's
+columns took 0.060s, forcing a real copy took 0.344s. `as.data.frame()` is not
+a fix either -- arrow already returns a tibble, so it changes only the class and
+the column pointers are unchanged. Numeric columns are therefore forced with
+`sum(unclass(column) + 0)`: the `+ 0` allocates, and the `unclass()` is needed
+because a `Date` or `POSIXct` column stays classed through `+ 0` and `sum()` is
+not defined for `POSIXt`. The real-file numbers below were restated after this
+was found; the ones in this file's history that were not are wrong.
+
 ### Where qio stands
 
 Measured at 1,000,000 rows, snappy, four row groups, on one Apple silicon
@@ -92,10 +105,10 @@ laptop with 8 cores. Median seconds to materialized data, files written by qio:
 
 | workload | qio | arrow | nanoparquet | qio vs best other |
 |---|---:|---:|---:|---:|
-| `numeric` | 0.0110 | 0.0090 | 0.0200 | 1.22x slower |
+| `numeric` | 0.0130 | 0.0130 | 0.0220 | 1.00x |
 | `text_dictionary` | 0.0200 | 0.0680 | 0.0190 | 1.05x slower |
-| `text_unique` | 0.1030 | 0.1070 | 0.0950 | 1.08x slower |
-| `mixed_nulls` | 0.0200 | 0.0520 | 0.0320 | **0.62x faster** |
+| `text_unique` | 0.1050 | 0.1060 | 0.0940 | 1.12x slower |
+| `mixed_nulls` | 0.0210 | 0.0550 | 0.0340 | **0.62x faster** |
 
 qio is at or near parity on these shapes and ahead on the nullable mixed frame.
 It was 1.2x to 2.6x slower before the read work recorded in
@@ -124,10 +137,10 @@ fixture:
 
 | cardinality | index bits | qio | arrow | nanoparquet | qio vs best |
 |---:|---:|---:|---:|---:|---:|
-| 200 | 8 | 0.0090 | 0.0350 | 0.0090 | 1.00x |
+| 200 | 8 | 0.0090 | 0.0350 | 0.0100 | **0.90x faster** |
 | 257 | 9 | 0.0110 | 0.0350 | 0.0100 | 1.10x |
-| 65536 | 16 | 0.0170 | 0.0380 | 0.0180 | **0.94x faster** |
-| 65537 | 17 | 0.0190 | 0.0390 | 0.0180 | 1.06x |
+| 65536 | 16 | 0.0170 | 0.0390 | 0.0180 | **0.94x faster** |
+| 65537 | 17 | 0.0180 | 0.0390 | 0.0170 | 1.06x |
 
 Before the kernel work those four rows read 1.53x, 1.69x, 2.14x and 2.39x, so
 the column is now flat as well as lower -- which was the actual goal.
@@ -193,17 +206,22 @@ materialized data, values verified to agree across all three readers first.
 
 | file | shape | qio | arrow | nanoparquet | qio vs best |
 |---|---|---:|---:|---:|---:|
-| NYC taxi, Jan 2023 | 3.1M x 19, 1 group, GZIP | 0.205 | 0.192 | 0.523 | 1.07x |
-| 2015 US flights | 5.8M x 4, 1 group, Snappy | 0.089 | 0.050 | 0.120 | **1.78x** |
+| NYC taxi, Jan 2023 | 3.1M x 19, 1 group, GZIP | 0.219 | 0.269 | 0.576 | **0.81x faster** |
+| 2015 US flights | 5.8M x 4, 1 group, Snappy | 0.097 | 0.087 | 0.130 | 1.11x |
 | GLUE SST-2 | 67k x 3, **68 groups**, Snappy | 0.016 | 0.017 | 0.016 | 1.00x |
 
 The taxi file is the one that read 83.2 s before the converter fixes.
 
-**The flights file found something new, and it is structural.** No column is an
-outlier -- all four are within 1.1x of the median -- so this is not a converter
-pathology. It is parallel granularity: qio schedules one task per *(row group x
-column)*, and this file is one row group of four columns, so at most four tasks
-exist however many cores are available.
+These three rows replace an earlier set that was measured with the broken
+forcing function described above, and one conclusion drawn from them was wrong.
+The flights file was reported here as **1.78x slower than arrow** and read as
+evidence of a structural parallelism defect. Forced properly it is 1.11x, and
+the taxi file reverses from 1.07x slower to 0.81x faster. Do not quote the old
+figures; they timed arrow not doing the work.
+
+What survives is narrower. qio schedules one worker task per *(row group x
+column)*, so the flights file -- one row group, four columns -- has at most four
+tasks however many cores are present:
 
 | threads | seconds |
 |---:|---:|
@@ -212,9 +230,12 @@ exist however many cores are available.
 | 4 | 0.0760 |
 | 8 | 0.0660 |
 
-1.91x from eight cores, plateauing at four. Tall-and-narrow is a common
-analytics shape, and qio cannot currently use a machine's cores on it. Splitting
-a row group across threads is the fix and is not scheduled; recorded in
+1.91x from eight cores, plateauing at four, exactly where the task count runs
+out. That measurement is qio-only and unaffected by the ALTREP mistake, so the
+scaling limit is real. What it does not support is the claim that the limit
+costs qio a large margin against arrow on this file: it does not. Splitting a
+row group across threads remains a legitimate improvement, but it is an
+efficiency question, not a deficit to close. Recorded in
 `.agents/read-performance.md`.
 
 SST-2 is the control for the opposite extreme: 68 row groups for 67k rows,
