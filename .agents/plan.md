@@ -30,7 +30,14 @@ v0.1.0 is complete when:
 - Add interoperability fixtures with provenance in
   `tests/testthat/parquet/SOURCE.md` as each format feature lands; do not defer
   them to release week.
-- Add a `NEWS.md` entry for every user-visible change.
+- **`NEWS.md` gets no entries until 0.1.0 is released.** The 0.1.0 section is
+  one line, `* Initial release.` A changelog describes what changed *for
+  someone who has the previous version installed*, and nobody can have one, so
+  entries written before the first release document churn no user can observe.
+  Reasoning belongs in `.agents/`, behavior in the reference documentation.
+  **From 0.2.0 onward the normal rule applies**: every user-visible change gets
+  an entry, because from then on there is a released version to describe it
+  against.
 - Clean native objects before testing any vendored-header change.
 - Measure before and after performance work on the same fixture, machine, and
   build configuration. Keep the benchmark reproducible.
@@ -403,7 +410,9 @@ order. All four groups depend on the phase 2 read-option surface.
 
 - [x] Restrict character conversion to text annotations. Only `STRING`,
   `ENUM`, and `JSON` become character; this changes existing behavior, and the
-  Apache reference `alltypes_*` fixtures are affected. Recorded in `NEWS.md`.
+  Apache reference `alltypes_*` fixtures are affected. Documented in
+  `?qio-types` and `TYPES.md`; the 0.1.0 `NEWS.md` entry it once carried went
+  with the rest when NEWS was reduced to the initial release.
 - [x] Materialize variable and fixed binary as raw-vector list-columns, with
   `NULL` for null values. `FIXED_LEN_BYTE_ARRAY` is now readable.
 - [x] Add JSON, BSON, ENUM, UUID, and FLOAT16 read mappings.
@@ -852,11 +861,15 @@ converter fixes that followed it**.
 - [x] Set `Version: 0.1.0`. `DESCRIPTION` and the `NEWS.md` heading agree, and
   the help topics that describe behavior as "qio 0.1.0" are now accurate rather
   than aspirational.
-- [ ] Finalize NEWS and release metadata, then rerun the complete release
-  matrix. **NEWS still describes none of the read-performance work, and has a
-  user-facing correctness fix to describe as well**: a local `TIMESTAMP` column
-  read with a DST-observing `tz` could silently lose the time of day from every
-  value.
+- [x] Finalize NEWS. It is one line: `* Initial release.` Nothing before 0.1.0
+  was ever published, so a changelog of pre-release churn would document
+  changes against a version no user can have installed. The reasoning behind
+  each decision lives in `.agents/`, and the behavior itself is in the
+  reference documentation; NEWS starts earning its keep at 0.2.0. The rule is
+  recorded in [the working rules](#working-rules) and in `AGENTS.md` so it
+  is not reintroduced by habit.
+- [ ] Rerun the complete release matrix against the release commit, including
+  an explicit `gctorture` dispatch.
 - [ ] Tag and publish v0.1.0 only from the verified release commit.
 
 **Phase 8 has found a real omission on each of its runs so far** -- the missing

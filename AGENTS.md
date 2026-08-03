@@ -44,7 +44,12 @@ buffered I/O.
   internal helpers.
 - Regenerate `man/` and `NAMESPACE`; never edit generated `.Rd` files.
 - Wrap roxygen text at 80 characters and run `air format .` for R sources.
-- Add a short `NEWS.md` item for user-visible changes.
+- **Do not add `NEWS.md` entries until 0.1.0 is released.** Its section is one
+  line, `* Initial release.`, and stays that way: nothing before 0.1.0 was ever
+  published, so there is no installed version for a change to be described
+  against. Record the reasoning in `.agents/` and the behavior in the reference
+  documentation instead. **After 0.1.0 ships**, add a short `NEWS.md` item for
+  every user-visible change.
 
 Do not edit vendored trees as ordinary package code. Follow
 [`.agents/VENDORED.md`](.agents/VENDORED.md) to re-vendor or reapply local
