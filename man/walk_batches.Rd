@@ -40,8 +40,11 @@ row groups.}
 is exact from \code{-2^53} through \code{2^53} and returns \code{NA} outside it.
 \code{"integer64"} returns \link[bit64:integer64]{bit64::integer64}, which covers the full signed
 64-bit range, and needs the suggested \code{bit64} package. Either way values
-that cannot be represented become \code{NA} and one warning is emitted per
-read. Unsigned 64-bit columns are never returned as negative numbers.}
+that cannot be represented become \code{NA}, and one warning naming the column
+is emitted for each column that lost values -- once per column, however
+many values, row groups, or batches were affected, and never for a column
+that lost nothing. Unsigned 64-bit columns are never returned as negative
+numbers.}
 
 \item{time}{How \code{TIME} columns reach R: \code{"numeric"} (the default) returns
 seconds since midnight, \code{"hms"} returns \link[hms:hms]{hms::hms} and needs the suggested

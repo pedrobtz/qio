@@ -177,8 +177,11 @@ metadata.qio_parquet_file <- function(x, ...) {
 #'   is exact from `-2^53` through `2^53` and returns `NA` outside it.
 #'   `"integer64"` returns [bit64::integer64], which covers the full signed
 #'   64-bit range, and needs the suggested `bit64` package. Either way values
-#'   that cannot be represented become `NA` and one warning is emitted per
-#'   read. Unsigned 64-bit columns are never returned as negative numbers.
+#'   that cannot be represented become `NA`, and one warning naming the column
+#'   is emitted for each column that lost values -- once per column, however
+#'   many values, row groups, or batches were affected, and never for a column
+#'   that lost nothing. Unsigned 64-bit columns are never returned as negative
+#'   numbers.
 #' @param time How `TIME` columns reach R: `"numeric"` (the default) returns
 #'   seconds since midnight, `"hms"` returns [hms::hms] and needs the suggested
 #'   `hms` package. Neither returns `POSIXct`, because a time of day is not an

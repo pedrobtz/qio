@@ -18,6 +18,12 @@
   now name-only, which is how `collect()`, `walk_batches()` and `read_plan()`
   already take the same arguments.
 
+* Warnings about values coerced to `NA` now name the column, and are emitted
+  once per affected column rather than once per read. A column that lost
+  nothing stays silent, and a column that lost a million values across twenty
+  batches still warns once. Previously a wide file produced a single warning
+  that said data had been lost without saying where.
+
 * `read_parquet()`, `collect()`, and `walk_batches()` gain `verbose`, which
   reports the read before it happens: the rows, columns, and row groups
   selected, the batch size, and the resolved `read_plan()` for the selected

@@ -23,14 +23,14 @@
 #' | Physical | Logical | Reads as | Notes and precision | Writes |
 #' |---|---|---|---|---|
 #' | `BOOLEAN` | none | `logical` | Exact. | from `logical` |
-#' | `INT32` | none | `integer` | `-2147483648` becomes `NA`: R reserves it as `NA_integer_`. One warning per read. | from `integer` |
+#' | `INT32` | none | `integer` | `-2147483648` becomes `NA`: R reserves it as `NA_integer_`. One warning per affected column. | from `integer` |
 #' | `INT32` | `DATE` | `Date` | Exact. Days since 1970-01-01. | from `Date` |
 #' | `INT32` | `TIME(MILLIS)` | `double` or `hms` | Seconds since midnight. Never `POSIXct`: a time of day is not an instant. `time = "hms"` needs the `hms` package. | no |
 #' | `INT32` | `INTEGER(8/16/32, signed)` | `integer` | Exact. The sentinel rule above applies. | no |
 #' | `INT32` | `INTEGER(8/16, unsigned)` | `integer` | Exact; both fit in R's signed 32-bit integer. | no |
 #' | `INT32` | `INTEGER(32, unsigned)` | `double` | Exact. Widened so the upper half stays positive: `4294967295` reads as itself, not `-1`. | no |
 #' | `INT32` | `DECIMAL(p, s)` | `double` | Scale applied, so unscaled `1230` scale 2 reads `12.30`. Approximate; one message per read. | no |
-#' | `INT64` | none | `double`, or `integer64` | Default `int64 = "double"` is exact in `[-2^53, 2^53]` and `NA` outside it. `int64 = "integer64"` covers the full signed range and needs `bit64`. One warning per read when anything is dropped. | from `numeric`, explicit schema |
+#' | `INT64` | none | `double`, or `integer64` | Default `int64 = "double"` is exact in `[-2^53, 2^53]` and `NA` outside it. `int64 = "integer64"` covers the full signed range and needs `bit64`. One warning per affected column when anything is dropped. | from `numeric`, explicit schema |
 #' | `INT64` | `TIMESTAMP(unit, UTC)` | `POSIXct` | An instant; `tz` changes only display. Stored as `double` seconds, so sub-second precision degrades far from the epoch, most visibly for `NANOS`. | from `POSIXct`, UTC only |
 #' | `INT64` | `TIMESTAMP(unit, local)` | `POSIXct` | A wall clock with no zone stored. Civil components are read in `tz`; the machine's local zone is never used implicitly. | no |
 #' | `INT64` | `TIME(MICROS/NANOS)` | `double` or `hms` | As `INT32` `TIME` above. | no |
@@ -58,12 +58,13 @@
 #' \describe{
 #'   \item{`INT32` holding `-2147483648`}{R reserves that value as
 #'     `NA_integer_`, so it cannot be stored. It reads as `NA` with one warning
-#'     per read. Promoting the column to `double` was rejected: [read_plan()] is
+#'     naming the column, however many values or batches were affected.
+#'     Promoting the column to `double` was rejected: [read_plan()] is
 #'     a pure function of the schema, and a data-dependent type would let one
 #'     column arrive as different types in different batches.}
 #'   \item{64-bit integers past 2^53}{R's `double` is exact only within
-#'     `[-2^53, 2^53]`. Values outside it read as `NA` with one warning; pass
-#'     `int64 = "integer64"` to keep the full signed range.}
+#'     `[-2^53, 2^53]`. Values outside it read as `NA` with one warning naming
+#'     the column; pass `int64 = "integer64"` to keep the full signed range.}
 #'   \item{`DECIMAL`}{Read as `double` with the declared scale applied, which is
 #'     exact only while the unscaled integer stays within `[-2^53, 2^53]`. Larger
 #'     precisions lose low-order digits. One message per read. Exact fixed-point

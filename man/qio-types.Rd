@@ -27,14 +27,14 @@ selects among them. Everything marked "no" under writing is readable but not
 writable.\tabular{lllll}{
    Physical \tab Logical \tab Reads as \tab Notes and precision \tab Writes \cr
    \code{BOOLEAN} \tab none \tab \code{logical} \tab Exact. \tab from \code{logical} \cr
-   \code{INT32} \tab none \tab \code{integer} \tab \code{-2147483648} becomes \code{NA}: R reserves it as \code{NA_integer_}. One warning per read. \tab from \code{integer} \cr
+   \code{INT32} \tab none \tab \code{integer} \tab \code{-2147483648} becomes \code{NA}: R reserves it as \code{NA_integer_}. One warning per affected column. \tab from \code{integer} \cr
    \code{INT32} \tab \code{DATE} \tab \code{Date} \tab Exact. Days since 1970-01-01. \tab from \code{Date} \cr
    \code{INT32} \tab \code{TIME(MILLIS)} \tab \code{double} or \code{hms} \tab Seconds since midnight. Never \code{POSIXct}: a time of day is not an instant. \code{time = "hms"} needs the \code{hms} package. \tab no \cr
    \code{INT32} \tab \code{INTEGER(8/16/32, signed)} \tab \code{integer} \tab Exact. The sentinel rule above applies. \tab no \cr
    \code{INT32} \tab \code{INTEGER(8/16, unsigned)} \tab \code{integer} \tab Exact; both fit in R's signed 32-bit integer. \tab no \cr
    \code{INT32} \tab \code{INTEGER(32, unsigned)} \tab \code{double} \tab Exact. Widened so the upper half stays positive: \code{4294967295} reads as itself, not \code{-1}. \tab no \cr
    \code{INT32} \tab \code{DECIMAL(p, s)} \tab \code{double} \tab Scale applied, so unscaled \code{1230} scale 2 reads \code{12.30}. Approximate; one message per read. \tab no \cr
-   \code{INT64} \tab none \tab \code{double}, or \code{integer64} \tab Default \code{int64 = "double"} is exact in \verb{[-2^53, 2^53]} and \code{NA} outside it. \code{int64 = "integer64"} covers the full signed range and needs \code{bit64}. One warning per read when anything is dropped. \tab from \code{numeric}, explicit schema \cr
+   \code{INT64} \tab none \tab \code{double}, or \code{integer64} \tab Default \code{int64 = "double"} is exact in \verb{[-2^53, 2^53]} and \code{NA} outside it. \code{int64 = "integer64"} covers the full signed range and needs \code{bit64}. One warning per affected column when anything is dropped. \tab from \code{numeric}, explicit schema \cr
    \code{INT64} \tab \code{TIMESTAMP(unit, UTC)} \tab \code{POSIXct} \tab An instant; \code{tz} changes only display. Stored as \code{double} seconds, so sub-second precision degrades far from the epoch, most visibly for \code{NANOS}. \tab from \code{POSIXct}, UTC only \cr
    \code{INT64} \tab \code{TIMESTAMP(unit, local)} \tab \code{POSIXct} \tab A wall clock with no zone stored. Civil components are read in \code{tz}; the machine's local zone is never used implicitly. \tab no \cr
    \code{INT64} \tab \code{TIME(MICROS/NANOS)} \tab \code{double} or \code{hms} \tab As \code{INT32} \code{TIME} above. \tab no \cr
@@ -65,12 +65,13 @@ Parquet's. Each is reported rather than silent.
 \describe{
 \item{\code{INT32} holding \code{-2147483648}}{R reserves that value as
 \code{NA_integer_}, so it cannot be stored. It reads as \code{NA} with one warning
-per read. Promoting the column to \code{double} was rejected: \code{\link[=read_plan]{read_plan()}} is
+naming the column, however many values or batches were affected.
+Promoting the column to \code{double} was rejected: \code{\link[=read_plan]{read_plan()}} is
 a pure function of the schema, and a data-dependent type would let one
 column arrive as different types in different batches.}
 \item{64-bit integers past 2^53}{R's \code{double} is exact only within
-\verb{[-2^53, 2^53]}. Values outside it read as \code{NA} with one warning; pass
-\code{int64 = "integer64"} to keep the full signed range.}
+\verb{[-2^53, 2^53]}. Values outside it read as \code{NA} with one warning naming
+the column; pass \code{int64 = "integer64"} to keep the full signed range.}
 \item{\code{DECIMAL}}{Read as \code{double} with the declared scale applied, which is
 exact only while the unscaled integer stays within \verb{[-2^53, 2^53]}. Larger
 precisions lose low-order digits. One message per read. Exact fixed-point

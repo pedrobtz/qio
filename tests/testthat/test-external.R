@@ -307,10 +307,15 @@ test_that("all three read APIs agree on the colliding file", {
 int64_fixture <- function() ext("int64_boundaries.parquet")
 
 test_that("double mode keeps the exact range and reports the rest", {
-  expect_warning(
-    df <- read_parquet(int64_fixture()),
-    "cannot be represented exactly as R doubles"
+  # Both columns lose values, so both warn. expect_warning() would consume one
+  # and let the other escape to the console.
+  read <- collect_warnings(read_parquet(int64_fixture()))
+  expect_match(
+    read$warnings,
+    "cannot be represented exactly as R doubles",
+    all = TRUE
   )
+  df <- read$value
   expect_type(df$signed, "double")
   expect_identical(
     df$signed,
@@ -326,10 +331,13 @@ test_that("double mode keeps the exact range and reports the rest", {
 
 test_that("integer64 mode preserves the full 64-bit range", {
   skip_if_not_installed("bit64")
-  expect_warning(
-    df <- read_parquet(int64_fixture(), int64 = "integer64"),
-    "cannot be represented by bit64::integer64"
+  read <- collect_warnings(read_parquet(int64_fixture(), int64 = "integer64"))
+  expect_match(
+    read$warnings,
+    "cannot be represented by bit64::integer64",
+    all = TRUE
   )
+  df <- read$value
   expect_s3_class(df$signed, "integer64")
 
   expect_identical(
@@ -360,17 +368,33 @@ test_that("integer64 mode preserves the full 64-bit range", {
   )
 })
 
-test_that("the 64-bit warning is emitted once per read", {
-  warnings <- character()
-  withCallingHandlers(
-    read_parquet(int64_fixture()),
-    warning = function(w) {
-      warnings <<- c(warnings, conditionMessage(w))
-      invokeRestart("muffleWarning")
-    }
+test_that("the 64-bit warning is emitted once per affected column", {
+  # Eight rows in each column, several of them coerced, but one warning per
+  # column: the flag is set rather than counted.
+  read <- collect_warnings(read_parquet(int64_fixture()))
+  expect_length(read$warnings, 2L)
+  expect_match(read$warnings[[1L]], "column 'signed'", fixed = TRUE)
+  expect_match(read$warnings[[2L]], "column 'unsigned'", fixed = TRUE)
+})
+
+test_that("a column that loses nothing does not warn", {
+  # The point of naming the column: on a wide file the warning is only useful
+  # if the columns that are fine stay silent.
+  read <- collect_warnings(read_parquet(int64_fixture(), columns = "signed"))
+  expect_length(read$warnings, 1L)
+  expect_match(read$warnings[[1L]], "column 'signed'", fixed = TRUE)
+  expect_false(any(grepl("unsigned", read$warnings, fixed = TRUE)))
+})
+
+test_that("batching does not multiply the warning", {
+  # Eight batches of one row each. Per batch would give eight warnings per
+  # column; per column gives two for the whole walk.
+  file <- open_parquet(int64_fixture())
+  withr::defer(close_parquet(file))
+  read <- collect_warnings(
+    walk_batches(file, function(batch, index) NULL, batch_size = 1L)
   )
-  # Two columns and eight rows each, but one warning for the whole read.
-  expect_length(warnings, 1L)
+  expect_length(read$warnings, 2L)
 })
 
 test_that("read_plan() reports the selected 64-bit mode", {

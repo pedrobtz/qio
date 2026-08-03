@@ -337,20 +337,50 @@ test_that("an INT32 sentinel value is reported, not silently dropped", {
   )
 })
 
-test_that("the sentinel warning is emitted once per read, not per value", {
+test_that("the sentinel warning is emitted once per column, not per value", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  schema <- parquet_schema(
+    d = list(type = "DATE"),
+    e = list(type = "DATE"),
+    ok = list(type = "DATE")
+  )
+  write_parquet(
+    data.frame(
+      d = rep(-2147483648, 20),
+      e = rep(-2147483648, 20),
+      ok = rep(0, 20)
+    ),
+    path,
+    schema = schema
+  )
+
+  read <- collect_warnings(read_parquet(path))
+  # Forty coerced values across two columns, and one clean column: two
+  # warnings, each naming its own column.
+  expect_length(read$warnings, 2L)
+  expect_match(read$warnings[[1L]], "column 'd'", fixed = TRUE)
+  expect_match(read$warnings[[2L]], "column 'e'", fixed = TRUE)
+  expect_false(any(grepl("column 'ok'", read$warnings, fixed = TRUE)))
+})
+
+test_that("the sentinel warning survives row-group and batch boundaries", {
+  # A column split across four row groups, read one row at a time, still warns
+  # once: the per-column flag is set, never counted.
   path <- withr::local_tempfile(fileext = ".parquet")
   schema <- parquet_schema(d = list(type = "DATE"))
-  write_parquet(data.frame(d = rep(-2147483648, 20)), path, schema = schema)
-
-  warnings <- character()
-  withCallingHandlers(
-    read_parquet(path),
-    warning = function(w) {
-      warnings <<- c(warnings, conditionMessage(w))
-      invokeRestart("muffleWarning")
-    }
+  write_parquet(
+    data.frame(d = rep(-2147483648, 20)),
+    path,
+    schema = schema,
+    row_group_size = 5
   )
-  expect_length(warnings, 1L)
+
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
+  read <- collect_warnings(
+    walk_batches(file, function(batch, index) NULL, batch_size = 1L)
+  )
+  expect_length(read$warnings, 1L)
 })
 
 test_that("reads without a sentinel value do not warn", {
@@ -820,4 +850,39 @@ test_that("verbose works from collect() and walk_batches() too", {
 test_that("verbose rejects a non-flag", {
   expect_error(read_parquet(fixture_path(), verbose = "yes"), "`verbose`")
   expect_error(read_parquet(fixture_path(), verbose = NA), "`verbose`")
+})
+
+test_that("per-column coercion flags survive the parallel decode path", {
+  # Six columns across eight row groups is 48 worker tasks, each carrying its
+  # own flag to be merged on the main thread. A wrong index here would write
+  # outside the per-column array, so this is a memory-safety test as much as a
+  # behavioral one.
+  skip_on_cran()
+  path <- withr::local_tempfile(fileext = ".parquet")
+  n <- 400L
+  columns <- c("a", "b", "c", "d", "e", "f")
+  frame <- data.frame(
+    a = rep(-2147483648, n),
+    b = rep(0, n),
+    c = rep(-2147483648, n),
+    d = rep(1, n),
+    e = rep(-2147483648, n),
+    f = rep(2, n)
+  )
+  schema <- do.call(
+    parquet_schema,
+    stats::setNames(rep(list(list(type = "DATE")), 6L), columns)
+  )
+  write_parquet(frame, path, schema = schema, row_group_size = 50L)
+
+  file <- open_parquet(path, mmap = TRUE, threads = 8L)
+  withr::defer(close_parquet(file))
+  read <- collect_warnings(collect(file))
+
+  # Exactly the three columns that hold the sentinel, in selection order.
+  expect_length(read$warnings, 3L)
+  expect_match(read$warnings[[1L]], "column 'a'", fixed = TRUE)
+  expect_match(read$warnings[[2L]], "column 'c'", fixed = TRUE)
+  expect_match(read$warnings[[3L]], "column 'e'", fixed = TRUE)
+  expect_identical(nrow(read$value), n)
 })

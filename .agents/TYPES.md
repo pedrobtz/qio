@@ -42,7 +42,7 @@ never returned as negative values, at any width.
 |---|---|---|
 | `BOOLEAN` | logical | — |
 | `INT32` | integer or `Date` | Only `DATE` is interpreted; stored `-2147483648` becomes `NA` with a warning (see [INT32 sentinel values](#int32-sentinel-values)) |
-| `INT64` | numeric, `bit64::integer64`, or `POSIXct` | Selected by `int64`; unrepresentable values become `NA` with one warning per read |
+| `INT64` | numeric, `bit64::integer64`, or `POSIXct` | Selected by `int64`; unrepresentable values become `NA` with one warning per affected column |
 | `INT96` | UTC `POSIXct` | Read-only legacy timestamp |
 | `FLOAT`, `DOUBLE` | numeric | `FLOAT` is widened to double |
 | `BYTE_ARRAY` | character or list of raw | Character only with a `STRING`, `ENUM`, or `JSON` annotation; validated as UTF-8 |
@@ -166,10 +166,14 @@ INT32 of that value cannot be represented. qio keeps the `integer` mapping and
 reports the substitution rather than changing the column's type.
 
 - A stored `-2147483648` becomes `NA_integer_`.
-- Emit at most one warning per top-level read, not per value, column, row
-  group, or batch:
-  `Some INT32 values were coerced to NA because R's integer type reserves
-  -2147483648 as its missing value.`
+- Emit at most one warning per affected column, not per value, row group, or
+  batch, and none at all for a column that lost nothing:
+  `Some INT32 values in column '<name>' were coerced to NA because R's integer
+  type reserves -2147483648 as its missing value.`
+  The flag is per column and is set rather than counted, so a column that
+  coerces a million values across twenty batches still warns once. Naming the
+  column is the point: on a wide file an unattributed warning says data was
+  lost without saying where.
 - The rule applies wherever an INT32 leaf reaches R as `integer`, including
   through the `DATE` converter, and to any future signed `INTEGER(8/16/32)`
   annotation that resolves to R `integer`.
@@ -199,16 +203,15 @@ Requirements:
 - Detect limits from the original 64-bit payload, before conversion.
 - Never expose the upper unsigned half as negative signed values.
 - `"integer64"` requires `bit64`; fail clearly if it is unavailable.
-- Aggregate replacements across signed and unsigned columns. Emit at most one
-  relevant warning per top-level read, not per value, column, row group, or
-  batch.
+- Track replacements per column, signed and unsigned alike. Emit at most one
+  relevant warning per affected column, not per value, row group, or batch.
 - In double mode, warn:
-  `Some INT64 or UINT64 values were coerced to NA because they cannot be
-  represented exactly as R doubles; use int64 = "integer64" to preserve the
-  supported 64-bit range.`
+  `Some INT64 or UINT64 values in column '<name>' were coerced to NA because
+  they cannot be represented exactly as R doubles; use int64 = "integer64" to
+  preserve the supported 64-bit range.`
 - In integer64 mode, warn:
-  `Some INT64 or UINT64 values were coerced to NA because they cannot be
-  represented by bit64::integer64.`
+  `Some INT64 or UINT64 values in column '<name>' were coerced to NA because
+  they cannot be represented by bit64::integer64.`
 - `read_plan()` records the mode, and every materializing read applies it. The
   argument surface is settled in
   [`roadmap.md`](roadmap.md#read-options): per-call arguments on

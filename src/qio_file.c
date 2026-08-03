@@ -68,6 +68,12 @@ typedef struct {
     uint8_t *kind;
     /* Per selected column: declared width of a FIXED_LEN_BYTE_ARRAY leaf. */
     int32_t *type_length;
+    /* Per selected column: set when a value in that column became NA. Held per
+     * column so the warning can name it, and set rather than counted so one
+     * column warns once however many values, batches, or row groups were
+     * affected. */
+    uint8_t *int32_sentinel;
+    uint8_t *int64_coerced;
     uint8_t *row_group_mask;
     int32_t num_row_groups;
     int filter_row_groups;
@@ -93,8 +99,8 @@ typedef struct {
     SEXP file;
     SEXP callback;
     int int64_mode;                   /* QIO_INT64_DOUBLE or QIO_INT64_BIT64 */
-    int int32_sentinel;               /* an INT32 -2147483648 became NA */
-    int int64_coerced;                /* a 64-bit value could not be kept */
+    /* Which values became NA is tracked per column in `selection`, so the
+     * warnings can name the column and each one warns at most once. */
 } qio_batch_context_t;
 
 static SEXP qio_file_tag(void) {
@@ -660,8 +666,8 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                                   carquet_physical_type_t type,
                                   const void *data, const uint8_t *bitmap,
                                   int64_t length, const char *column,
-                                  int *sentinel, int int64_mode,
-                                  int is_unsigned64, int *int64_coerced,
+                                  uint8_t *sentinel, int int64_mode,
+                                  int is_unsigned64, uint8_t *int64_coerced,
                                   int kind, int32_t type_length) {
     if (kind == QIO_KIND_UUID) {
         qio_check_uuid_width(type_length, column);
@@ -836,8 +842,8 @@ static void qio_scatter_numeric_raw(void *dst_base, R_xlen_t dst_offset,
                                     const void *values,
                                     const int16_t *def_levels,
                                     int16_t max_def, int64_t length,
-                                    int *sentinel, int int64_mode,
-                                    int is_unsigned64, int *int64_coerced,
+                                    uint8_t *sentinel, int int64_mode,
+                                    int is_unsigned64, uint8_t *int64_coerced,
                                     int kind) {
     switch (type) {
     case CARQUET_PHYSICAL_BOOLEAN: {
@@ -1230,9 +1236,9 @@ static void qio_scatter_dense_column(SEXP destination, R_xlen_t offset,
                                      const void *values,
                                      const int16_t *def_levels,
                                      int16_t max_def, int64_t length,
-                                     const char *column, int *sentinel,
+                                     const char *column, uint8_t *sentinel,
                                      int int64_mode, int is_unsigned64,
-                                     int *int64_coerced, int kind,
+                                     uint8_t *int64_coerced, int kind,
                                      int32_t type_length) {
     if (kind == QIO_KIND_UUID) {
         qio_check_uuid_width(type_length, column);
@@ -1365,10 +1371,13 @@ typedef struct {
     R_xlen_t dst_offset; /* first row of this row group in the result */
     int64_t rows;        /* rows in this row group */
     int status;          /* 0 = ok; set to 1 on failure */
-    int int32_sentinel;  /* task-local; merged on the main thread after wait */
+    uint8_t int32_sentinel; /* task-local; merged on the main thread after wait */
     int int64_mode;
     int is_unsigned64;
-    int int64_coerced;   /* task-local; merged with int32_sentinel */
+    uint8_t int64_coerced;  /* task-local; merged with int32_sentinel */
+    /* Which selected column this task decodes, so the merge lands in the right
+     * per-column flag. Several tasks share a column, one per row group. */
+    int32_t selection_index;
     int decode_failed;   /* carquet returned an error, not a short read */
     int kind;
     char message[256];
@@ -1554,6 +1563,10 @@ static void qio_prepare_selection(qio_parquet_handle_t *handle,
     memset(selection->kind, 0, flags);
     selection->type_length = (int32_t *)R_alloc(flags, sizeof(int32_t));
     memset(selection->type_length, 0, flags * sizeof(int32_t));
+    selection->int32_sentinel = (uint8_t *)R_alloc(flags, sizeof(uint8_t));
+    memset(selection->int32_sentinel, 0, flags);
+    selection->int64_coerced = (uint8_t *)R_alloc(flags, sizeof(uint8_t));
+    memset(selection->int64_coerced, 0, flags);
 
     /* One kind per selected column, produced by the read plan. */
     if (TYPEOF(column_kinds) != INTSXP ||
@@ -1749,35 +1762,57 @@ static void qio_copy_batch(qio_batch_context_t *context, SEXP result,
         qio_copy_batch_column(
             VECTOR_ELT(result, i), offset, type, data, bitmap, rows,
             carquet_schema_column_name(schema, context->selection.columns[i]),
-            &context->int32_sentinel,
+            &context->selection.int32_sentinel[i],
             context->selection.kind[i] == QIO_KIND_INT64 ? context->int64_mode
                                                          : -1,
-            context->selection.unsigned64[i], &context->int64_coerced,
+            context->selection.unsigned64[i],
+            &context->selection.int64_coerced[i],
             context->selection.kind[i], context->selection.type_length[i]);
     }
 }
 
-/* One warning per operation, never per value, column, row group, or batch.
+/* Name of a selected column, for a warning that has to identify it. */
+static const char *qio_selected_column_name(
+    const qio_batch_context_t *context, int32_t i) {
+    const carquet_schema_t *schema =
+        carquet_reader_schema(context->handle->reader);
+    return carquet_schema_column_name(schema, context->selection.columns[i]);
+}
+
+/* One warning per affected column, never per value, row group, or batch: the
+ * flag is set rather than counted, so a column that coerced a million values
+ * across twenty batches still warns once. A column that lost nothing is
+ * silent, which is what makes the warning worth reading on a wide file.
+ *
  * Emitted after the read completes so an in-flight error is not preceded by a
  * warning about a partial result; see TYPES.md. */
 static void qio_warn_int32_sentinel(const qio_batch_context_t *context) {
-    if (!context->int32_sentinel) return;
-    Rf_warning("Some INT32 values were coerced to NA because R's integer type "
-               "reserves -2147483648 as its missing value.");
+    for (int32_t i = 0; i < context->selection.num_columns; i++) {
+        if (!context->selection.int32_sentinel[i]) continue;
+        Rf_warning("Some INT32 values in column '%s' were coerced to NA "
+                   "because R's integer type reserves -2147483648 as its "
+                   "missing value.",
+                   qio_selected_column_name(context, i));
+    }
 }
 
-/* One warning per operation, aggregated across signed and unsigned columns.
+/* One warning per affected column, for signed and unsigned columns alike.
  * The two messages are fixed by .agents/TYPES.md. */
 static void qio_warn_int64_coerced(const qio_batch_context_t *context) {
-    if (!context->int64_coerced) return;
-    if (context->int64_mode == QIO_INT64_BIT64) {
-        Rf_warning("Some INT64 or UINT64 values were coerced to NA because "
-                   "they cannot be represented by bit64::integer64.");
-    } else {
-        Rf_warning("Some INT64 or UINT64 values were coerced to NA because "
-                   "they cannot be represented exactly as R doubles; use "
-                   "int64 = \"integer64\" to preserve the supported 64-bit "
-                   "range.");
+    for (int32_t i = 0; i < context->selection.num_columns; i++) {
+        if (!context->selection.int64_coerced[i]) continue;
+        if (context->int64_mode == QIO_INT64_BIT64) {
+            Rf_warning("Some INT64 or UINT64 values in column '%s' were "
+                       "coerced to NA because they cannot be represented by "
+                       "bit64::integer64.",
+                       qio_selected_column_name(context, i));
+        } else {
+            Rf_warning("Some INT64 or UINT64 values in column '%s' were "
+                       "coerced to NA because they cannot be represented "
+                       "exactly as R doubles; use int64 = \"integer64\" to "
+                       "preserve the supported 64-bit range.",
+                       qio_selected_column_name(context, i));
+        }
     }
 }
 
@@ -1894,6 +1929,7 @@ static SEXP qio_collect_body(void *data) {
                                    : -1;
             task->is_unsigned64 = context->selection.unsigned64[i];
             task->kind = context->selection.kind[i];
+            task->selection_index = i;
         }
     }
 
@@ -2143,12 +2179,13 @@ static SEXP qio_collect_body(void *data) {
                         VECTOR_ELT(result, i), rg_offset[s] + (R_xlen_t)read,
                         type, value_buf, def_ptr, max_def, n,
                         carquet_schema_column_name(schema, file_col),
-                        &context->int32_sentinel,
+                        &context->selection.int32_sentinel[i],
                         context->selection.kind[i] == QIO_KIND_INT64
                             ? context->int64_mode
                             : -1,
                         context->selection.unsigned64[i],
-                        &context->int64_coerced, context->selection.kind[i],
+                        &context->selection.int64_coerced[i],
+                        context->selection.kind[i],
                         context->selection.type_length[i]);
                     read += n;
                 }
@@ -2190,8 +2227,10 @@ static SEXP qio_collect_body(void *data) {
             }
             Rf_error("qio: %s", tasks[t].message);
         }
-        if (tasks[t].int32_sentinel) context->int32_sentinel = 1;
-        if (tasks[t].int64_coerced) context->int64_coerced = 1;
+        if (tasks[t].int32_sentinel)
+            context->selection.int32_sentinel[tasks[t].selection_index] = 1;
+        if (tasks[t].int64_coerced)
+            context->selection.int64_coerced[tasks[t].selection_index] = 1;
     }
 
     UNPROTECT(1);
