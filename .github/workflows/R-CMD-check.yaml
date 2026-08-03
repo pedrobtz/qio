@@ -21,6 +21,13 @@ jobs:
         config:
           - {os: macos-latest,   r: 'release'}
           - {os: windows-latest, r: 'release'}
+          # Windows R-devel is here rather than left to a win-builder
+          # submission before a release. qio has Windows-only code paths --
+          # the code-page path handling with its mmap fallback, and the
+          # per-thread zstd context that only ever broke there -- so a
+          # toolchain or R change that affects them should surface on the
+          # commit that causes it, not once at tagging time.
+          - {os: windows-latest, r: 'devel'}
           - {os: ubuntu-latest,   r: 'devel', http-user-agent: 'release'}
           - {os: ubuntu-latest,   r: 'release'}
           - {os: ubuntu-latest,   r: 'oldrel-1'}

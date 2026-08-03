@@ -193,8 +193,14 @@ generated numbers alone; every defect that mattered was found by pointing
   `https://pedrobtz.github.io/qio/`, `check_pkgdown()` reports no problems, and
   the site builds without warnings; only publishing it remains.
 - [x] Add an honest README feature matrix and reproducible benchmarks.
-- [ ] Run final win-builder and R-hub checks, including a sanitizer platform,
-  and document vendored-code licensing.
+- [x] Document vendored-code licensing. Holders, licenses, pins, and local
+  patches are in `DESCRIPTION`, `src/*/LICENSE`, the README, and
+  [`VENDORED.md`](VENDORED.md).
+- [x] ~~Run final win-builder and R-hub checks.~~ **Not required for v0.1.0**:
+  both are CRAN-submission tooling and qio is not being submitted. Their one
+  unique contribution here, Windows R-devel, is now a row in the
+  `R-CMD-check` matrix; the sanitizer platform duplicates `native-checks`.
+  See [`plan.md`](plan.md#phase-8-release-validation).
 
 ## Read options
 

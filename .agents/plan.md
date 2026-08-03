@@ -858,8 +858,22 @@ converter fixes that followed it**.
   code rather than by R code or tests. **Release validation must dispatch it
   explicitly**: a release whose last commits touched only R would otherwise
   never run it.
-- [ ] Run win-builder and R-hub, including a sanitizer platform; resolve every
-  actionable ERROR, WARNING, and NOTE.
+- [x] ~~Run win-builder and R-hub, including a sanitizer platform.~~
+  **Re-scoped 2026-08-03: not required for v0.1.0.** Both are CRAN-submission
+  tooling, and qio is not being submitted -- the release is a tag and a
+  pkgdown site, and the README points at `pak::pak("pedrobtz/qio")`.
+
+  Audited against what already runs rather than assumed. R-hub's headline
+  value, the sanitizer platform, duplicates `native-checks`, which also covers
+  Valgrind and rchk. The `R-CMD-check` matrix already covers Linux
+  devel/release/oldrel-1, macOS release, and Windows release. Exactly one real
+  gap existed: **Windows R-devel**, which matters here because qio has
+  Windows-only code paths -- the code-page path handling with its mmap
+  fallback, and the per-thread zstd context. That is now a matrix row, so it
+  runs on every push instead of once before a tag.
+
+  Run win-builder and R-hub if and when qio is submitted to CRAN; they answer
+  a question nobody is asking yet.
 - [x] Inspect the source tarball for object files, build products, patch
   records, and local artifacts; confirm that required vendored sources,
   licenses, generated documentation, and tests are present. `bench/`,
