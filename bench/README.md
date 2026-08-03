@@ -70,14 +70,19 @@ So the cheap fix is `load_all(debug = FALSE)`, which `devtools` forwards to
 `pkgload::load_all(debug =)`. Use it for anything timed. `R CMD INSTALL .` in a
 fresh session remains the reference, because it is what a user installs.
 
-**Deleting `src/*.o` is not enough to force a rebuild.** `load_all()` decides
-from the shared library, so with `qio.so` still present it skips compilation
-entirely and silently keeps whichever flags built it. Switching between debug
-and optimized needs both:
+**Switching between the two needs a real clean.** `load_all()` decides whether
+to compile from `qio.so`, not from the object files, so deleting `src/*.o`
+alone leaves the library in place and it skips compilation entirely, silently
+keeping whichever flags built it. Either of these forces the rebuild:
 
-```sh
-find src \( -name '*.o' -o -name '*.so' \) -delete
+```r
+pkgbuild::clean_dll()                             # then load_all(debug = FALSE)
+devtools::load_all(recompile = TRUE, debug = FALSE)
 ```
+
+`recompile` is the shorter form but is deprecated in pkgload, and its
+documentation defines it as `clean_dll()` followed by `load_all()`. Prefer the
+explicit pair for anything scripted.
 
 And when moving from `load_all()` to `R CMD INSTALL`, **restart R**: installing
 on disk does not swap the DLL a live session has already loaded.

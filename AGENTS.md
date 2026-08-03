@@ -59,14 +59,18 @@ buffered I/O.
 
 Do not edit vendored trees as ordinary package code. Follow
 [`.agents/VENDORED.md`](.agents/VENDORED.md) to re-vendor or reapply local
-patches. After changing a vendored header, remove stale objects with
-`find src -name '*.o' -delete` before rebuilding; stale struct layouts can
-corrupt memory without a linker error.
+patches. `src/Makevars*` declares vendored headers as prerequisites, so a
+header change rebuilds every object on its own; `tools/check-header-deps.sh`
+proves it. A manual clean is a valid reset but is no longer required.
 
-`load_all()` compiles at `-O0`, so never time anything built with it; pass
-`debug = FALSE`, or install. It also decides whether to rebuild from `qio.so`
-rather than the object files, so deleting only `src/*.o` leaves it reusing
-whatever flags built the library. See `bench/README.md`.
+Two things about `load_all()` worth knowing before trusting a build:
+
+- **It compiles at `-O0`.** Never time anything built with it. Pass
+  `debug = FALSE` for `-O2`, or install. See `bench/README.md`.
+- **It decides whether to compile from `qio.so`, not from the object files.**
+  Deleting `src/*.o` alone leaves the library in place, so `load_all()` skips
+  compiling and silently keeps whatever flags built it. Use
+  `pkgbuild::clean_dll()` for a real reset.
 
 Treat native changes as platform-sensitive. ARM64 uses NEON; typical x86 builds
 use scalar fallbacks. The workflows under `.github/workflows/` cover Linux,
