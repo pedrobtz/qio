@@ -578,41 +578,18 @@ qio_message_plan <- function(x, plan, columns, groups, batch_size) {
   invisible(NULL)
 }
 
-# Render a small data frame as aligned text. print() would write to stdout and
-# capture.output() lives in utils, which the package deliberately does not
-# import; base format() already pads each column, so only the header needs
-# widening to match.
+# Render a small data frame as aligned text, for message(). print() writes to
+# stdout and capture.output() lives in utils, which the package does not
+# import -- but neither is needed: format() pads a character vector to one
+# common width, so passing each column together with its own header aligns the
+# whole table in a single pass.
 qio_format_table <- function(df) {
-  cells <- lapply(format(df), function(column) {
-    column[is.na(column) | column == "NA"] <- "-"
-    column
+  columns <- lapply(names(df), function(name) {
+    values <- as.character(df[[name]])
+    values[is.na(values)] <- "-"
+    format(c(name, values))
   })
-  headers <- names(cells)
-  widths <- pmax(
-    nchar(headers),
-    vapply(cells, function(column) max(nchar(column), 0L), integer(1L))
-  )
-  # formatC() takes a scalar width for character input, so pad by hand. Left
-  # justified, which is how base format() renders the character columns this
-  # table is made of.
-  pad <- function(value, width) {
-    paste0(value, strrep(" ", max(0L, width - nchar(value))))
-  }
-  row <- function(values) {
-    line <- paste(
-      mapply(pad, values, widths, USE.NAMES = FALSE),
-      collapse = "  "
-    )
-    paste0("  ", sub("\\s+$", "", line))
-  }
-  c(
-    row(headers),
-    vapply(
-      seq_len(nrow(df)),
-      function(i) row(vapply(cells, `[[`, character(1L), i)),
-      character(1L)
-    )
-  )
+  sub("\\s+$", "", paste0("  ", do.call(paste, c(columns, sep = "  "))))
 }
 
 # Resolve a selection and drop leaves qio cannot materialize yet, reporting the
