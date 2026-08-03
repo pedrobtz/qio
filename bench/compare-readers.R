@@ -454,3 +454,115 @@ if (nzchar(args$out)) {
   utils::write.csv(written, args$out, row.names = FALSE)
   cat("\nwrote", args$out, "\n")
 }
+
+# GitHub renders this file as the job summary, so the tables are visible without
+# opening the log or downloading the artifact. Same treatment as
+# bench/ci-benchmark.R, and a no-op outside Actions.
+summary_file <- Sys.getenv("GITHUB_STEP_SUMMARY", "")
+if (nzchar(summary_file)) {
+  ratio_cell <- function(qio, others) {
+    ratio <- qio / min(others)
+    sprintf("%.2fx %s", ratio, if (ratio < 1) "faster" else "slower")
+  }
+
+  lines <- c(
+    "### qio read comparison",
+    "",
+    sprintf(
+      "%s rows, %d row groups, snappy, %d reps after %d warmup.",
+      format(args$rows, big.mark = ","),
+      max(1L, ceiling(args$rows / rows_per_group)),
+      args$reps,
+      args$warmup
+    ),
+    sprintf(
+      "qio %s, arrow %s (%d threads), nanoparquet %s (single-threaded), %s.",
+      utils::packageVersion("qio"),
+      utils::packageVersion("arrow"),
+      arrow::cpu_count(),
+      utils::packageVersion("nanoparquet"),
+      R.version$platform
+    )
+  )
+
+  for (writer in unique(results$writer)) {
+    block <- results[results$writer == writer, ]
+    wide <- reshape(
+      block[, c("workload", "reader", "median")],
+      idvar = "workload",
+      timevar = "reader",
+      direction = "wide"
+    )
+    names(wide) <- sub("^median\\.", "", names(wide))
+    # Not `readers`: that name holds the reader list this whole script runs
+    # from, and rebinding it here left names(readers) NULL for the sweep table
+    # below, so every sweep ratio printed as 0.00x.
+    shown <- intersect(c("qio", "arrow", "nanoparquet"), names(wide))
+    lines <- c(
+      lines,
+      "",
+      sprintf("**Files written by %s** (median seconds)", writer),
+      "",
+      paste0(
+        "| workload | ",
+        paste(shown, collapse = " | "),
+        " | qio vs best other |"
+      ),
+      paste0("|---|", strrep("---:|", length(shown)), "---|"),
+      vapply(
+        seq_len(nrow(wide)),
+        function(i) {
+          sprintf(
+            "| `%s` | %s | %s |",
+            wide$workload[i],
+            paste(sprintf("%.4f", unlist(wide[i, shown])), collapse = " | "),
+            ratio_cell(wide$qio[i], unlist(wide[i, setdiff(shown, "qio")]))
+          )
+        },
+        character(1)
+      )
+    )
+  }
+
+  lines <- c(
+    lines,
+    "",
+    "**Dictionary index bit width sweep** (files written by arrow)",
+    "",
+    "| cardinality | bits | qio | arrow | nanoparquet | qio vs best other |",
+    "|---:|---:|---:|---:|---:|---|",
+    vapply(
+      args$cardinalities,
+      function(k) {
+        # `sweep` is long, one row per (cardinality, reader), the same shape
+        # the printed table reads from.
+        block <- sweep[sweep$cardinality == k, ]
+        pick <- function(name) block$median[block$reader == name]
+        sprintf(
+          "| %s | %d | %.4f | %.4f | %.4f | %s |",
+          format(k, big.mark = ","),
+          index_bits(k),
+          pick("qio"),
+          pick("arrow"),
+          pick("nanoparquet"),
+          ratio_cell(
+            pick("qio"),
+            vapply(setdiff(names(readers), "qio"), pick, numeric(1))
+          )
+        )
+      },
+      character(1)
+    ),
+    "",
+    "A flat ratio column means the dictionary index bit width no longer matters.",
+    "",
+    paste(
+      "Shared runners are noisy and these are one machine, one build, one set",
+      "of shapes. Timed to *materialized* data rather than to the return of",
+      "each read call, so deferred work is charged to whoever deferred it.",
+      "nanoparquet is single-threaded by design, so its column is a different",
+      "trade-off rather than simply a slower one. Rerun before quoting."
+    )
+  )
+  cat(paste(lines, collapse = "\n"), "\n", file = summary_file, append = TRUE)
+}

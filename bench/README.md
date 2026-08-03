@@ -62,6 +62,14 @@ Rscript bench/compare-readers.R
 Rscript bench/compare-readers.R --rows 2000000 --reps 7 --out compare.csv
 ```
 
+`.github/workflows/benchmark.yml` runs it as its own job and writes the tables
+into the GitHub job summary, so the comparison is visible on every pull request
+without opening a log. It is a separate job from the qio-only benchmark because
+it needs arrow and nanoparquet installed, and that install should not delay the
+numbers that need neither. **It does not gate**, and cannot sensibly: these
+figures move with arrow's and nanoparquet's releases as well as with qio's, so
+a threshold here would fail on someone else's version bump.
+
 A comparison is a claim about someone else's software, so the script is built to
 be refutable rather than flattering:
 
