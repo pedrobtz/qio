@@ -51,6 +51,52 @@ Rscript bench/benchmark.R --reps 20 --filter read- # subset, more repetitions
 `--compare` exits non-zero if any case regresses past the threshold, so it can
 gate a change without a human reading the table.
 
+## Benchmark the installed package, in a fresh session
+
+**`devtools::load_all()` compiles at `-O0`.** Timing that build measures an
+unoptimized qio, and the numbers are not comparable with anything. This is not
+theoretical: an A/B of a real optimization once reported it as **50% slower**
+because the "after" build came from `load_all()`.
+
+It is worse than a one-off, because `load_all()` leaves `-O0` objects in `src/`
+that a later `R CMD INSTALL` silently reuses. Clean first:
+
+```sh
+find src \( -name '*.o' -o -name '*.so' \) -delete
+R CMD INSTALL .
+```
+
+Then **restart R**. Reinstalling on disk does not swap the DLL a live session
+has already loaded, so a session that ran `load_all()` keeps timing the `-O0`
+build no matter what you install afterwards.
+
+Two more rules for comparing runs:
+
+- Compare within one session, on one machine, against one build. Numbers from
+  different sessions are not comparable even on the same hardware -- the other
+  packages move too, and one recorded cross-session comparison was invalid
+  because nanoparquet had been upgraded in between.
+- Keep iterations and GC settings identical between the runs being compared. A
+  workload allocating hundreds of MB per iteration pulls in GC pauses, and
+  medians from 20 iterations run ~50% above medians from 10.
+
+## Profiling down to native frames
+
+`tools/profile-native.sh` attaches a native sampler to a running read and
+prints the aggregated self-time and total-time tables. Every ranked profile in
+`.agents/read-performance.md` came from it.
+
+```sh
+tools/profile-native.sh local-data/some.parquet             # profile qio
+tools/profile-native.sh local-data/some.parquet nanoparquet # a comparison
+```
+
+`Rprof()` is the wrong tool here: it samples the R call stack, so an entire
+native read collapses into one `.Call` and nothing inside carquet can be
+ranked. The script rebuilds with `-fno-omit-frame-pointer` first, because
+without frame pointers the sampler cannot walk C stacks and reports raw
+addresses. It is macOS-only; the header names the `perf` equivalent.
+
 ## Comparing against other readers
 
 `compare-readers.R` times qio against `arrow` and `nanoparquet`. Both packages
