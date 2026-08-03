@@ -188,6 +188,11 @@ metadata.qio_parquet_file <- function(x, ...) {
 #'   wall clock with no zone stored, so its civil components are interpreted in
 #'   `tz`; base R decides ambiguous and nonexistent times at daylight-saving
 #'   boundaries. The machine's local zone is never used implicitly.
+#' @param verbose Report what the read is about to do before doing it: the
+#'   rows, columns, and row groups selected, the batch size, and the resolved
+#'   [read_plan()] for the selected columns only -- not for the whole file, so
+#'   it answers "what am I about to get". Written with `message()`, so it goes
+#'   to stderr and `suppressMessages()` silences it.
 #'
 #' @return A data frame.
 #'
@@ -216,9 +221,11 @@ collect.qio_parquet_file <- function(
   batch_size = 65536L,
   int64 = c("double", "integer64"),
   time = c("numeric", "hms"),
-  tz = "UTC"
+  tz = "UTC",
+  verbose = FALSE
 ) {
   qio_empty_dots(...)
+  verbose <- qio_flag(verbose, "verbose")
   options <- qio_read_options(int64 = int64, time = time, tz = tz)
   plan <- read_plan(
     x,
@@ -230,6 +237,9 @@ collect.qio_parquet_file <- function(
   qio_message_decimal(plan, columns)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
+  if (verbose) {
+    qio_message_plan(x, plan, columns, row_groups, batch_size)
+  }
   result <- .Call(
     C_qio_parquet_collect,
     x,
@@ -273,11 +283,13 @@ walk_batches <- function(
   batch_size = 65536L,
   int64 = c("double", "integer64"),
   time = c("numeric", "hms"),
-  tz = "UTC"
+  tz = "UTC",
+  verbose = FALSE
 ) {
   if (!is.function(FUN)) {
     stop("`FUN` must be a function.", call. = FALSE)
   }
+  verbose <- qio_flag(verbose, "verbose")
   options <- qio_read_options(int64 = int64, time = time, tz = tz)
   plan <- read_plan(
     x,
@@ -289,6 +301,9 @@ walk_batches <- function(
   qio_message_decimal(plan, columns)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
+  if (verbose) {
+    qio_message_plan(x, plan, columns, row_groups, batch_size)
+  }
   callback <- function(batch, index) {
     FUN(qio_apply_plan(batch, plan), index, ...)
   }
@@ -492,6 +507,112 @@ qio_message_decimal <- function(plan, columns) {
     )
   }
   invisible(NULL)
+}
+
+# Report what a read is about to do: how much of the file it touches, and the
+# resolved plan for the columns actually selected rather than for the whole
+# file. Called after selection and validation so every number shown is the one
+# the read will use.
+#
+# Routed through message() like the package's other read diagnostics, so it
+# goes to stderr, is silenced by suppressMessages(), and never contaminates a
+# result being piped or captured.
+qio_message_plan <- function(x, plan, columns, groups, batch_size) {
+  all_groups <- row_groups(x)
+  chosen <- if (is.null(groups)) seq_len(nrow(all_groups)) else groups
+  selected <- if (is.null(columns)) seq_len(nrow(plan)) else columns
+
+  count <- function(n, singular) {
+    paste0(
+      format(n, big.mark = ",", scientific = FALSE),
+      " ",
+      singular,
+      if (n == 1L) {
+        ""
+      } else {
+        "s"
+      }
+    )
+  }
+  part <- function(n, total, singular) {
+    if (n == total) {
+      count(n, singular)
+    } else {
+      paste0(
+        format(n, big.mark = ",", scientific = FALSE),
+        " of ",
+        count(
+          total,
+          singular
+        )
+      )
+    }
+  }
+
+  header <- paste0(
+    "Reading ",
+    .Call(C_qio_parquet_path, x),
+    "\n  ",
+    count(sum(all_groups$rows[chosen]), "row"),
+    ", ",
+    part(length(selected), nrow(plan), "column"),
+    ", ",
+    part(length(chosen), nrow(all_groups), "row group"),
+    "\n  batch size ",
+    format(batch_size, big.mark = ",", scientific = FALSE)
+  )
+
+  body <- plan[
+    selected,
+    c("name", "physical_type", "logical_type", "r_type", "converter"),
+    drop = FALSE
+  ]
+  # A note explains a fallback type, so it is only worth showing when one
+  # of the selected columns actually carries one.
+  if (any(!is.na(plan$note[selected]))) {
+    body$note <- plan$note[selected]
+  }
+  # One message, not two: expect_message() and any handler that stops after the
+  # first condition would otherwise let the table escape the header.
+  message(paste(c(header, qio_format_table(body)), collapse = "\n"))
+  invisible(NULL)
+}
+
+# Render a small data frame as aligned text. print() would write to stdout and
+# capture.output() lives in utils, which the package deliberately does not
+# import; base format() already pads each column, so only the header needs
+# widening to match.
+qio_format_table <- function(df) {
+  cells <- lapply(format(df), function(column) {
+    column[is.na(column) | column == "NA"] <- "-"
+    column
+  })
+  headers <- names(cells)
+  widths <- pmax(
+    nchar(headers),
+    vapply(cells, function(column) max(nchar(column), 0L), integer(1L))
+  )
+  # formatC() takes a scalar width for character input, so pad by hand. Left
+  # justified, which is how base format() renders the character columns this
+  # table is made of.
+  pad <- function(value, width) {
+    paste0(value, strrep(" ", max(0L, width - nchar(value))))
+  }
+  row <- function(values) {
+    line <- paste(
+      mapply(pad, values, widths, USE.NAMES = FALSE),
+      collapse = "  "
+    )
+    paste0("  ", sub("\\s+$", "", line))
+  }
+  c(
+    row(headers),
+    vapply(
+      seq_len(nrow(df)),
+      function(i) row(vapply(cells, `[[`, character(1L), i)),
+      character(1L)
+    )
+  )
 }
 
 # Resolve a selection and drop leaves qio cannot materialize yet, reporting the

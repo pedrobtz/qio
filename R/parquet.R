@@ -37,6 +37,7 @@
 #' @param int64 How 64-bit integer columns reach R; see [collect()].
 #' @param time How `TIME` columns reach R; see [collect()].
 #' @param tz Time zone for `TIMESTAMP` columns; see [collect()].
+#' @param verbose Report the read plan before reading; see [collect()].
 #'
 #' @return A data frame.
 #'
@@ -55,7 +56,8 @@ read_parquet <- function(
   row_groups = NULL,
   int64 = c("double", "integer64"),
   time = c("numeric", "hms"),
-  tz = "UTC"
+  tz = "UTC",
+  verbose = FALSE
 ) {
   # `...` sits before every read argument so all of them must be named, which
   # is how collect(), walk_batches() and read_plan() already take the same
@@ -71,7 +73,8 @@ read_parquet <- function(
     row_groups = row_groups,
     int64 = int64,
     time = time,
-    tz = tz
+    tz = tz,
+    verbose = verbose
   )
 }
 

@@ -18,6 +18,13 @@
   now name-only, which is how `collect()`, `walk_batches()` and `read_plan()`
   already take the same arguments.
 
+* `read_parquet()`, `collect()`, and `walk_batches()` gain `verbose`, which
+  reports the read before it happens: the rows, columns, and row groups
+  selected, the batch size, and the resolved `read_plan()` for the selected
+  columns. It reflects the selection and the `int64`, `time`, and `tz` in
+  effect, so it describes the read about to run rather than the file in the
+  abstract. Written with `message()`, so `suppressMessages()` silences it.
+
 * `open_parquet(threads =)` defaults to `NULL` for the machine's core count,
   matching every other automatic argument in the package. `0` still means the
   same thing.

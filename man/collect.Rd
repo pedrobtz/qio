@@ -15,7 +15,8 @@ collect(x, ...)
   batch_size = 65536L,
   int64 = c("double", "integer64"),
   time = c("numeric", "hms"),
-  tz = "UTC"
+  tz = "UTC",
+  verbose = FALSE
 )
 }
 \arguments{
@@ -53,6 +54,12 @@ an instant, so \code{tz} changes only how it prints. A non-UTC \code{TIMESTAMP} 
 wall clock with no zone stored, so its civil components are interpreted in
 \code{tz}; base R decides ambiguous and nonexistent times at daylight-saving
 boundaries. The machine's local zone is never used implicitly.}
+
+\item{verbose}{Report what the read is about to do before doing it: the
+rows, columns, and row groups selected, the batch size, and the resolved
+\code{\link[=read_plan]{read_plan()}} for the selected columns only -- not for the whole file, so
+it answers "what am I about to get". Written with \code{message()}, so it goes
+to stderr and \code{suppressMessages()} silences it.}
 }
 \value{
 A data frame.

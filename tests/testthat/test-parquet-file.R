@@ -761,3 +761,63 @@ test_that("close_parquet() takes its handle as `x`", {
   expect_identical(close_parquet(x = file), file)
   expect_silent(close_parquet(x = file))
 })
+
+test_that("verbose reports the plan for the selected columns only", {
+  # The point of `verbose` is to answer "what am I about to get", so the plan
+  # it prints must reflect the selection rather than the whole file.
+  path <- fixture_path()
+  lines <- capture.output(
+    read_parquet(path, columns = c("id", "label"), verbose = TRUE),
+    type = "message"
+  )
+  text <- paste(lines, collapse = "\n")
+
+  expect_match(text, "2 of 6 columns")
+  expect_match(text, "\\bid\\b")
+  expect_match(text, "\\blabel\\b")
+  expect_false(grepl("\\bratio\\b", text))
+  expect_false(grepl("\\bactive\\b", text))
+})
+
+test_that("verbose reports the row groups and options the read will use", {
+  path <- fixture_path()
+  text <- paste(
+    capture.output(
+      read_parquet(
+        path,
+        row_groups = 1:2,
+        int64 = "integer64",
+        verbose = TRUE
+      ),
+      type = "message"
+    ),
+    collapse = "\n"
+  )
+
+  expect_match(text, "2 of 4 row groups")
+  # Six of twelve rows, because only half the groups were selected.
+  expect_match(text, "6 rows")
+  # The plan resolves int64, so it must name the converter actually used.
+  expect_match(text, "int64_bit64")
+})
+
+test_that("verbose is off by default and suppressible when on", {
+  path <- fixture_path()
+  expect_silent(read_parquet(path))
+  expect_silent(suppressMessages(read_parquet(path, verbose = TRUE)))
+  expect_message(read_parquet(path, verbose = TRUE), "Reading")
+})
+
+test_that("verbose works from collect() and walk_batches() too", {
+  file <- local_parquet_file()
+  expect_message(collect(file, verbose = TRUE), "12 rows")
+  expect_message(
+    walk_batches(file, function(batch, index) NULL, verbose = TRUE),
+    "batch size"
+  )
+})
+
+test_that("verbose rejects a non-flag", {
+  expect_error(read_parquet(fixture_path(), verbose = "yes"), "`verbose`")
+  expect_error(read_parquet(fixture_path(), verbose = NA), "`verbose`")
+})

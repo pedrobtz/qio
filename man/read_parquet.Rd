@@ -11,7 +11,8 @@ read_parquet(
   row_groups = NULL,
   int64 = c("double", "integer64"),
   time = c("numeric", "hms"),
-  tz = "UTC"
+  tz = "UTC",
+  verbose = FALSE
 )
 }
 \arguments{
@@ -32,6 +33,8 @@ default) for all row groups.}
 \item{time}{How \code{TIME} columns reach R; see \code{\link[=collect]{collect()}}.}
 
 \item{tz}{Time zone for \code{TIMESTAMP} columns; see \code{\link[=collect]{collect()}}.}
+
+\item{verbose}{Report the read plan before reading; see \code{\link[=collect]{collect()}}.}
 }
 \value{
 A data frame.
