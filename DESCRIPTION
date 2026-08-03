@@ -4,7 +4,7 @@ Version: 0.1.0
 Authors@R: c(
     person("Pedro", "Baltazar", email = "pedrobtz@gmail.com",
            role = c("aut", "cre", "cph")),
-    person("Johan HG", "Natter", role = "cph",
+    person("Johan HG", "Natter", role = c("aut", "cph"),
            comment = "carquet source code (MIT license)"))
 Description: Read and write 'Apache Parquet' files. Whole files are read with
     a single call, and larger ones can be opened to inspect their schema and

@@ -23,10 +23,6 @@ Useful links:
 Authors:
 \itemize{
   \item Pedro Baltazar \email{pedrobtz@gmail.com} [copyright holder]
-}
-
-Other contributors:
-\itemize{
   \item Johan HG Natter (carquet source code (MIT license)) [copyright holder]
 }
 
