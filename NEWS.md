@@ -14,7 +14,9 @@
 * `read_parquet()` gains `columns` and `row_groups`, which it passes to
   `collect()`. Reading a subset of a file previously required opening a handle,
   and selecting columns is the largest speedup available on a wide file because
-  an unselected column is never decompressed.
+  an unselected column is never decompressed. Every argument after `file` is
+  now name-only, which is how `collect()`, `walk_batches()` and `read_plan()`
+  already take the same arguments.
 
 * `open_parquet(threads =)` defaults to `NULL` for the machine's core count,
   matching every other automatic argument in the package. `0` still means the

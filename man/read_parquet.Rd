@@ -6,6 +6,7 @@
 \usage{
 read_parquet(
   file,
+  ...,
   columns = NULL,
   row_groups = NULL,
   int64 = c("double", "integer64"),
@@ -15,6 +16,10 @@ read_parquet(
 }
 \arguments{
 \item{file}{Path to a Parquet file.}
+
+\item{...}{Must be empty. Every argument after it is name-only, matching
+\code{\link[=collect]{collect()}}, \code{\link[=walk_batches]{walk_batches()}} and \code{\link[=read_plan]{read_plan()}}, which take the same
+arguments the same way.}
 
 \item{columns}{Character vector of complete column paths, or \code{NULL} (the
 default) for all columns; see \code{\link[=collect]{collect()}}.}

@@ -27,6 +27,9 @@
 #' `threads`, and `verify_checksums`.
 #'
 #' @param file Path to a Parquet file.
+#' @param ... Must be empty. Every argument after it is name-only, matching
+#'   [collect()], [walk_batches()] and [read_plan()], which take the same
+#'   arguments the same way.
 #' @param columns Character vector of complete column paths, or `NULL` (the
 #'   default) for all columns; see [collect()].
 #' @param row_groups Integer vector of 1-based row-group IDs, or `NULL` (the
@@ -47,12 +50,17 @@
 #' read_parquet(path)
 read_parquet <- function(
   file,
+  ...,
   columns = NULL,
   row_groups = NULL,
   int64 = c("double", "integer64"),
   time = c("numeric", "hms"),
   tz = "UTC"
 ) {
+  # `...` sits before every read argument so all of them must be named, which
+  # is how collect(), walk_batches() and read_plan() already take the same
+  # arguments. It also means a later argument cannot displace an existing one.
+  qio_empty_dots(...)
   # mmap enables parallel column decode in collect(); the handle is closed on
   # exit, so the mapping (and any Windows delete-lock) lives only for the read.
   file <- open_parquet(file, mmap = TRUE)

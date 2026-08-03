@@ -630,3 +630,13 @@ test_that("read_parquet() forwards selection errors from collect()", {
   expect_error(read_parquet(path, columns = "nope"), "Unknown Parquet column")
   expect_error(read_parquet(path, row_groups = 999L), "out of range")
 })
+
+test_that("read_parquet() takes its read arguments by name only", {
+  # `columns` binds by name in collect(), walk_batches() and read_plan(). It
+  # must bind the same way here, or the same argument means one thing in the
+  # eager API and another in the handle API.
+  path <- test_path("parquet", "qio-multigroup.parquet")
+  expect_error(read_parquet(path, "label"), "`\\.\\.\\.` must be empty")
+  expect_error(read_parquet(path, "double"), "`\\.\\.\\.` must be empty")
+  expect_named(read_parquet(path, columns = "label"), "label")
+})
