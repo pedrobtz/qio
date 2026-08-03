@@ -55,3 +55,16 @@ jobs:
         with:
           upload-snapshots: true
           build_args: 'c("--no-manual","--compact-vignettes=gs+qpdf")'
+
+      # The action streams the whole check to the log and uploads the directory
+      # only when it fails, so the outcome is not visible without opening one or
+      # the other -- and a green run says nothing about NOTEs. This writes the
+      # counts, the Status line, and the full text of anything not OK into the
+      # job summary, per matrix entry. `if: always()` so a failing check is
+      # reported rather than skipped.
+      - name: Summarize check results
+        if: always()
+        run: Rscript tools/summarize-check.R check
+        shell: bash
+        env:
+          QIO_CHECK_LABEL: ${{ matrix.config.os }} (${{ matrix.config.r }})
