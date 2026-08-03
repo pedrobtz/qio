@@ -78,12 +78,30 @@ actually do today. Supported logical annotations override the physical type:
 \code{DATE}, UTC-adjusted \code{TIMESTAMP}, and legacy physical \code{INT96} timestamps are
 converted to their R date-time classes. Unimplemented annotations are
 reported in \code{note} and retain their physical fallback type.
+
+A path is enough -- \code{read_plan()} opens the file, reads the footer, and
+closes it again, so no handle is needed to inspect a file before reading it.
+Passing an open \code{\link[=open_parquet]{open_parquet()}} handle, or the data frame from \code{\link[=schema]{schema()}},
+produces exactly the same plan; use those when a handle is already open or
+when the schema has already been fetched.
+
+Pass the same \code{int64}, \code{time}, and \code{tz} the read will use. The plan resolves
+them, so \code{r_type} and \code{converter} describe that read rather than a default
+one.
 }
 \examples{
 path <- tempfile(fileext = ".parquet")
 write_parquet(data.frame(x = 1:3, y = c("a", "b", NA)), path)
+
+# A path is enough; no handle is needed.
+read_plan(path)
+
+# The plan answers for the read you are about to do, not a default one.
+read_plan(path, int64 = "integer64")
+
+# An open handle and a schema() data frame give the same plan.
 pf <- open_parquet(path)
-read_plan(pf)
+identical(read_plan(pf), read_plan(path))
 close_parquet(pf)
 }
 \seealso{
