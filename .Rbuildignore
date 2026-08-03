@@ -11,7 +11,7 @@
 \.dylib$
 \.a$
 ^\.logs$
-^local-data$
+^\.cache$
 ^local-script$
 ^\.agents$
 ^bench$

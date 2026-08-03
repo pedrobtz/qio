@@ -49,11 +49,11 @@ jobs:
 
       - name: Download NYC yellow taxi data
         run: |
-          mkdir -p local-data
+          mkdir -p .cache
           curl -fsSL --retry 3 --max-time 300 \
             "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2023-01.parquet" \
-            -o local-data/yellow_tripdata_2023-01.parquet
-          ls -lh local-data/yellow_tripdata_2023-01.parquet
+            -o .cache/yellow_tripdata_2023-01.parquet
+          ls -lh .cache/yellow_tripdata_2023-01.parquet
 
       - name: Profile
         run: |
@@ -65,7 +65,7 @@ jobs:
           n <- as.integer(Sys.getenv("QIO_ITER", "3"))
           message("qio::read_parquet x", n, " iteration(s)")
           for (i in seq_len(n)) {
-            qio::read_parquet("local-data/yellow_tripdata_2023-01.parquet")
+            qio::read_parquet(".cache/yellow_tripdata_2023-01.parquet")
           }
           message("done")
           REOF

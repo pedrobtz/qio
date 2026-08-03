@@ -19,9 +19,9 @@ docs
 # GitHub Actions logs/artifacts (tools/check-actions.sh)
 .logs/
 
-# Scratch: downloaded Parquet files and personal scripts. Ignored here rather
-# than by a .gitignore inside each directory, so the rule survives deleting
-# them -- `.github/workflows/profile.yml` recreates local-data/ and downloads
-# tens of megabytes into it.
-local-data/
+# Scratch: downloaded fixtures and personal scripts. Ignored here rather than
+# by a .gitignore inside each directory, so the rule survives deleting them --
+# `.github/workflows/profile.yml` recreates `.cache/` and downloads tens of
+# megabytes into it.
+.cache/
 local-script/

@@ -52,12 +52,12 @@ if ("--fetch" %in% argv || length(argv) == 0L) {
     "     heavy with many small groups, so per-group overhead dominates.\n",
     "     https://huggingface.co/datasets/nyu-mll/glue/resolve/main/sst2/",
     "train-00000-of-00001.parquet\n\n",
-    "  curl -O <url>, then:\n",
-    "    Rscript bench/real-file.R <file>.parquet\n\n",
-    "Nothing is downloaded automatically and no data is committed: the point\n",
-    "is to run against files this repository did not choose. Committing them\n",
-    "would fix in advance the shapes qio is measured on, which is the problem\n",
-    "this script exists to solve.\n",
+    "  mkdir -p .cache && curl -L -o .cache/<file>.parquet <url>\n",
+    "    Rscript bench/real-file.R .cache/<file>.parquet\n\n",
+    "`.cache/` is gitignored, so nothing downloaded there is committed. That\n",
+    "is deliberate: the point is to run against files this repository did not\n",
+    "choose, and committing them would fix in advance the shapes qio is\n",
+    "measured on -- which is the problem this script exists to solve.\n",
     sep = ""
   )
   quit(status = if (length(argv) == 0L) 1L else 0L)

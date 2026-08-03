@@ -104,8 +104,8 @@ prints the aggregated self-time and total-time tables. Every ranked profile in
 `.agents/read-performance.md` came from it.
 
 ```sh
-tools/profile-native.sh local-data/some.parquet             # profile qio
-tools/profile-native.sh local-data/some.parquet nanoparquet # a comparison
+tools/profile-native.sh .cache/some.parquet             # profile qio
+tools/profile-native.sh .cache/some.parquet nanoparquet # a comparison
 ```
 
 `Rprof()` is the wrong tool here: it samples the R call stack, so an entire
