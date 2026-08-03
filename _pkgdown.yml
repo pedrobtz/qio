@@ -27,7 +27,7 @@ reference:
       - bloom_filter_may_contain
       - metadata
       - read_plan
-      - parquet_validate
+      - validate_parquet
   - title: Package
     contents:
       - qio-package

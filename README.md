@@ -121,7 +121,7 @@ under different parents stay distinct.
 | `page_index()` | Per-page bounds, null counts, offsets, and starting rows |
 | `bloom_filter_may_contain()` | Whether a value is definitely absent from a chunk |
 | `metadata()` | Footer key/value pairs, duplicates and order preserved |
-| `parquet_validate()` | Whether a file is structurally valid, and what is wrong |
+| `validate_parquet()` | Whether a file is structurally valid, and what is wrong |
 
 Statistics, bounds, and declared sort orders are claims made by whoever wrote
 the file. qio reports them and does not act on them.

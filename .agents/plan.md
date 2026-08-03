@@ -673,7 +673,7 @@ tested before phase 7 begins.
   exception. Documented as writer claims that qio does not verify and does
   not act on.
 - [x] Required: add file validation helpers with useful error context.
-  `parquet_validate()` reports the file's problem rather than the parser's:
+  `validate_parquet()` reports the file's problem rather than the parser's:
   too small, wrong or missing magic, truncated, encrypted footer, footer
   that does not parse, or row groups that do not sum to the declared rows.
   Deliberately does not read data pages, and says so.

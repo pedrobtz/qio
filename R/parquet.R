@@ -20,15 +20,17 @@
 #' buffered reads if mapping fails) so columns decode in parallel; the mapping
 #' is released before the function returns.
 #'
-#' `read_parquet()` reads every column of every row group. To read part of a
-#' file -- a subset of columns, a subset of row groups, or a bounded batch size
-#' -- use [open_parquet()] with [collect()], which is what `read_parquet()`
-#' calls. That is also the only route to `mmap`, `threads`, and
-#' `verify_checksums`. Reading fewer columns is the single largest speedup
-#' available on a wide file, because a column that is never selected is never
-#' decompressed.
+#' `columns` and `row_groups` read part of a file and are passed straight to
+#' [collect()]. Selecting columns is the single largest speedup available on a
+#' wide file, because a column that is not selected is never decompressed.
+#' Use [open_parquet()] with [collect()] for the rest: `batch_size`, `mmap`,
+#' `threads`, and `verify_checksums`.
 #'
 #' @param file Path to a Parquet file.
+#' @param columns Character vector of complete column paths, or `NULL` (the
+#'   default) for all columns; see [collect()].
+#' @param row_groups Integer vector of 1-based row-group IDs, or `NULL` (the
+#'   default) for all row groups.
 #' @param int64 How 64-bit integer columns reach R; see [collect()].
 #' @param time How `TIME` columns reach R; see [collect()].
 #' @param tz Time zone for `TIMESTAMP` columns; see [collect()].
@@ -45,6 +47,8 @@
 #' read_parquet(path)
 read_parquet <- function(
   file,
+  columns = NULL,
+  row_groups = NULL,
   int64 = c("double", "integer64"),
   time = c("numeric", "hms"),
   tz = "UTC"
@@ -53,7 +57,14 @@ read_parquet <- function(
   # exit, so the mapping (and any Windows delete-lock) lives only for the read.
   file <- open_parquet(file, mmap = TRUE)
   on.exit(close_parquet(file), add = TRUE)
-  collect(file, int64 = int64, time = time, tz = tz)
+  collect(
+    file,
+    columns = columns,
+    row_groups = row_groups,
+    int64 = int64,
+    time = time,
+    tz = tz
+  )
 }
 
 #' Write a Parquet file
@@ -386,13 +397,13 @@ qio_sorted_by <- function(sorted_by, columns) {
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(mtcars, path)
-#' parquet_validate(path)
+#' validate_parquet(path)
 #'
 #' # A file that is not Parquet at all.
 #' plain <- tempfile()
 #' writeLines("not parquet", plain)
-#' try(parquet_validate(plain))
-parquet_validate <- function(file) {
+#' try(validate_parquet(plain))
+validate_parquet <- function(file) {
   # qio_file_path() already rejects a non-path and a file that does not exist.
   file <- qio_file_path(file)
 

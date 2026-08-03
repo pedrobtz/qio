@@ -6,6 +6,8 @@
 \usage{
 read_parquet(
   file,
+  columns = NULL,
+  row_groups = NULL,
   int64 = c("double", "integer64"),
   time = c("numeric", "hms"),
   tz = "UTC"
@@ -13,6 +15,12 @@ read_parquet(
 }
 \arguments{
 \item{file}{Path to a Parquet file.}
+
+\item{columns}{Character vector of complete column paths, or \code{NULL} (the
+default) for all columns; see \code{\link[=collect]{collect()}}.}
+
+\item{row_groups}{Integer vector of 1-based row-group IDs, or \code{NULL} (the
+default) for all row groups.}
 
 \item{int64}{How 64-bit integer columns reach R; see \code{\link[=collect]{collect()}}.}
 
@@ -45,13 +53,11 @@ The file is memory-mapped for the duration of the read (falling back to
 buffered reads if mapping fails) so columns decode in parallel; the mapping
 is released before the function returns.
 
-\code{read_parquet()} reads every column of every row group. To read part of a
-file -- a subset of columns, a subset of row groups, or a bounded batch size
--- use \code{\link[=open_parquet]{open_parquet()}} with \code{\link[=collect]{collect()}}, which is what \code{read_parquet()}
-calls. That is also the only route to \code{mmap}, \code{threads}, and
-\code{verify_checksums}. Reading fewer columns is the single largest speedup
-available on a wide file, because a column that is never selected is never
-decompressed.
+\code{columns} and \code{row_groups} read part of a file and are passed straight to
+\code{\link[=collect]{collect()}}. Selecting columns is the single largest speedup available on a
+wide file, because a column that is not selected is never decompressed.
+Use \code{\link[=open_parquet]{open_parquet()}} with \code{\link[=collect]{collect()}} for the rest: \code{batch_size}, \code{mmap},
+\code{threads}, and \code{verify_checksums}.
 }
 \examples{
 path <- tempfile(fileext = ".parquet")

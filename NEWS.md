@@ -1,5 +1,25 @@
 # qio 0.0.0.9000
 
+* `parquet_open()`, `parquet_close()`, and `parquet_validate()` are renamed to
+  `open_parquet()`, `close_parquet()`, and `validate_parquet()`, so every verb
+  in the API reads the same way as `read_parquet()` and `write_parquet()`.
+  `parquet_schema()` and `parquet_type_mapping()` keep their names: they
+  construct and describe rather than act. qio has not been released, so there
+  is no deprecation shim.
+
+* `close_parquet()` takes its handle as `x` rather than `file`, which is what
+  every other function accepting an open handle already called it. `file` now
+  consistently means a path.
+
+* `read_parquet()` gains `columns` and `row_groups`, which it passes to
+  `collect()`. Reading a subset of a file previously required opening a handle,
+  and selecting columns is the largest speedup available on a wide file because
+  an unselected column is never decompressed.
+
+* `open_parquet(threads =)` defaults to `NULL` for the machine's core count,
+  matching every other automatic argument in the package. `0` still means the
+  same thing.
+
 * Integer-backed `DECIMAL` columns and non-UTC nanosecond `TIMESTAMP` columns
   are now covered by tests. Both were implemented and correct, but no test
   reached them; found by measuring which conversions the suite actually
@@ -50,7 +70,7 @@
   counts and the minimum and maximum bounds. These are claims made by whoever
   wrote the file; qio does not verify them and does not use them to skip data.
 
-* New `parquet_validate()` checks that a file is structurally valid Parquet and
+* New `validate_parquet()` checks that a file is structurally valid Parquet and
   says what is wrong in terms of the file -- too small, missing or wrong magic
   marker, truncated, encrypted footer, unparseable footer, or row groups that do
   not add up -- rather than failing inside the footer parser.

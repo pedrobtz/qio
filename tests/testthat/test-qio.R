@@ -602,3 +602,31 @@ test_that("appending keeps each row group's own encoding", {
 
   expect_identical(read_parquet(path), rbind(first, second))
 })
+
+test_that("read_parquet() selects columns and row groups", {
+  path <- test_path("parquet", "qio-multigroup.parquet")
+  whole <- read_parquet(path)
+
+  expect_equal(read_parquet(path, columns = "label"), whole["label"])
+  expect_equal(
+    read_parquet(path, columns = c("id", "price")),
+    whole[c("id", "price")]
+  )
+
+  # The fixture has more than one row group, so a subset is a real subset.
+  handle <- open_parquet(path)
+  on.exit(close_parquet(handle), add = TRUE)
+  groups <- nrow(row_groups(handle))
+  expect_gt(groups, 1L)
+  expect_equal(
+    read_parquet(path, row_groups = 1L),
+    collect(handle, row_groups = 1L)
+  )
+  expect_lt(nrow(read_parquet(path, row_groups = 1L)), nrow(whole))
+})
+
+test_that("read_parquet() forwards selection errors from collect()", {
+  path <- test_path("parquet", "qio-multigroup.parquet")
+  expect_error(read_parquet(path, columns = "nope"), "Unknown Parquet column")
+  expect_error(read_parquet(path, row_groups = 999L), "out of range")
+})

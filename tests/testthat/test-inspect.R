@@ -258,38 +258,38 @@ test_that("a file without statistics reports NULL bounds, not an error", {
 
 # --- Structural validation --------------------------------------------------
 
-test_that("parquet_validate() accepts a file qio wrote", {
+test_that("validate_parquet() accepts a file qio wrote", {
   path <- withr::local_tempfile(fileext = ".parquet")
   write_parquet(data.frame(n = 1:10), path, row_group_size = 3)
-  expect_true(parquet_validate(path))
+  expect_true(validate_parquet(path))
 })
 
-test_that("parquet_validate() accepts every third-party fixture", {
+test_that("validate_parquet() accepts every third-party fixture", {
   for (name in c(
     "alltypes_plain.parquet",
     "datapage_v2.snappy.parquet",
     "nested_maps.snappy.parquet",
     "rle_boolean.parquet"
   )) {
-    expect_true(parquet_validate(test_path("parquet", name)), info = name)
+    expect_true(validate_parquet(test_path("parquet", name)), info = name)
   }
 })
 
-test_that("parquet_validate() names the problem rather than the parser", {
+test_that("validate_parquet() names the problem rather than the parser", {
   directory <- withr::local_tempdir()
 
   missing <- file.path(directory, "absent.parquet")
-  expect_error(parquet_validate(missing), "does not exist")
+  expect_error(validate_parquet(missing), "does not exist")
 
-  expect_error(parquet_validate(directory), "is a directory")
+  expect_error(validate_parquet(directory), "is a directory")
 
   tiny <- file.path(directory, "tiny.parquet")
   writeBin(as.raw(1:5), tiny)
-  expect_error(parquet_validate(tiny), "too small")
+  expect_error(validate_parquet(tiny), "too small")
 
   text <- file.path(directory, "text.parquet")
   writeLines("this file is definitely not parquet", text)
-  expect_error(parquet_validate(text), "does not start with the Parquet marker")
+  expect_error(validate_parquet(text), "does not start with the Parquet marker")
 
   # Truncated: the leading marker survives, the trailing one does not.
   source <- file.path(directory, "good.parquet")
@@ -297,10 +297,10 @@ test_that("parquet_validate() names the problem rather than the parser", {
   bytes <- readBin(source, "raw", file.size(source))
   cut <- file.path(directory, "cut.parquet")
   writeBin(bytes[seq_len(length(bytes) - 40)], cut)
-  expect_error(parquet_validate(cut), "truncated")
+  expect_error(validate_parquet(cut), "truncated")
 })
 
-test_that("parquet_validate() reports an encrypted footer as such", {
+test_that("validate_parquet() reports an encrypted footer as such", {
   directory <- withr::local_tempdir()
   path <- file.path(directory, "encrypted.parquet")
   source <- file.path(directory, "good.parquet")
@@ -309,10 +309,10 @@ test_that("parquet_validate() reports an encrypted footer as such", {
   # PARE is the encrypted-footer marker; only the trailing one is read.
   bytes[seq(length(bytes) - 3, length(bytes))] <- charToRaw("PARE")
   writeBin(bytes, path)
-  expect_error(parquet_validate(path), "encrypted footer")
+  expect_error(validate_parquet(path), "encrypted footer")
 })
 
-test_that("parquet_validate() reports a corrupt footer as a footer problem", {
+test_that("validate_parquet() reports a corrupt footer as a footer problem", {
   directory <- withr::local_tempdir()
   source <- file.path(directory, "good.parquet")
   write_parquet(data.frame(n = 1:100, s = letters[1:10]), source)
@@ -322,7 +322,7 @@ test_that("parquet_validate() reports a corrupt footer as a footer problem", {
   bytes[middle] <- as.raw(0xff)
   path <- file.path(directory, "bad-footer.parquet")
   writeBin(bytes, path)
-  expect_error(parquet_validate(path), "footer does not parse")
+  expect_error(validate_parquet(path), "footer does not parse")
 })
 
 # --- Page indexes -----------------------------------------------------------

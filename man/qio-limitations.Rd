@@ -30,7 +30,7 @@ below.}
 with \code{sorted_by}, but carquet exposes no way to read it back, so qio
 cannot report the declaration in a file it did not write.}
 \item{Encryption}{Files with an encrypted footer are rejected by
-\code{\link[=parquet_validate]{parquet_validate()}} and cannot be read.}
+\code{\link[=validate_parquet]{validate_parquet()}} and cannot be read.}
 \item{External column metadata}{Modelled by carquet but not implemented
 there; the API returns "not implemented".}
 \item{Writer tuning}{Dictionary encoding, per-column encodings, page sizes,
@@ -53,5 +53,5 @@ exceed \code{.Machine$integer.max} rows. \code{INT64} columns lose precision bey
 }
 
 \seealso{
-\code{\link[=column_chunks]{column_chunks()}}, \code{\link[=parquet_validate]{parquet_validate()}}, \code{\link[=collect]{collect()}}
+\code{\link[=column_chunks]{column_chunks()}}, \code{\link[=validate_parquet]{validate_parquet()}}, \code{\link[=collect]{collect()}}
 }

@@ -4,13 +4,13 @@
 \alias{close_parquet}
 \title{Close a Parquet file}
 \usage{
-close_parquet(file)
+close_parquet(x)
 }
 \arguments{
-\item{file}{A \code{qio_parquet_file} object.}
+\item{x}{A \code{qio_parquet_file} object.}
 }
 \value{
-\code{file}, invisibly.
+\code{x}, invisibly.
 }
 \description{
 Explicitly releases the native resources owned by an open Parquet handle.

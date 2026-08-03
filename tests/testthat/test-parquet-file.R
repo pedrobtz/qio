@@ -738,3 +738,26 @@ test_that("a parallel read of a non-ASCII path keeps its lanes", {
   expect_equal(serial, data)
   expect_equal(collect(local_parquet_file(path, threads = 4L)), data)
 })
+
+test_that("open_parquet() treats threads = NULL and threads = 0 alike", {
+  # NULL is the documented default and the native layer spells "auto" as 0.
+  # They must reach the same place, or the default stops meaning what it says.
+  expected <- collect(local_parquet_file(threads = 0L))
+  expect_equal(collect(local_parquet_file(threads = NULL)), expected)
+  expect_equal(collect(local_parquet_file()), expected)
+})
+
+test_that("open_parquet() still rejects a bad thread count", {
+  # NULL is the only non-numeric value that means anything here.
+  expect_error(open_parquet(fixture_path(), threads = -1L), "`threads`")
+  expect_error(open_parquet(fixture_path(), threads = 1.5), "`threads`")
+  expect_error(open_parquet(fixture_path(), threads = NA_integer_), "`threads`")
+  expect_error(open_parquet(fixture_path(), threads = "2"), "`threads`")
+})
+
+test_that("close_parquet() takes its handle as `x`", {
+  # `file` used to name both a path and an open handle across the API.
+  file <- open_parquet(fixture_path())
+  expect_identical(close_parquet(x = file), file)
+  expect_silent(close_parquet(x = file))
+})

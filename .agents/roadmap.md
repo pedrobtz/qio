@@ -18,7 +18,7 @@ unwind-safe, workers do not call the R API, and handle guards prevent re-entry.
 
 | API | Behavior |
 |---|---|
-| `read_parquet()` | Open with mmap requested, collect, close |
+| `read_parquet()` | Open with mmap requested, collect, close; selects columns and row groups |
 | `open_parquet()` / `close_parquet()` | Persistent handle with mmap, checksum, and thread controls |
 | `collect()` | Select flat columns and row groups into one data frame |
 | `walk_batches()` | Invoke an R callback for each decoded batch |
@@ -29,7 +29,7 @@ unwind-safe, workers do not call the R API, and handle guards prevent re-entry.
 | `column_statistics()` | Report per-chunk value/null counts and min/max bounds |
 | `page_index()` | Report per-page bounds, null counts, offsets, and starting rows |
 | `bloom_filter_may_contain()` | Test values against a chunk's bloom filter |
-| `parquet_validate()` | Check structural validity and report what is wrong |
+| `validate_parquet()` | Check structural validity and report what is wrong |
 | `read_plan()` | Show each leaf's resolved R type and collectibility |
 | `parquet_type_mapping()` | Report physical fallback mappings |
 
@@ -59,6 +59,30 @@ deferred to v0.2.0.
 
 Standard R CMD check runs on macOS, Windows, and Linux. Native workflows cover
 sanitizers, Valgrind, LTO, gctorture, and rchk.
+
+### Known API asymmetries
+
+Reviewed 2026-08-03 across `read_parquet()`, `write_parquet()`, and
+`open_parquet()`. Five inconsistencies were found and fixed: the noun-first
+verb names, `file` naming both a path and an open handle, `read_parquet()`
+having no way to read part of a file, `threads = 0` as a magic value, and the
+lazy-reading functions having no cross-references at all. What remains is
+deliberate, and is recorded here so it is not rediscovered as a defect:
+
+- **`write_parquet(metadata =)` shares a name with the `metadata()` generic.**
+  Both refer to the same footer key/value pairs, so the collision is
+  descriptive rather than confusing, and renaming either would be worse.
+- **`...` means opposite things in the same position.** `collect(x, ...)`
+  rejects non-empty dots; `walk_batches(x, FUN, ...)` forwards them to `FUN`.
+  Both are documented. The alternative is a separate argument for callback
+  arguments, which no comparable R API uses.
+- **`mmap` defaults `FALSE` on a handle but `TRUE` inside `read_parquet()`.**
+  An eager read releases the mapping immediately; a persistent handle would
+  hold it, including a Windows delete-lock, for as long as the handle lives.
+  The defaults differ because the lifetimes do.
+- **`bloom_filter_may_contain()` is the only export without examples**, because
+  qio's writer cannot emit a bloom filter and there is no `inst/extdata`. Fix
+  it by shipping a small fixture, not by writing an example that cannot run.
 
 ## v0.1.0 priorities
 

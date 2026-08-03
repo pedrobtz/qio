@@ -8,10 +8,11 @@
 #'   cannot represent is read with buffered input instead, because only the
 #'   mapped path needs a name that page can express. The result is the same.
 #' @param verify_checksums Verify Parquet page checksums when present.
-#' @param threads Number of reader threads. Zero picks the machine's core
-#'   count. [collect()] decodes columns in parallel either way: a mapped file
-#'   shares one reader, and a buffered one gives each worker its own. Pass
-#'   `threads = 1` to force serial reads.
+#' @param threads Number of reader threads, or `NULL` (the default) to pick the
+#'   machine's core count. `0` means the same as `NULL`. [collect()] decodes
+#'   columns in parallel either way: a mapped file shares one reader, and a
+#'   buffered one gives each worker its own. Pass `threads = 1` to force serial
+#'   reads.
 #'
 #' @return A `qio_parquet_file` object. Close it with [close_parquet()].
 #'
@@ -29,12 +30,12 @@ open_parquet <- function(
   file,
   mmap = FALSE,
   verify_checksums = TRUE,
-  threads = 0L
+  threads = NULL
 ) {
   file <- qio_file_path(file)
   mmap <- qio_flag(mmap, "mmap")
   verify_checksums <- qio_flag(verify_checksums, "verify_checksums")
-  threads <- qio_whole_number(threads, "threads", minimum = 0L)
+  threads <- qio_threads(threads)
 
   file <- .Call(
     C_qio_parquet_open,
@@ -52,9 +53,9 @@ open_parquet <- function(
 #' Explicitly releases the native resources owned by an open Parquet handle.
 #' Closing an already closed handle has no effect.
 #'
-#' @param file A `qio_parquet_file` object.
+#' @param x A `qio_parquet_file` object.
 #'
-#' @return `file`, invisibly.
+#' @return `x`, invisibly.
 #'
 #' @seealso [open_parquet()]
 #' @export
@@ -63,9 +64,9 @@ open_parquet <- function(
 #' write_parquet(mtcars, path)
 #' pf <- open_parquet(path)
 #' close_parquet(pf)
-close_parquet <- function(file) {
-  .Call(C_qio_parquet_close, file)
-  invisible(file)
+close_parquet <- function(x) {
+  .Call(C_qio_parquet_close, x)
+  invisible(x)
 }
 
 #' Inspect a Parquet schema
@@ -349,6 +350,16 @@ qio_file_path <- function(file) {
     stop("File does not exist: ", file, call. = FALSE)
   }
   file
+}
+
+# `NULL` and `0` both mean "pick the machine's core count". The native layer
+# spells that as 0, so the R default is `NULL` -- which is what every other
+# automatic argument here uses -- and is normalized to 0 on the way through.
+qio_threads <- function(threads) {
+  if (is.null(threads)) {
+    return(0L)
+  }
+  qio_whole_number(threads, "threads", minimum = 0L)
 }
 
 qio_flag <- function(x, name) {

@@ -25,7 +25,7 @@
 #'     with `sorted_by`, but carquet exposes no way to read it back, so qio
 #'     cannot report the declaration in a file it did not write.}
 #'   \item{Encryption}{Files with an encrypted footer are rejected by
-#'     [parquet_validate()] and cannot be read.}
+#'     [validate_parquet()] and cannot be read.}
 #'   \item{External column metadata}{Modelled by carquet but not implemented
 #'     there; the API returns "not implemented".}
 #'   \item{Writer tuning}{Dictionary encoding, per-column encodings, page sizes,
@@ -45,5 +45,5 @@
 #' `NA` with a warning. See `vignette` topics and [collect()] for the details.
 #'
 #' @name qio-limitations
-#' @seealso [column_chunks()], [parquet_validate()], [collect()]
+#' @seealso [column_chunks()], [validate_parquet()], [collect()]
 NULL
