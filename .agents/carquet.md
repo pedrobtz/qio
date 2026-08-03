@@ -37,8 +37,8 @@ variant layouts.
 
 ## qio reader paths
 
-`read_parquet()` composes `parquet_open(mmap = TRUE)`, `collect()`, and
-`parquet_close()`.
+`read_parquet()` composes `open_parquet(mmap = TRUE)`, `collect()`, and
+`close_parquet()`.
 
 `collect()` uses low-level column readers. It reads dense values and definition
 levels, then scatters them through type-specific paths. This avoids expanding

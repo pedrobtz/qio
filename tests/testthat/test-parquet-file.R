@@ -25,12 +25,12 @@ fixture_data <- function() {
 }
 
 local_parquet_file <- function(path = fixture_path(), ...) {
-  file <- parquet_open(path, ...)
-  withr::defer(parquet_close(file), envir = parent.frame())
+  file <- open_parquet(path, ...)
+  withr::defer(close_parquet(file), envir = parent.frame())
   file
 }
 
-test_that("parquet_open() creates an inspectable handle", {
+test_that("open_parquet() creates an inspectable handle", {
   file <- local_parquet_file()
 
   expect_s3_class(file, "qio_parquet_file")
@@ -265,7 +265,7 @@ test_that("active reads reject reentrant operations", {
         error = identity
       ))
       messages[[2]] <<- conditionMessage(tryCatch(
-        parquet_close(file),
+        close_parquet(file),
         error = identity
       ))
       seen_metadata <<- identical(metadata(file)$key[[1]], "qio.note")
@@ -288,22 +288,22 @@ test_that("selectors and options are validated", {
   expect_error(collect(file, row_groups = c(1, 1)), "duplicates")
   expect_error(collect(file, batch_size = 0), "whole number")
 
-  expect_error(parquet_open(fixture_path(), mmap = NA), "mmap")
+  expect_error(open_parquet(fixture_path(), mmap = NA), "mmap")
   expect_error(
-    parquet_open(fixture_path(), verify_checksums = 1),
+    open_parquet(fixture_path(), verify_checksums = 1),
     "verify_checksums"
   )
-  expect_error(parquet_open(fixture_path(), threads = -1), "threads")
-  expect_error(parquet_open("does-not-exist.parquet"), "does not exist")
+  expect_error(open_parquet(fixture_path(), threads = -1), "threads")
+  expect_error(open_parquet("does-not-exist.parquet"), "does not exist")
 })
 
 test_that("closed, serialized, and foreign handles are rejected", {
-  file <- parquet_open(fixture_path())
+  file <- open_parquet(fixture_path())
   serialized <- unserialize(serialize(file, NULL))
   foreign <- structure(new("externalptr"), class = "qio_parquet_file")
 
-  expect_invisible(parquet_close(file))
-  expect_invisible(parquet_close(file))
+  expect_invisible(close_parquet(file))
+  expect_invisible(close_parquet(file))
   expect_match(capture.output(print(file))[[1]], "[closed]", fixed = TRUE)
   expect_error(dim(file), "closed or invalid")
   expect_error(dim(serialized), "closed or invalid")
@@ -434,8 +434,8 @@ test_that("walk_batches(threads = 1) starts no worker thread", {
   peak_threads <- function(threads) {
     base <- qio_thread_count()
     peak <- base
-    file <- parquet_open(path, mmap = TRUE, threads = threads)
-    on.exit(parquet_close(file))
+    file <- open_parquet(path, mmap = TRUE, threads = threads)
+    on.exit(close_parquet(file))
     walk_batches(file, function(batch, index) {
       peak <<- max(peak, qio_thread_count())
     })
@@ -582,8 +582,8 @@ test_that("collect(batch_size =) bounds the scratch it allocates", {
   )
 
   peak_mb <- function(batch_size) {
-    file <- parquet_open(path)
-    on.exit(parquet_close(file))
+    file <- open_parquet(path)
+    on.exit(close_parquet(file))
     gc(reset = TRUE, full = TRUE)
     invisible(collect(file, batch_size = batch_size))
     gc(full = TRUE)["Vcells", "max used"] * 8 / 1024^2
@@ -621,9 +621,9 @@ test_that("a buffered parallel collect returns exactly the serial result", {
 
   for (threads in c(0L, 2L, 4L, 8L)) {
     for (attempt in 1:3) {
-      file <- parquet_open(path, threads = threads)
+      file <- open_parquet(path, threads = threads)
       actual <- collect(file)
-      parquet_close(file)
+      close_parquet(file)
       expect_identical(
         actual,
         expected,

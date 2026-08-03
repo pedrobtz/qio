@@ -66,8 +66,8 @@ test_that("DATA_PAGE_V2 columns with undeclared dictionaries read", {
   # tools/check-writer-against-arrow.R's sibling workflow rather than at test
   # time, so arrow stays out of the test dependencies.
   path <- ext("datapage_v2.snappy.parquet")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   expect_identical(
     collect(file, columns = "a")$a,
@@ -80,11 +80,11 @@ test_that("DATA_PAGE_V2 columns with undeclared dictionaries read", {
 test_that("a memory-mapped read of the same file agrees", {
   # The dictionary probe had to be fixed in both the mmap and buffered paths.
   path <- ext("datapage_v2.snappy.parquet")
-  buffered <- parquet_open(path)
-  mapped <- parquet_open(path, mmap = TRUE)
+  buffered <- open_parquet(path)
+  mapped <- open_parquet(path, mmap = TRUE)
   withr::defer({
-    parquet_close(buffered)
-    parquet_close(mapped)
+    close_parquet(buffered)
+    close_parquet(mapped)
   })
   expect_identical(
     collect(mapped, columns = c("a", "b", "c")),
@@ -97,8 +97,8 @@ test_that("RLE as a BOOLEAN data encoding reads", {
   # values in one run, so it proves the format is accepted but nothing about
   # the decoder's arithmetic; rle_boolean.parquet below carries that load.
   path <- ext("datapage_v2.snappy.parquet")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   expect_identical(
     collect(file, columns = "d")$d,
@@ -150,13 +150,13 @@ test_that("every read path agrees on RLE BOOLEAN", {
   path <- ext("rle_boolean.parquet")
   eager <- read_parquet(path)
 
-  buffered <- parquet_open(path, mmap = FALSE)
-  mapped <- parquet_open(path, mmap = TRUE)
-  walker <- parquet_open(path)
+  buffered <- open_parquet(path, mmap = FALSE)
+  mapped <- open_parquet(path, mmap = TRUE)
+  walker <- open_parquet(path)
   withr::defer({
-    parquet_close(buffered)
-    parquet_close(mapped)
-    parquet_close(walker)
+    close_parquet(buffered)
+    close_parquet(mapped)
+    close_parquet(walker)
   })
 
   expect_identical(collect(buffered), eager)
@@ -180,8 +180,8 @@ test_that("nested columns are skipped with one message per operation", {
   expect_identical(names(result), "id")
   expect_equal(nrow(result), 7L)
 
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   expect_snapshot(
     empty <- collect(file, columns = "int_array.list.element")
@@ -233,8 +233,8 @@ test_that("the sentinel does not change the column type", {
   plan <- read_plan(path)
 
   expect_identical(plan$r_type[plan$name == "value"], "integer")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
   expect_warning(collected <- collect(file), "reserves -2147483648")
   expect_type(collected$value, "integer")
 })
@@ -249,7 +249,7 @@ test_that("selection resolves by complete path, not by leaf name", {
 
   # "b" must be the flat leaf, never the nested s.b that shares its name.
   expect_message(
-    flat <- collect(parquet_open(path), columns = "b"),
+    flat <- collect(open_parquet(path), columns = "b"),
     NA
   )
   expect_identical(flat$b, c(1L, 2L, 3L))
@@ -257,8 +257,8 @@ test_that("selection resolves by complete path, not by leaf name", {
 
 test_that("a nested leaf sharing a flat leaf's name is skipped, not selected", {
   path <- ext("name_collision.parquet")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   expect_message(result <- collect(file), "Skipping 1 nested Parquet column")
   expect_identical(names(result), c("b", "label"))
@@ -276,8 +276,8 @@ test_that("read_plan marks the colliding leaves by path", {
 
 test_that("selecting a nested path by its complete path is skipped cleanly", {
   path <- ext("name_collision.parquet")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   expect_message(result <- collect(file, columns = "s.b"), "Skipping 1 nested")
   expect_identical(ncol(result), 0L)
@@ -286,8 +286,8 @@ test_that("selecting a nested path by its complete path is skipped cleanly", {
 
 test_that("all three read APIs agree on the colliding file", {
   path <- ext("name_collision.parquet")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   eager <- suppressMessages(read_parquet(path))
   collected <- suppressMessages(collect(file))
@@ -387,8 +387,8 @@ test_that("read_plan() reports the selected 64-bit mode", {
 test_that("all three read APIs honor the 64-bit mode identically", {
   skip_if_not_installed("bit64")
   path <- int64_fixture()
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   eager <- suppressWarnings(read_parquet(path, int64 = "integer64"))
   collected <- suppressWarnings(collect(file, int64 = "integer64"))
@@ -409,8 +409,8 @@ test_that("all three read APIs honor the 64-bit mode identically", {
 test_that("the 64-bit mode survives projection, row groups, and batching", {
   skip_if_not_installed("bit64")
   path <- int64_fixture()
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   projected <- suppressWarnings(
     collect(file, columns = "unsigned", int64 = "integer64")
@@ -473,8 +473,8 @@ test_that("a NULL-annotated column reads as all-NA logical", {
 
 test_that("the NULL logical type survives batching", {
   path <- ext("null_type.parquet")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   batches <- list()
   walk_batches(
@@ -536,8 +536,8 @@ test_that("FLOAT16 widens to double", {
 
 test_that("binary columns survive batching and projection", {
   path <- ext("binary_types.parquet")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   projected <- collect(file, columns = c("fixed", "bytes"))
   expect_identical(names(projected), c("fixed", "bytes"))
@@ -611,8 +611,8 @@ test_that("a null UUID does not disturb the values around it", {
 
 test_that("UUID reads agree across all three APIs and survive batching", {
   path <- ext("uuid.parquet")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   eager <- read_parquet(path)
   expect_identical(collect(file), eager)
@@ -664,8 +664,8 @@ test_that("the decimal message is emitted once per read", {
 
 test_that("decimal values agree across all three read APIs", {
   path <- ext("decimal_types.parquet")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   eager <- suppressMessages(read_parquet(path))
   expect_equal(suppressMessages(collect(file)), eager)
@@ -784,8 +784,8 @@ test_that("read_plan() reports the selected time and zone modes", {
 
 test_that("temporal values agree across all three read APIs", {
   path <- temporal_fixture()
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   eager <- read_parquet(path, tz = "Europe/Paris")
   expect_identical(collect(file, tz = "Europe/Paris"), eager)
@@ -843,8 +843,8 @@ test_that("dictionary, plain, and mixed pages give identical results", {
 
 test_that("encoding does not change results across batch sizes or APIs", {
   path <- ext("string_encodings.parquet")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
   expected <- collect(file)
 
   # A small batch splits every column across several reads, which resets the
@@ -872,9 +872,9 @@ test_that("a cached string is a real copy, not a borrowed pointer", {
   # the bytes they were built from belong to carquet page buffers that are
   # released when the read finishes.
   path <- ext("string_encodings.parquet")
-  file <- parquet_open(path)
+  file <- open_parquet(path)
   df <- collect(file)
-  parquet_close(file)
+  close_parquet(file)
   gc(full = TRUE)
   expect_identical(substr(df$dict[1], 1L, 9L), "category_")
   expect_true(all(nchar(df$mixed) > 0L))
@@ -963,8 +963,8 @@ test_that("the all-types fixture still covers what it claims to", {
 test_that("all types survive batching and row-group selection", {
   path <- ext("all_types.parquet")
   expected <- reference("all_types-expected.rds")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   for (batch_size in c(1L, 2L, 5L, 1000L)) {
     expect_identical(
@@ -1006,8 +1006,8 @@ test_that("common types survive batching and row-group selection", {
   # inside the frame rather than degenerating to one group.
   path <- ext("common_types.parquet")
   expected <- reference("common_types-expected.rds")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   for (batch_size in c(1L, 5L, 12L, 1000L)) {
     expect_identical(
@@ -1136,8 +1136,8 @@ test_that("the dictionary path survives batch sizes that split a chunk", {
   # dictionary is loaded once per chunk and the indices are read in pieces.
   # Without this, a change that reloaded per batch would still return correct
   # data and would only show up as a slowdown.
-  file <- parquet_open(ext("dict_nulls.parquet"))
-  withr::defer(parquet_close(file))
+  file <- open_parquet(ext("dict_nulls.parquet"))
+  withr::defer(close_parquet(file))
 
   for (batch_size in c(7L, 128L, 501L, 65536L)) {
     invisible(qio_read_path_counters())
@@ -1157,8 +1157,8 @@ test_that("dictionary text does not depend on batch size or API", {
   # once per chunk, so a split must not restart or shift it.
   for (name in c("dict_fallback.parquet", "dict_nulls.parquet")) {
     path <- ext(name)
-    file <- parquet_open(path)
-    withr::defer(parquet_close(file))
+    file <- open_parquet(path)
+    withr::defer(close_parquet(file))
     expected <- collect(file)
 
     for (batch_size in c(97L, 1000L, 65536L)) {
@@ -1216,8 +1216,8 @@ test_that("every codec reads from another writer's file", {
   expect_equal(result$lz4_col, (0:299) / 11)
   expect_identical(result$snappy_col, rep(c(TRUE, FALSE), 150))
 
-  file <- parquet_open(ext("codec_mix.parquet"))
-  withr::defer(parquet_close(file))
+  file <- open_parquet(ext("codec_mix.parquet"))
+  withr::defer(close_parquet(file))
   # LZ4_RAW is the codec modern writers use, and is also what qio's own
   # `compression = "lz4"` produces; see .agents/carquet.md.
   expect_setequal(

@@ -411,9 +411,9 @@ qio_parse_time_details <- function(details) {
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(data.frame(x = 1:3, y = c("a", "b", NA)), path)
-#' pf <- parquet_open(path)
+#' pf <- open_parquet(path)
 #' read_plan(pf)
-#' parquet_close(pf)
+#' close_parquet(pf)
 read_plan <- function(x, ...) {
   UseMethod("read_plan")
 }
@@ -444,8 +444,8 @@ read_plan.character <- function(
   if (length(x) != 1L || is.na(x)) {
     stop("`x` must be a single Parquet file path.", call. = FALSE)
   }
-  pf <- parquet_open(x)
-  on.exit(parquet_close(pf), add = TRUE)
+  pf <- open_parquet(x)
+  on.exit(close_parquet(pf), add = TRUE)
   read_plan(pf, int64 = int64, time = time, tz = tz)
 }
 

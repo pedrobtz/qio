@@ -19,7 +19,7 @@ unwind-safe, workers do not call the R API, and handle guards prevent re-entry.
 | API | Behavior |
 |---|---|
 | `read_parquet()` | Open with mmap requested, collect, close |
-| `parquet_open()` / `parquet_close()` | Persistent handle with mmap, checksum, and thread controls |
+| `open_parquet()` / `close_parquet()` | Persistent handle with mmap, checksum, and thread controls |
 | `collect()` | Select flat columns and row groups into one data frame |
 | `walk_batches()` | Invoke an R callback for each decoded batch |
 | `schema()` | Report leaf paths, physical/logical types, repetition, and levels |
@@ -127,6 +127,24 @@ sanitizers, Valgrind, LTO, gctorture, and rchk.
   backward in place. **Measured and declined.**
 - [x] Consider private readers for buffered parallelism only if persistent,
   non-mmap performance proves important. Implemented; worth about 2.6x.
+- [x] Verify the comparison itself before trusting any ratio derived from it.
+  The benchmark's forcing function used `sum()`, which arrow answers from its
+  ALTREP methods without allocating, so every arrow ratio measured before
+  2026-08-03 was inflated. Corrected to `sum(unclass(column) + 0)`. This is
+  what closes read performance for v0.1.0: on three public files qio is 0.81x,
+  1.11x and 1.00x against the best alternative, and on generated shapes it is
+  1.00x to 1.12x with one workload at 0.62x.
+- [ ] **v0.2.0.** Split a row group across threads. qio schedules one task per
+  *(row group x column)*, so a file with one row group and four columns gets
+  four tasks whatever the core count: 1.91x from eight cores, plateauing at
+  four. Ranked as headroom rather than a deficit -- the file that exposed it is
+  1.11x against arrow, not the 1.78x first recorded from the flawed benchmark.
+  See [`read-performance.md`](read-performance.md).
+
+**Read performance is closed for v0.1.0.** The remaining entries above are
+v0.2.0 and none of them is a parity gap. Do not reopen this section on
+generated numbers alone; every defect that mattered was found by pointing
+`bench/real-file.R` at a file this repository did not choose.
 
 ### 4. Writer
 
@@ -164,7 +182,7 @@ validated `tz`. The surface is now settled too:
   `read_parquet()`, `collect()`, `walk_batches()`, and `read_plan()` each take
   `int64`, `time`, and `tz` directly. Reads have three options where the writer
   has many, so a constructor would cost more than it saves, and binding them to
-  `parquet_open()` would make one handle's plan depend on how it was opened.
+  `open_parquet()` would make one handle's plan depend on how it was opened.
 - **`read_plan()` takes the same arguments** so a plan can be inspected for
   exactly the read that will follow. This is what keeps `read_plan()` the
   authoritative description rather than a separate opinion.

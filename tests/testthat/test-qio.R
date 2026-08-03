@@ -51,8 +51,8 @@ test_that("a written Date column is stored as INT32 with a DATE annotation", {
   path <- withr::local_tempfile(fileext = ".parquet")
   write_parquet(data.frame(d = as.Date("2020-01-01")), path)
 
-  pf <- parquet_open(path)
-  on.exit(parquet_close(pf), add = TRUE)
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf), add = TRUE)
   info <- schema(pf)
 
   expect_identical(info$physical_type, "INT32")
@@ -89,8 +89,8 @@ test_that("a written POSIXct column is stored as a UTC-adjusted TIMESTAMP", {
   path <- withr::local_tempfile(fileext = ".parquet")
   write_parquet(data.frame(t = as.POSIXct("2020-01-01", tz = "UTC")), path)
 
-  pf <- parquet_open(path)
-  on.exit(parquet_close(pf), add = TRUE)
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf), add = TRUE)
   info <- schema(pf)
 
   expect_identical(info$physical_type, "INT64")
@@ -301,8 +301,8 @@ test_that("a zstd file with several numeric columns reads in parallel", {
 
   for (threads in c(0L, 1L, 4L)) {
     for (mapped in c(TRUE, FALSE)) {
-      file <- parquet_open(path, mmap = mapped, threads = threads)
-      withr::defer(parquet_close(file))
+      file <- open_parquet(path, mmap = mapped, threads = threads)
+      withr::defer(close_parquet(file))
       expect_equal(
         collect(file),
         data,
@@ -558,8 +558,8 @@ test_that("text columns are written dictionary-encoded", {
   )
   write_parquet(frame, path)
 
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
   chunks <- column_chunks(file)
 
   text <- chunks[chunks$column == 1L, ]

@@ -43,8 +43,15 @@ deferred to qio 0.2.0.
 
 The file is memory-mapped for the duration of the read (falling back to
 buffered reads if mapping fails) so columns decode in parallel; the mapping
-is released before the function returns. Use \code{\link[=parquet_open]{parquet_open()}} +
-\code{\link[=collect]{collect()}} for control over \code{mmap} and \code{threads}.
+is released before the function returns.
+
+\code{read_parquet()} reads every column of every row group. To read part of a
+file -- a subset of columns, a subset of row groups, or a bounded batch size
+-- use \code{\link[=open_parquet]{open_parquet()}} with \code{\link[=collect]{collect()}}, which is what \code{read_parquet()}
+calls. That is also the only route to \code{mmap}, \code{threads}, and
+\code{verify_checksums}. Reading fewer columns is the single largest speedup
+available on a wide file, because a column that is never selected is never
+decompressed.
 }
 \examples{
 path <- tempfile(fileext = ".parquet")
@@ -52,5 +59,7 @@ write_parquet(data.frame(x = 1:3, y = c("a", "b", NA)), path)
 read_parquet(path)
 }
 \seealso{
-\code{\link[=write_parquet]{write_parquet()}}
+\code{\link[=write_parquet]{write_parquet()}}, \code{\link[=open_parquet]{open_parquet()}} and \code{\link[=collect]{collect()}} to read part of
+a file, \code{\link[=walk_batches]{walk_batches()}} for a file larger than memory, and \code{\link[=read_plan]{read_plan()}}
+to preview the R type of every column before reading.
 }

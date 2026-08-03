@@ -23,7 +23,7 @@ Inspect a Parquet schema
 \examples{
 path <- tempfile(fileext = ".parquet")
 write_parquet(mtcars, path)
-pf <- parquet_open(path)
+pf <- open_parquet(path)
 schema(pf)
-parquet_close(pf)
+close_parquet(pf)
 }

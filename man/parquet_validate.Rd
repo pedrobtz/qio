@@ -27,7 +27,7 @@ metadata agree with the file's own row count.
 What is \strong{not} checked: the data pages. Structural validity says a reader can
 find the columns, not that their bytes decode or that the recorded statistics
 are true. To check the pages, read the file with
-\code{parquet_open(verify_checksums = TRUE)} and \code{\link[=collect]{collect()}}; that costs a full
+\code{open_parquet(verify_checksums = TRUE)} and \code{\link[=collect]{collect()}}; that costs a full
 read, which is why it is not done here.
 }
 \examples{
@@ -41,5 +41,5 @@ writeLines("not parquet", plain)
 try(parquet_validate(plain))
 }
 \seealso{
-\code{\link[=parquet_open]{parquet_open()}}, \code{\link[=column_chunks]{column_chunks()}}
+\code{\link[=open_parquet]{open_parquet()}}, \code{\link[=column_chunks]{column_chunks()}}
 }

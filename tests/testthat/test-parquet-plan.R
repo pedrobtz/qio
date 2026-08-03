@@ -319,8 +319,8 @@ test_that("read_plan() works on an open file and matches its schema", {
     data.frame(x = 1:3, y = c("a", "b", NA), z = c(1.5, 2.5, 3.5)),
     path
   )
-  pf <- parquet_open(path)
-  on.exit(parquet_close(pf), add = TRUE)
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf), add = TRUE)
 
   plan <- read_plan(pf)
 

@@ -108,7 +108,7 @@
   interned once rather than once per row. A 1-million-row low-cardinality
   column went from 0.113 s to 0.062 s. Plain-encoded columns are unaffected.
 
-* Reads through a `parquet_open()` handle now decode columns in parallel even
+* Reads through a `open_parquet()` handle now decode columns in parallel even
   without `mmap = TRUE`, by giving each worker its own reader. Collecting a
   1-million-row file went from 0.181 s to 0.063 s. Previously only memory-mapped
   handles decoded in parallel, and memory mapping on its own made no measurable
@@ -205,7 +205,7 @@
 * Legacy `INT96` timestamps (Impala/Spark) now read as `POSIXct` in UTC. They
   are read-only; qio does not write `INT96`.
 * Fixed compilation with MinGW on Windows when SSE4.2 is not enabled.
-* Added persistent `parquet_open()` handles for metadata inspection, projected
+* Added persistent `open_parquet()` handles for metadata inspection, projected
   and row-group-aware `collect()` calls, and bounded-memory `walk_batches()`
   processing.
 * `parquet_type_mapping()` reports qio's read and write mappings for every

@@ -64,7 +64,11 @@ values are discarded.
 \examples{
 path <- tempfile(fileext = ".parquet")
 write_parquet(mtcars, path)
-pf <- parquet_open(path)
+pf <- open_parquet(path)
 walk_batches(pf, function(batch, index) print(head(batch)))
-parquet_close(pf)
+close_parquet(pf)
+}
+\seealso{
+\code{\link[=collect]{collect()}} for the same selection returned as one data frame, and
+\code{\link[=open_parquet]{open_parquet()}} for the handle.
 }

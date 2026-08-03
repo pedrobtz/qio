@@ -18,8 +18,15 @@
 #'
 #' The file is memory-mapped for the duration of the read (falling back to
 #' buffered reads if mapping fails) so columns decode in parallel; the mapping
-#' is released before the function returns. Use [parquet_open()] +
-#' [collect()] for control over `mmap` and `threads`.
+#' is released before the function returns.
+#'
+#' `read_parquet()` reads every column of every row group. To read part of a
+#' file -- a subset of columns, a subset of row groups, or a bounded batch size
+#' -- use [open_parquet()] with [collect()], which is what `read_parquet()`
+#' calls. That is also the only route to `mmap`, `threads`, and
+#' `verify_checksums`. Reading fewer columns is the single largest speedup
+#' available on a wide file, because a column that is never selected is never
+#' decompressed.
 #'
 #' @param file Path to a Parquet file.
 #' @param int64 How 64-bit integer columns reach R; see [collect()].
@@ -28,7 +35,9 @@
 #'
 #' @return A data frame.
 #'
-#' @seealso [write_parquet()]
+#' @seealso [write_parquet()], [open_parquet()] and [collect()] to read part of
+#'   a file, [walk_batches()] for a file larger than memory, and [read_plan()]
+#'   to preview the R type of every column before reading.
 #' @export
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
@@ -42,8 +51,8 @@ read_parquet <- function(
 ) {
   # mmap enables parallel column decode in collect(); the handle is closed on
   # exit, so the mapping (and any Windows delete-lock) lives only for the read.
-  file <- parquet_open(file, mmap = TRUE)
-  on.exit(parquet_close(file), add = TRUE)
+  file <- open_parquet(file, mmap = TRUE)
+  on.exit(close_parquet(file), add = TRUE)
   collect(file, int64 = int64, time = time, tz = tz)
 }
 
@@ -97,15 +106,15 @@ read_parquet <- function(
 #' @param metadata A named character vector of footer key/value metadata, or
 #'   `NULL`. Duplicate keys are written in the order given. An `NA` value is
 #'   written as a key with no value, and reads back as `NA`.
-#' @param append Append new row groups to an existing file instead of replacing
-#'   it. The file must already exist and describe exactly the columns being
-#'   written; see Details.
 #' @param sorted_by Columns the data is already sorted by, or `NULL`. Either a
 #'   character vector of column names, meaning ascending with nulls last, or a
 #'   data frame with a `name` column and optional logical `descending` and
 #'   `nulls_first` columns. This **records a claim and nothing more**: qio does
 #'   not sort the data and does not check that the claim is true. A wrong
 #'   declaration misleads every reader that trusts it.
+#' @param append Append new row groups to an existing file instead of replacing
+#'   it. The file must already exist and describe exactly the columns being
+#'   written; see Details.
 #'
 #' @return The output path, invisibly.
 #'
@@ -221,8 +230,8 @@ qio_prepare_append <- function(file, prepared) {
       call. = FALSE
     )
   }
-  handle <- parquet_open(file)
-  on.exit(parquet_close(handle), add = TRUE)
+  handle <- open_parquet(file)
+  on.exit(close_parquet(handle), add = TRUE)
   existing <- schema(handle)
   intended <- prepared$schema
 
@@ -365,14 +374,14 @@ qio_sorted_by <- function(sorted_by, columns) {
 #' What is **not** checked: the data pages. Structural validity says a reader can
 #' find the columns, not that their bytes decode or that the recorded statistics
 #' are true. To check the pages, read the file with
-#' `parquet_open(verify_checksums = TRUE)` and [collect()]; that costs a full
+#' `open_parquet(verify_checksums = TRUE)` and [collect()]; that costs a full
 #' read, which is why it is not done here.
 #'
 #' @param file Path to a file.
 #'
 #' @return `TRUE`, invisibly. Raises an error describing the first problem
 #'   found otherwise.
-#' @seealso [parquet_open()], [column_chunks()]
+#' @seealso [open_parquet()], [column_chunks()]
 #' @export
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
@@ -432,7 +441,7 @@ parquet_validate <- function(file) {
   }
 
   handle <- tryCatch(
-    parquet_open(file),
+    open_parquet(file),
     error = function(e) {
       stop(
         "`file` has both Parquet markers but its footer does not parse: ",
@@ -441,7 +450,7 @@ parquet_validate <- function(file) {
       )
     }
   )
-  on.exit(parquet_close(handle), add = TRUE)
+  on.exit(close_parquet(handle), add = TRUE)
 
   # The footer states a row count and also describes row groups. A file whose
   # groups do not add up is readable but not trustworthy, and nothing else

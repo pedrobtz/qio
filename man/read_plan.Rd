@@ -82,9 +82,9 @@ reported in \code{note} and retain their physical fallback type.
 \examples{
 path <- tempfile(fileext = ".parquet")
 write_parquet(data.frame(x = 1:3, y = c("a", "b", NA)), path)
-pf <- parquet_open(path)
+pf <- open_parquet(path)
 read_plan(pf)
-parquet_close(pf)
+close_parquet(pf)
 }
 \seealso{
 \code{\link[=schema]{schema()}}, \code{\link[=collect]{collect()}}, \code{\link[=parquet_type_mapping]{parquet_type_mapping()}}

@@ -226,7 +226,7 @@ Three baseline facts worth carrying forward rather than rediscovering:
 - Buffered and mmap collects are the same speed when serial; the 2.7x gap is
   the worker pool, not the mapping. Phase 4's question about private-reader
   parallelism therefore starts from evidence that it is worth ~2.7x on the
-  `parquet_open()` default.
+  `open_parquet()` default.
 - `walk_batches()` costs about 35% more than `collect()` for a full pass.
 
 ### Work
@@ -787,7 +787,7 @@ release validation rather than treating it as documentation.
 - [x] Documentation describes actual behavior, defaults, limitations, and
   deliberate exclusions. `?qio-limitations` owns the exclusions, the README
   carries the matrix, and two stale claims were corrected: CRAN installation,
-  and `parquet_open()`'s note that buffered reads stay single-threaded.
+  and `open_parquet()`'s note that buffered reads stay single-threaded.
 - [x] The built source package contains required licenses and excludes internal
   plans, patch records, build products, fixtures not intended for distribution,
   and local data. Verified by inspecting `R CMD build` output: `.agents/`,

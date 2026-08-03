@@ -23,7 +23,7 @@ Inspect Parquet row groups
 \examples{
 path <- tempfile(fileext = ".parquet")
 write_parquet(mtcars, path)
-pf <- parquet_open(path)
+pf <- open_parquet(path)
 row_groups(pf)
-parquet_close(pf)
+close_parquet(pf)
 }

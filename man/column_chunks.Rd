@@ -27,9 +27,9 @@ One row per column per row group.
 \examples{
 path <- tempfile(fileext = ".parquet")
 write_parquet(mtcars, path, row_group_size = 16)
-pf <- parquet_open(path)
+pf <- open_parquet(path)
 column_chunks(pf)
-parquet_close(pf)
+close_parquet(pf)
 }
 \seealso{
 \code{\link[=column_statistics]{column_statistics()}}, \code{\link[=row_groups]{row_groups()}}

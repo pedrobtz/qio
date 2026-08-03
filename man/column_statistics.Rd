@@ -38,11 +38,11 @@ for its type.
 \examples{
 path <- tempfile(fileext = ".parquet")
 write_parquet(data.frame(n = 1:100), path, row_group_size = 25)
-pf <- parquet_open(path)
+pf <- open_parquet(path)
 stats <- column_statistics(pf)
 stats[c("row_group", "name", "null_count")]
 unlist(stats$min)
-parquet_close(pf)
+close_parquet(pf)
 }
 \seealso{
 \code{\link[=column_chunks]{column_chunks()}}, \code{\link[=row_groups]{row_groups()}}

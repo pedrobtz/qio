@@ -31,8 +31,8 @@ test_that("append adds row groups and preserves both halves", {
 
   expect_identical(read_parquet(path), rbind(pair$first, pair$second))
 
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
   expect_identical(nrow(row_groups(file)), 2L)
   expect_equal(row_groups(file)$rows, c(5, 5))
 })
@@ -56,8 +56,8 @@ test_that("nullability comes from the file, not from the new batch", {
   write_parquet(data.frame(v = c(4, 5, 6)), path, append = TRUE)
 
   expect_identical(read_parquet(path)$v, c(1, NA, 3, 4, 5, 6))
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
   expect_identical(schema(file)$repetition, "OPTIONAL")
 })
 
@@ -155,8 +155,8 @@ test_that("append carries footer metadata and accepts new entries", {
     append = TRUE,
     metadata = c(second = "also")
   )
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
   pairs <- metadata(file)
   expect_identical(pairs$value[pairs$key == "first"], "yes")
   expect_identical(pairs$value[pairs$key == "second"], "also")
@@ -166,8 +166,8 @@ test_that("append honors row_group_size for the new data", {
   path <- withr::local_tempfile(fileext = ".parquet")
   write_parquet(data.frame(n = 1:10), path)
   write_parquet(data.frame(n = 11:40), path, append = TRUE, row_group_size = 10)
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
   expect_equal(row_groups(file)$rows, c(10, 10, 10, 10))
   expect_identical(read_parquet(path)$n, 1:40)
 })

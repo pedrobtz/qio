@@ -45,8 +45,8 @@ test_that("write_parquet() applies partial schema overrides", {
   x <- data.frame(id = 1:3, price = c(1.25, NA, 3.5), label = letters[1:3])
 
   write_parquet(x, path, schema = parquet_schema(id = "INT64", price = "FLOAT"))
-  pf <- parquet_open(path)
-  on.exit(parquet_close(pf), add = TRUE)
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf), add = TRUE)
 
   info <- schema(pf)
   expect_equal(info$physical_type, c("INT64", "FLOAT", "BYTE_ARRAY"))
@@ -73,8 +73,8 @@ test_that("write_parquet() applies every explicit simple scalar declaration", {
   )
 
   write_parquet(x, path, schema = requested)
-  pf <- parquet_open(path)
-  on.exit(parquet_close(pf), add = TRUE)
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf), add = TRUE)
 
   expect_equal(
     schema(pf)$physical_type,
@@ -106,8 +106,8 @@ test_that("write_parquet() supports explicit DATE and timestamp units", {
       time = list("TIMESTAMP", unit = unit)
     )
     write_parquet(x, path, schema = requested)
-    pf <- parquet_open(path)
-    on.exit(parquet_close(pf), add = TRUE)
+    pf <- open_parquet(path)
+    on.exit(close_parquet(pf), add = TRUE)
     info <- schema(pf)
 
     expect_equal(info$logical_type, c("DATE", "TIMESTAMP"))
@@ -119,7 +119,7 @@ test_that("write_parquet() supports explicit DATE and timestamp units", {
       c(1577836800.123, NA, -86400),
       tolerance = 1e-7
     )
-    parquet_close(pf)
+    close_parquet(pf)
   }
 })
 
@@ -128,8 +128,8 @@ test_that("AUTO preserves inference and can override nullability", {
   requested <- parquet_schema(x = list("AUTO", repetition_type = "OPTIONAL"))
 
   write_parquet(data.frame(x = 1:3), path, schema = requested)
-  pf <- parquet_open(path)
-  on.exit(parquet_close(pf), add = TRUE)
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf), add = TRUE)
 
   expect_equal(schema(pf)$physical_type, "INT32")
   expect_equal(schema(pf)$repetition, "OPTIONAL")

@@ -13,8 +13,8 @@ reference:
       - qio-types
   - title: Lazy reading
     contents:
-      - parquet_open
-      - parquet_close
+      - open_parquet
+      - close_parquet
       - collect
       - walk_batches
   - title: Inspect files

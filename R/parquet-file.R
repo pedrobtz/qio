@@ -13,15 +13,19 @@
 #'   shares one reader, and a buffered one gives each worker its own. Pass
 #'   `threads = 1` to force serial reads.
 #'
-#' @return A `qio_parquet_file` object. Close it with [parquet_close()].
+#' @return A `qio_parquet_file` object. Close it with [close_parquet()].
+#'
+#' @seealso [collect()] and [walk_batches()] to read from the handle,
+#'   [close_parquet()] to release it, [schema()] and [metadata()] to inspect it
+#'   without reading, and [read_parquet()] for a whole file in one call.
 #' @export
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(mtcars, path)
-#' pf <- parquet_open(path)
+#' pf <- open_parquet(path)
 #' dim(pf)
-#' parquet_close(pf)
-parquet_open <- function(
+#' close_parquet(pf)
+open_parquet <- function(
   file,
   mmap = FALSE,
   verify_checksums = TRUE,
@@ -51,13 +55,15 @@ parquet_open <- function(
 #' @param file A `qio_parquet_file` object.
 #'
 #' @return `file`, invisibly.
+#'
+#' @seealso [open_parquet()]
 #' @export
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(mtcars, path)
-#' pf <- parquet_open(path)
-#' parquet_close(pf)
-parquet_close <- function(file) {
+#' pf <- open_parquet(path)
+#' close_parquet(pf)
+close_parquet <- function(file) {
   .Call(C_qio_parquet_close, file)
   invisible(file)
 }
@@ -72,9 +78,9 @@ parquet_close <- function(file) {
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(mtcars, path)
-#' pf <- parquet_open(path)
+#' pf <- open_parquet(path)
 #' schema(pf)
-#' parquet_close(pf)
+#' close_parquet(pf)
 schema <- function(x, ...) {
   UseMethod("schema")
 }
@@ -96,9 +102,9 @@ schema.qio_parquet_file <- function(x, ...) {
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(mtcars, path)
-#' pf <- parquet_open(path)
+#' pf <- open_parquet(path)
 #' row_groups(pf)
-#' parquet_close(pf)
+#' close_parquet(pf)
 row_groups <- function(x, ...) {
   UseMethod("row_groups")
 }
@@ -122,9 +128,9 @@ row_groups.qio_parquet_file <- function(x, ...) {
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(mtcars, path)
-#' pf <- parquet_open(path)
+#' pf <- open_parquet(path)
 #' metadata(pf)
-#' parquet_close(pf)
+#' close_parquet(pf)
 metadata <- function(x, ...) {
   UseMethod("metadata")
 }
@@ -183,13 +189,18 @@ metadata.qio_parquet_file <- function(x, ...) {
 #'   boundaries. The machine's local zone is never used implicitly.
 #'
 #' @return A data frame.
+#'
+#' @seealso [open_parquet()] for the handle and for `mmap` and `threads`,
+#'   [walk_batches()] to process a file that does not fit in memory,
+#'   [read_plan()] to preview the R type of every column, and [read_parquet()],
+#'   which is [open_parquet()] plus `collect()` for a whole file.
 #' @export
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(mtcars, path)
-#' pf <- parquet_open(path)
+#' pf <- open_parquet(path)
 #' collect(pf, columns = c("mpg", "cyl"))
-#' parquet_close(pf)
+#' close_parquet(pf)
 collect <- function(x, ...) {
   UseMethod("collect")
 }
@@ -242,13 +253,16 @@ collect.qio_parquet_file <- function(
 #' @param batch_size Positive number of rows decoded per batch.
 #'
 #' @return `x`, invisibly.
+#'
+#' @seealso [collect()] for the same selection returned as one data frame, and
+#'   [open_parquet()] for the handle.
 #' @export
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(mtcars, path)
-#' pf <- parquet_open(path)
+#' pf <- open_parquet(path)
 #' walk_batches(pf, function(batch, index) print(head(batch)))
-#' parquet_close(pf)
+#' close_parquet(pf)
 walk_batches <- function(
   x,
   FUN,
@@ -540,9 +554,9 @@ qio_empty_dots <- function(...) {
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(mtcars, path, row_group_size = 16)
-#' pf <- parquet_open(path)
+#' pf <- open_parquet(path)
 #' column_chunks(pf)
-#' parquet_close(pf)
+#' close_parquet(pf)
 column_chunks <- function(x, ...) {
   UseMethod("column_chunks")
 }
@@ -581,11 +595,11 @@ column_chunks.qio_parquet_file <- function(x, ...) {
 #' @examples
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(data.frame(n = 1:100), path, row_group_size = 25)
-#' pf <- parquet_open(path)
+#' pf <- open_parquet(path)
 #' stats <- column_statistics(pf)
 #' stats[c("row_group", "name", "null_count")]
 #' unlist(stats$min)
-#' parquet_close(pf)
+#' close_parquet(pf)
 column_statistics <- function(x, ...) {
   UseMethod("column_statistics")
 }
@@ -626,9 +640,9 @@ column_statistics.qio_parquet_file <- function(x, ...) {
 #' # result is empty rather than an error.
 #' path <- tempfile(fileext = ".parquet")
 #' write_parquet(data.frame(n = 1:10), path)
-#' pf <- parquet_open(path)
+#' pf <- open_parquet(path)
 #' nrow(page_index(pf))
-#' parquet_close(pf)
+#' close_parquet(pf)
 page_index <- function(x, ...) {
   UseMethod("page_index")
 }

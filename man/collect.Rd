@@ -78,7 +78,13 @@ with the selected number of rows.
 \examples{
 path <- tempfile(fileext = ".parquet")
 write_parquet(mtcars, path)
-pf <- parquet_open(path)
+pf <- open_parquet(path)
 collect(pf, columns = c("mpg", "cyl"))
-parquet_close(pf)
+close_parquet(pf)
+}
+\seealso{
+\code{\link[=open_parquet]{open_parquet()}} for the handle and for \code{mmap} and \code{threads},
+\code{\link[=walk_batches]{walk_batches()}} to process a file that does not fit in memory,
+\code{\link[=read_plan]{read_plan()}} to preview the R type of every column, and \code{\link[=read_parquet]{read_parquet()}},
+which is \code{\link[=open_parquet]{open_parquet()}} plus \code{collect()} for a whole file.
 }

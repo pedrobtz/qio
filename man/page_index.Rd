@@ -40,9 +40,9 @@ file. qio reports them and does not use them to skip pages.
 # result is empty rather than an error.
 path <- tempfile(fileext = ".parquet")
 write_parquet(data.frame(n = 1:10), path)
-pf <- parquet_open(path)
+pf <- open_parquet(path)
 nrow(page_index(pf))
-parquet_close(pf)
+close_parquet(pf)
 }
 \seealso{
 \code{\link[=column_statistics]{column_statistics()}}, \code{\link[=column_chunks]{column_chunks()}}

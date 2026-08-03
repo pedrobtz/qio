@@ -17,8 +17,8 @@ test_that("row_group_size splits the file and preserves every value", {
   data$n[5] <- NA
 
   write_parquet(data, path, row_group_size = 30)
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   groups <- row_groups(file)
   expect_identical(nrow(groups), 4L)
@@ -37,8 +37,8 @@ test_that("row groups round-trip under every codec and across a chunk boundary",
     path <- withr::local_tempfile(fileext = ".parquet")
     data <- data.frame(n = 1:1000, s = sprintf("v%04d", 1:1000))
     write_parquet(data, path, row_group_size = 256, compression = codec)
-    file <- parquet_open(path)
-    withr::defer(parquet_close(file))
+    file <- open_parquet(path)
+    withr::defer(close_parquet(file))
     expect_identical(nrow(row_groups(file)), 4L, info = codec)
     expect_identical(collect(file), data, info = codec)
   }
@@ -47,16 +47,16 @@ test_that("row groups round-trip under every codec and across a chunk boundary",
 test_that("the default is still one row group", {
   path <- withr::local_tempfile(fileext = ".parquet")
   write_parquet(data.frame(n = 1:50), path)
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
   expect_identical(nrow(row_groups(file)), 1L)
 })
 
 test_that("a group larger than the frame yields one group", {
   path <- withr::local_tempfile(fileext = ".parquet")
   write_parquet(data.frame(n = 1:10), path, row_group_size = 1000)
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
   expect_identical(nrow(row_groups(file)), 1L)
   expect_identical(collect(file)$n, 1:10)
 })
@@ -86,8 +86,8 @@ test_that("footer metadata round-trips, duplicates and order included", {
     path,
     metadata = c(source = "test", note = "first", note = "second")
   )
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   pairs <- metadata(file)
   written <- pairs[pairs$key %in% c("source", "note"), ]
@@ -99,8 +99,8 @@ test_that("an NA metadata value round-trips as NA", {
   path <- withr::local_tempfile(fileext = ".parquet")
   # Logical NA is how anyone writes "key with no value"; it must be accepted.
   write_parquet(data.frame(n = 1:3), path, metadata = c(empty = NA))
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
   pairs <- metadata(file)
   expect_true(is.na(pairs$value[pairs$key == "empty"]))
 })
@@ -108,8 +108,8 @@ test_that("an NA metadata value round-trips as NA", {
 test_that("metadata keys and values may be non-ASCII", {
   path <- withr::local_tempfile(fileext = ".parquet")
   write_parquet(data.frame(n = 1:3), path, metadata = c("ключ" = "значение"))
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
   pairs <- metadata(file)
   expect_identical(pairs$value[pairs$key == "ключ"], "значение")
 })
@@ -139,8 +139,8 @@ test_that("column_chunks() reports one row per column per row group", {
     stringsAsFactors = FALSE
   )
   write_parquet(data, path, row_group_size = 20, compression = "zstd")
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   chunks <- column_chunks(file)
   expect_identical(nrow(chunks), 9L)
@@ -162,8 +162,8 @@ test_that("column_chunks() sizes agree with the row-group totals", {
     path,
     row_group_size = 25
   )
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   chunks <- column_chunks(file)
   groups <- row_groups(file)
@@ -183,8 +183,8 @@ test_that("statistics report per-group bounds in the column's own type", {
     stringsAsFactors = FALSE
   )
   write_parquet(data, path, row_group_size = 50)
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   stats <- column_statistics(file)
   expect_identical(nrow(stats), 8L)
@@ -210,8 +210,8 @@ test_that("null counts are reported per row group", {
   values <- 1:40
   values[c(1, 2, 21)] <- NA
   write_parquet(data.frame(n = values), path, row_group_size = 20)
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   stats <- column_statistics(file)
   expect_equal(stats$null_count, c(2, 1))
@@ -221,8 +221,8 @@ test_that("statistics decode third-party files, including boundary values", {
   # Written by Apache Arrow, so these bounds are bytes qio did not produce.
   # INT32 -2147483648 must not come back as NA: R reserves it, so the bound is
   # widened rather than lost.
-  file <- parquet_open(test_path("parquet", "int32_min.parquet"))
-  withr::defer(parquet_close(file))
+  file <- open_parquet(test_path("parquet", "int32_min.parquet"))
+  withr::defer(close_parquet(file))
   stats <- column_statistics(file)
 
   value <- stats[stats$name == "value", ]
@@ -238,8 +238,8 @@ test_that("statistics decode third-party files, including boundary values", {
 test_that("non-text byte columns give raw bounds, not character", {
   # binary_types.parquet holds an unannotated BYTE_ARRAY and a
   # FIXED_LEN_BYTE_ARRAY. Neither is text, so neither may claim to be.
-  file <- parquet_open(test_path("parquet", "binary_types.parquet"))
-  withr::defer(parquet_close(file))
+  file <- open_parquet(test_path("parquet", "binary_types.parquet"))
+  withr::defer(close_parquet(file))
   stats <- column_statistics(file)
 
   expect_type(stats$min[[which(stats$name == "bytes")]], "raw")
@@ -249,8 +249,8 @@ test_that("non-text byte columns give raw bounds, not character", {
 
 test_that("a file without statistics reports NULL bounds, not an error", {
   # alltypes_plain.parquet predates statistics being written routinely.
-  file <- parquet_open(test_path("parquet", "alltypes_plain.parquet"))
-  withr::defer(parquet_close(file))
+  file <- open_parquet(test_path("parquet", "alltypes_plain.parquet"))
+  withr::defer(close_parquet(file))
   stats <- column_statistics(file)
   expect_gt(nrow(stats), 0L)
   expect_true(all(vapply(stats$min, is.null, logical(1))))
@@ -330,8 +330,8 @@ test_that("parquet_validate() reports a corrupt footer as a footer problem", {
 # written by Apache Arrow and pyarrow.
 
 test_that("page_index() reports pages with locations and bounds", {
-  file <- parquet_open(test_path("parquet", "bloom_sorted.parquet"))
-  withr::defer(parquet_close(file))
+  file <- open_parquet(test_path("parquet", "bloom_sorted.parquet"))
+  withr::defer(close_parquet(file))
 
   pages <- page_index(file)
   expect_gt(nrow(pages), 0L)
@@ -364,8 +364,8 @@ test_that("page_index() reports pages with locations and bounds", {
 })
 
 test_that("page bounds decode in the column's own type", {
-  file <- parquet_open(test_path("parquet", "bloom_sorted.parquet"))
-  withr::defer(parquet_close(file))
+  file <- open_parquet(test_path("parquet", "bloom_sorted.parquet"))
+  withr::defer(close_parquet(file))
   pages <- page_index(file)
 
   key <- pages[pages$name == "key", ]
@@ -383,8 +383,8 @@ test_that("a file with no page index yields no rows, not an error", {
   # qio does not write page indexes; see ?qio-limitations.
   path <- withr::local_tempfile(fileext = ".parquet")
   write_parquet(data.frame(n = 1:100), path, row_group_size = 25)
-  file <- parquet_open(path)
-  withr::defer(parquet_close(file))
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
 
   pages <- page_index(file)
   expect_identical(nrow(pages), 0L)
@@ -396,8 +396,8 @@ test_that("a file with no page index yields no rows, not an error", {
 test_that("a bloom filter never misses a value that is present", {
   # The one guarantee a bloom filter makes: no false negatives. False
   # positives are permitted, so only this direction can be asserted per value.
-  file <- parquet_open(test_path("parquet", "bloom_sorted.parquet"))
-  withr::defer(parquet_close(file))
+  file <- open_parquet(test_path("parquet", "bloom_sorted.parquet"))
+  withr::defer(close_parquet(file))
 
   # Row group 1 of the fixture holds keys 0..999 and matching labels.
   present <- c(0, 1, 500, 999)
@@ -417,8 +417,8 @@ test_that("a bloom filter never misses a value that is present", {
 test_that("a bloom filter rules out values that are absent", {
   # Individually a FALSE is not guaranteed, so this asserts on the bulk: a
   # filter that answered TRUE to everything would be useless and must fail here.
-  file <- parquet_open(test_path("parquet", "bloom_sorted.parquet"))
-  withr::defer(parquet_close(file))
+  file <- open_parquet(test_path("parquet", "bloom_sorted.parquet"))
+  withr::defer(close_parquet(file))
 
   absent <- seq(100000, 100999)
   ruled_out <- !bloom_filter_may_contain(file, "key", absent)
@@ -432,8 +432,8 @@ test_that("a bloom filter rules out values that are absent", {
 })
 
 test_that("bloom filter lookups validate their arguments", {
-  file <- parquet_open(test_path("parquet", "bloom_sorted.parquet"))
-  withr::defer(parquet_close(file))
+  file <- open_parquet(test_path("parquet", "bloom_sorted.parquet"))
+  withr::defer(close_parquet(file))
 
   expect_identical(bloom_filter_may_contain(file, "key", NA_real_), NA)
   expect_error(bloom_filter_may_contain(file, "nope", 1), "Unknown column")

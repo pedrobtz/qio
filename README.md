@@ -45,7 +45,7 @@ qio::write_parquet(
 Open a file for inspection and selective reading:
 
 ```r
-pf <- qio::parquet_open("mtcars.parquet")
+pf <- qio::open_parquet("mtcars.parquet")
 pf
 #> <qio_parquet_file>
 #> /path/to/mtcars.parquet
@@ -57,17 +57,17 @@ row_groups(pf)           # row counts and sizes
 column_statistics(pf)    # per-group bounds and null counts
 
 df <- collect(pf, columns = c("mpg", "cyl"))
-qio::parquet_close(pf)
+qio::close_parquet(pf)
 ```
 
 Read a large file in batches, without holding it all in memory:
 
 ```r
-pf <- qio::parquet_open("big.parquet")
+pf <- qio::open_parquet("big.parquet")
 qio::walk_batches(pf, function(batch, index) {
   # one data frame at a time
 }, batch_size = 100000)
-qio::parquet_close(pf)
+qio::close_parquet(pf)
 ```
 
 ## What qio supports

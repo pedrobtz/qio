@@ -23,7 +23,7 @@ Duplicate keys are preserved in their original order.
 \examples{
 path <- tempfile(fileext = ".parquet")
 write_parquet(mtcars, path)
-pf <- parquet_open(path)
+pf <- open_parquet(path)
 metadata(pf)
-parquet_close(pf)
+close_parquet(pf)
 }
