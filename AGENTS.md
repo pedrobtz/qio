@@ -54,7 +54,10 @@ corrupt memory without a linker error.
 
 Treat native changes as platform-sensitive. ARM64 uses NEON; typical x86 builds
 use scalar fallbacks. The workflows under `.github/workflows/` cover Linux,
-Windows, sanitizers, Valgrind, gctorture, and rchk.
+Windows, sanitizers, Valgrind, LTO, rchk, and gctorture. `gctorture` is its own
+workflow and runs only when `src/**` changes, because it costs about nine times
+the other native jobs combined; dispatch it by hand for a release or for a
+change that alters how C is called without changing C.
 
 ## Build and test
 

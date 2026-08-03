@@ -1,0 +1,42 @@
+on:
+  push:
+    branches: [main, master]
+    # gctorture exists to find PROTECT bugs, and a PROTECT bug is introduced by
+    # C code, not by R code or tests. Running it only when compiled sources
+    # change keeps it off the ~95% of commits it cannot say anything new about.
+    #
+    # `src/**` covers the vendored trees as well as package-owned glue, which is
+    # intended: re-vendoring changes what the glue calls into.
+    paths:
+      - "src/**"
+      - ".github/workflows/gctorture.yml"
+  workflow_dispatch:
+
+name: gctorture
+
+permissions: read-all
+
+# Two pushes in quick succession would otherwise run this to completion twice,
+# for the better part of two hours of runner time, to answer the same question.
+concurrency:
+  group: gctorture-${{ github.ref }}
+  cancel-in-progress: true
+
+# Split out of native-checks because of what it costs. Measured across three
+# green runs, gctorture took 41, 50, and 53 minutes while sanitizers, Valgrind,
+# LTO, and rchk each finished in two to six. Since the five ran in parallel in
+# one workflow, gctorture alone set the wall clock, and a red X on the workflow
+# meant waiting an hour to learn which job produced it.
+#
+# The cost also grows with the suite: about five seconds per added assertion,
+# against a `timeout-minutes: 60` in the reusable workflow. At 944 assertions
+# that leaves little headroom, and the job would fail *as a timeout* -- which
+# reads like an infrastructure flake rather than the real signal it is. Raising
+# that cap lives in pedrobtz/r-actions.
+#
+# Tests are deliberately not in the path filter. A test can reveal a PROTECT
+# bug but cannot introduce one, so new coverage over unchanged C is caught by
+# the release-time dispatch rather than by every push.
+jobs:
+  gctorture:
+    uses: pedrobtz/r-actions/.github/workflows/gctorture.yml@main

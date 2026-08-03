@@ -826,10 +826,20 @@ converter fixes that followed it**.
   caught the `URL` and `BugReports` added to `DESCRIPTION` in phase 7 never
   reaching `man/qio-package.Rd`.
 - [x] Require green macOS, Windows, and Linux `R-CMD-check` runs. Dispatch
-  `native-checks` against the release commit itself and require green
-  sanitizer, Valgrind, LTO, gctorture, and rchk jobs; it does not run on every
-  commit. All five green. The `vendor` workflow failed first and was right to:
-  four carquet patches had been made without regenerating the patch record.
+  **both** `native-checks` (sanitizers, Valgrind, LTO, rchk) **and** `gctorture`
+  against the release commit itself and require every job green; neither runs
+  on every commit. All five green. The `vendor` workflow failed first and was
+  right to: four carquet patches had been made without regenerating the patch
+  record.
+
+  The two were one workflow until 2026-08-03. gctorture took 41, 50, and 53
+  minutes across three green runs while the other four each finished in two to
+  six, so it alone set the wall clock and a red X meant waiting an hour to see
+  which job caused it. It now lives in `.github/workflows/gctorture.yml`,
+  triggered by changes under `src/**`, because a PROTECT bug is introduced by C
+  code rather than by R code or tests. **Release validation must dispatch it
+  explicitly**: a release whose last commits touched only R would otherwise
+  never run it.
 - [ ] Run win-builder and R-hub, including a sanitizer platform; resolve every
   actionable ERROR, WARNING, and NOTE.
 - [x] Inspect the source tarball for object files, build products, patch
