@@ -57,11 +57,19 @@ buffered I/O.
   documentation instead. **After 0.1.0 ships**, add a short `NEWS.md` item for
   every user-visible change.
 
-Do not edit vendored trees as ordinary package code. Follow
-[`.agents/VENDORED.md`](.agents/VENDORED.md) to re-vendor or reapply local
-patches. `src/Makevars*` declares vendored headers as prerequisites, so a
-header change rebuilds every object on its own; `tools/check-header-deps.sh`
-proves it. A manual clean is a valid reset but is no longer required.
+**Never edit `src/carquet` in place.** qio vendors it from the `qio` branch of
+[the carquet fork](https://github.com/pedrobtz/carquet), where every local
+change is its own commit on top of a pinned upstream commit. Make the change
+there, push it, re-copy, and update the fork pin in
+[`.agents/VENDORED.md`](.agents/VENDORED.md), which also documents re-vendoring
+and how a patch becomes an upstream pull request. `tools/check-vendor-drift.sh`
+fails CI on a vendored file edited in place, and on a ledger that disagrees with
+the series. The same rule applies to `src/zstd` and `src/lz4`: re-vendor rather
+than patch.
+
+`src/Makevars*` declares vendored headers as prerequisites, so a header change
+rebuilds every object on its own; `tools/check-header-deps.sh` proves it. A
+manual clean is a valid reset but is no longer required.
 
 Two things about `load_all()` worth knowing before trusting a build:
 

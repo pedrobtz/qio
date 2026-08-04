@@ -1,8 +1,9 @@
-# Guards the vendored foundation: src/carquet must be exactly the pinned
-# upstream commit plus .agents/carquet-changes.patch, and a change to a shared
-# vendored header must rebuild every object.
+# Guards the vendored foundation: src/carquet must be exactly the pinned commit
+# of the carquet fork's qio branch, that branch must be the pinned upstream
+# commit plus one commit per ledger entry, and a change to a shared vendored
+# header must rebuild every object.
 #
-# See .agents/VENDORED.md for the pin and the patch ledger, and
+# See .agents/VENDORED.md for both pins and the patch ledger, and
 # .agents/plan.md phase 1 for why these are release gates.
 
 on:
@@ -23,10 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Reverse-applies the patch record to src/carquet and compares the
-      # result with pristine upstream at the pin. Fails if a vendored file was
-      # edited without updating the patch, or if the patch went stale.
-      - name: Check vendored tree against the pin
+      # Compares src/carquet with the fork at the fork pin, and checks that the
+      # fork's series sits on the upstream pin with one commit per ledger
+      # entry. Fails if a vendored file was edited in place rather than on the
+      # fork, or if the ledger and the series disagree.
+      - name: Check vendored tree against the pins
         run: ./tools/check-vendor-drift.sh
 
   header-deps:

@@ -281,13 +281,15 @@ block the release.
 
 ### Work
 
-- [x] Generate one authoritative `.agents/carquet-changes.patch` against the
-  pinned upstream commit. It applies to pristine upstream to reproduce
-  `src/carquet` exactly, and reverses to recover pristine upstream.
-- [x] Add a CI check that reverse-applies the patch to the vendored tree and
-  fails on drift. Verify that `.Rbuildignore` still excludes `.agents/` from the
+- [x] Carry every local carquet change as one commit on the `qio` branch of the
+  carquet fork, based on the pinned upstream commit, so the vendored tree is
+  reproducible from two commit ids and each patch is separately upstreamable.
+- [x] Add a CI check that compares the vendored tree with the fork at its pin,
+  asserts the series sits on the upstream pin, and asserts one commit per
+  ledger entry. Verify that `.Rbuildignore` still excludes `.agents/` from the
   R source package. `tools/check-vendor-drift.sh`, run by the `vendor`
-  workflow; verified to fail on injected drift.
+  workflow; verified to fail on an edited vendored file and on a ledger that
+  disagrees with the series.
 - [x] Add vendored-header dependencies to `src/Makevars` and
   `src/Makevars.win`; prove that touching a shared header rebuilds all affected
   objects. `tools/check-header-deps.sh`, verified to fail with the rule removed.

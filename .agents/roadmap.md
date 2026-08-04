@@ -93,8 +93,8 @@ deliberate, and is recorded here so it is not rediscovered as a defect:
   and truncates on any longjmp, missing argument-type validation at native
   entry points, and dead state. Ordered in
   [`plan.md`](plan.md#phase-p-native-glue-preflight).
-- [x] Track one authoritative `carquet-changes.patch`, exclude it from the
-  source package, and add a CI reverse-apply drift check.
+- [x] Track every local carquet change as a commit on the `qio` branch of the
+  carquet fork, and add a CI drift check that pins both the fork and upstream.
 - [x] Add vendored-header prerequisites to `src/Makevars*` so header changes
   cannot leave ABI-incompatible objects.
 - [ ] Upstream local carquet patches and re-vendor from a new pin. This is best

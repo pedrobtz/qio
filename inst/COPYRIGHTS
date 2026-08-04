@@ -7,8 +7,10 @@ carquet
              2024 carquet contributors (Snappy implementation)
   License: MIT
   License file: src/carquet/LICENSE
-  Modification: qio applies build-portability and error-handling fixes to the
-                vendored sources.
+  Modification: qio applies correctness, build-portability, and error-handling
+                fixes to the vendored sources. Each is a separate commit on the
+                'qio' branch of https://github.com/pedrobtz/carquet, a fork of
+                the upstream project.
 
 Snappy implementation included with carquet
   File: src/carquet/compression/snappy.c

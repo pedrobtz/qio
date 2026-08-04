@@ -166,7 +166,11 @@ license and shipped with its license file:
 
 `inst/COPYRIGHTS` lists every copyright holder, the files each covers, and the
 modifications qio makes; `DESCRIPTION` points at it through its `Copyright`
-field. Each is pinned to an exact upstream commit. qio carries local patches to
-carquet; most fix defects that silently corrupted or rejected valid data. The
-pins, the patches, and the reason for each are recorded in the repository's
+field. Each bundled library is pinned to an exact upstream commit.
+
+qio carries local patches to carquet; most fix defects that silently corrupted
+or rejected valid data. They live as individual commits on the `qio` branch of
+[a carquet fork](https://github.com/pedrobtz/carquet/compare/main...qio), which
+is what `src/carquet` is vendored from, so each one can be read on its own and
+offered upstream. The reason for each is recorded in the repository's
 `.agents/VENDORED.md`, which is not shipped in the source package.
