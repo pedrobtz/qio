@@ -106,7 +106,12 @@ encoding for `FLOAT` and `DOUBLE` whenever a codec is set, so it silently
 corrupted the default write path. Raw values now accumulate and
 `apply_byte_stream_split()` transposes the page once at finalize, byte-wise so
 it does not depend on buffer alignment. Verified against Apache Arrow at sizes
-that previously corrupted everything; covered by `test-qio.R`.
+that previously corrupted everything; covered by `test-qio.R`. **Incomplete
+against v0.7.0**, which extended the encoding to `INT32`, `INT64` and
+`FIXED_LEN_BYTE_ARRAY` with the same defect: this patch would double-transpose
+those three at the wrong width. Take the version on the
+`fix/byte-stream-split-per-page` branch instead, which derives the width from
+the physical type.
 
 ### Resume BOOLEAN bit packing across write batches (`0760cef`)
 
@@ -296,7 +301,9 @@ two `% 8` operations per byte. The undecoded bits now sit in a 64-bit
 accumulator refilled a byte at a time, so each value costs one mask and one
 shift. Worth 15-25% on the affected widths and nothing on width 8, which is the
 control. Verified bit-exact against the previous algorithm over 4,800,000
-unpacks by `tools/bitunpack-differential.c`.
+unpacks by `tools/bitunpack-differential.c`. **Superseded upstream in v0.7.0**,
+which rewrote the same kernel around a 64-bit word with shift/mask. Retire at
+the next re-vendor unless a benchmark shows the rolling accumulator still wins.
 
 ## Header dependencies
 
@@ -371,10 +378,46 @@ Two things to fix in the cherry-picked commit before pushing:
   upstream. Rewrite them to describe the code rather than its provenance. The
   `qio` branch keeps them verbatim, because the drift check requires it to match
   `src/carquet` exactly.
-- The RLE-boolean patch carries its own `preserve_dictionary` guard inside the
-  new case, which the dictionary-preservation refusal makes unreachable. Each is
-  correct standing alone against pristine upstream, so send them as-is and let
-  upstream collapse them if both land.
+- A cherry-pick onto current upstream is not automatically still correct. Two of
+  them needed real rework against v0.7.0; see the branch table.
+
+### Prepared branches
+
+Thirteen branches are cut, built, and pushed to the fork, each one commit on
+top of upstream `main` at `v0.7.0_2`, with the qio-specific comments scrubbed.
+Every one builds and passes upstream's own suite (39 tests). **No pull request
+has been opened.**
+
+| Branch | Notes |
+|---|---|
+| `fix/preserve-dictionary-overrun` | The heap overrun. Send this one first. |
+| `fix/byte-stream-split-per-page` | **Reworked**, see below. Adds 5 regression tests. |
+| `fix/boolean-bit-packing-across-batches` | **Reworked**: upstream moved the PLAIN path under an RLE branch. Adds a regression test. |
+| `fix/undeclared-dictionary-page` | Clean cherry-pick. |
+| `fix/empty-boolean-page` | Clean cherry-pick. |
+| `fix/mingw-printf-format` | Clean cherry-pick. |
+| `fix/mingw-sse42-guard` | Clean cherry-pick. |
+| `fix/serial-batch-read` | Clean cherry-pick. |
+| `fix/propagate-preload-failures` | **Reworked**: uses upstream's new `carquet_column_read_batch_ex()` error rather than changing the old wrapper's return contract. |
+| `harden/zero-decode-slack` | Defensive only; offer last, or not at all. |
+| `feat/column-preserve-dictionary` | API addition, not a fix. |
+| `perf/def-level-rescan` | Optimization; the quadratic rescan is still present upstream. |
+| `perf/rle-whole-groups` | Optimization. Needs a benchmark against v0.7.0's rewritten `rle.c` before it is worth offering. |
+
+Two findings from preparing them are worth carrying into the next re-vendor:
+
+- **BYTE_STREAM_SPLIT is broken upstream for five types, not two.** v0.7.0
+  extended the encoding to `INT32`, `INT64` and `FIXED_LEN_BYTE_ARRAY` and
+  reproduced the same per-call transposition defect on each. qio's patch, which
+  only covers `FLOAT` and `DOUBLE`, is therefore *incomplete* against v0.7.0:
+  applied as-is it double-transposes the three new types at the wrong element
+  width. The prepared branch derives the width from the physical type and moves
+  all five to finalize. When re-vendoring, take the branch's version, not the
+  ledger's.
+- **The RLE BOOLEAN branch upstream has the same shape of bug.** It appends a
+  fresh length-prefixed RLE block per `add_values` call, so a page written in
+  several calls holds several concatenated streams and the reader sees only the
+  first. Not investigated further and not part of any prepared branch.
 
 Report roughly in this order, worst first:
 
@@ -418,20 +461,20 @@ independently:
 | Per-thread zstd context on Windows | fixed by a different mechanism, `TlsAlloc` rather than `__declspec(thread)` |
 | Decode RLE as a BOOLEAN data encoding | fixed; `decode_phase3_values()` has the case |
 | Accept a legal DELTA_BINARY_PACKED block size | fixed; validated against the specification |
+| Unpack bit widths 9-32 with a 64-bit accumulator | superseded; `carquet_bitunpack8_general()` was rewritten to gather each value through a 64-bit word with shift/mask, and the `% 8` loop is gone. Whether qio's rolling accumulator still beats it is a benchmark question, not a correctness one |
 
 Do not report these. Retire each patch at the next re-vendor and confirm its
 test still passes against the upstream implementation, which is not always the
 same code qio wrote.
 
-The rest were still absent from `main` at that survey. The memory-unsafe one is
-worth reporting first: upstream's `decode_phase3_values()` has no
-`preserve_dictionary` guard at its entry.
+The rest were still absent from `main`, confirmed by preparing a branch for each
+and building it. The memory-unsafe one is the one to report first: upstream's
+`decode_phase3_values()` still has no `preserve_dictionary` guard at its entry
+while still sizing the value buffer for `uint32_t` indices at three call sites.
 
-The survey covered `snappy.c`, `zstd.c`, `batch_reader.c`, `file_reader.c`,
-`sse_ops.c`, `page_reader.c`, `delta.c`, `plain.c`, `carquet.h`, and
-`reader_internal.h` by inspection. `rle.c` and `bitpack.c` both changed
-substantially in v0.7.0 and were not resolved either way; settle them by rebase
-during the re-vendor rather than by grep.
+`rle.c` changed substantially in v0.7.0. `perf/rle-whole-groups` still applies
+cleanly and passes, but whether it is still an improvement over the rewritten
+decoder is unmeasured; settle it with a benchmark during the re-vendor.
 
 ## Re-vendoring
 
