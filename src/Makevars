@@ -1,0 +1,72 @@
+# Makevars for qio — builds the vendored carquet, zstd and lz4 sources.
+# Repository-only vendoring notes live in .agents/VENDORED.md.
+#
+# Requires GNU make (declared via SystemRequirements in DESCRIPTION) for the
+# wildcard/shell logic below.
+
+# --- Default target ----------------------------------------------------------
+# Makevars is read before R's own makefiles, so the first rule defined here
+# becomes make's default goal. This file defines a header-dependency rule
+# below, so `all` must be declared first or make would stop after building the
+# first object instead of linking the shared library. See Writing R Extensions,
+# "Using Makevars".
+all: $(SHLIB)
+
+# --- Sources -----------------------------------------------------------------
+# Package-level glue (R <-> C) lives directly in src/. The vendored libraries
+# live under src/<lib>/.
+PKG_SOURCES     = $(wildcard *.c)
+CARQUET_SOURCES = $(wildcard carquet/*/*.c) $(wildcard carquet/simd/*/*.c)
+ZSTD_SOURCES    = $(wildcard zstd/*/*.c)
+LZ4_SOURCES     = $(wildcard lz4/*.c)
+
+OBJECTS = $(PKG_SOURCES:.c=.o) $(CARQUET_SOURCES:.c=.o) \
+          $(ZSTD_SOURCES:.c=.o) $(LZ4_SOURCES:.c=.o)
+
+# --- Header dependencies -----------------------------------------------------
+# R's build rules do not track headers. carquet's reader_internal.h defines
+# structs shared by several translation units, so a header edit that changes a
+# struct layout would otherwise relink new objects against stale ones and
+# corrupt memory at runtime with no linker error.
+#
+# The dependency is deliberately coarse: every object depends on every vendored
+# and package header, so any header edit rebuilds everything. That is slower
+# than per-file dependency generation but needs no compiler-specific flags
+# (-MMD and friends are not portable across the compilers R is built with), and
+# correctness here outweighs incremental build speed.
+HEADERS = $(wildcard *.h) \
+          $(wildcard carquet/*.h) $(wildcard carquet/*/*.h) \
+          $(wildcard carquet/simd/*/*.h) \
+          $(wildcard zstd/*.h) $(wildcard zstd/*/*.h) \
+          $(wildcard lz4/*.h)
+
+$(OBJECTS): $(HEADERS)
+
+# --- Include paths -----------------------------------------------------------
+# carquet includes its public headers as <carquet/...> and internal headers as
+# "module/...", both rooted at src/carquet. zstd/lz4 expose <zstd.h>/<lz4.h>.
+PKG_CPPFLAGS = -Icarquet -Izstd -Izstd/common -Ilz4
+
+# --- zstd build configuration ------------------------------------------------
+# XXH_NAMESPACE keeps zstd's bundled xxHash from clashing with other xxHash
+# symbols; DISABLE_ASM uses the portable C decode path (we don't compile the
+# bundled .S); LEGACY_SUPPORT=0 drops pre-v0.8 format support. These are only
+# read by zstd sources, so applying them globally is inert elsewhere.
+PKG_CPPFLAGS += -DXXH_NAMESPACE=ZSTD_ -DZSTD_DISABLE_ASM=1 -DZSTD_LEGACY_SUPPORT=0
+
+# --- SIMD --------------------------------------------------------------------
+# Every carquet SIMD unit is guarded by both an architecture macro and a feature
+# macro (e.g. __ARM_NEON, __AVX2__), so unflagged files compile to empty objects.
+# NEON is baseline on arm64, so we enable it with no extra -m flag. x86 SIMD is
+# left scalar here; enabling it needs per-file -msse4.2/-mavx/-mavx2/-mavx512f
+# flags and is deferred.
+UNAME_M := $(shell uname -m)
+ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
+  PKG_CPPFLAGS += -DCARQUET_ARCH_ARM -DCARQUET_ENABLE_NEON
+endif
+
+# --- Linking -----------------------------------------------------------------
+# zstd and lz4 are compiled in. Only zlib (carquet's gzip codec) is external; it
+# is universally available (macOS SDK / Linux / Rtools) so no path probing.
+# -lm: bloom_filter.c log(); -lpthread: reader worker pool + zstd thread-local.
+PKG_LIBS = -lz -lpthread -lm

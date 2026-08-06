@@ -1,0 +1,134 @@
+# Publish benchmark numbers on every run: `benchmark` times qio against itself,
+# `compare-readers` times it against arrow and nanoparquet. Both write their
+# tables into the job summary and archive a CSV, so a trend is visible across
+# commits without opening a log.
+#
+# Neither gates on performance. GitHub runners are shared, so wall time moves
+# more between runs than most real regressions do, and a percentage threshold
+# would fail on noise often enough to be ignored. `benchmark` fails only on
+# `--max-seconds`, a ceiling high enough that only a hang or an
+# order-of-magnitude regression reaches it; `compare-readers` has no ceiling at
+# all, because its numbers move with arrow's and nanoparquet's releases as well
+# as with qio's.
+#
+# Gate a change on `bench/benchmark.R --compare` on a quiet machine instead;
+# see bench/README.md.
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      rows:
+        description: Rows per workload
+        default: "300000"
+      reps:
+        description: Timed repetitions per case
+        default: "5"
+
+name: benchmark
+
+permissions: read-all
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      # qio has no Imports, so this installs the build toolchain and nothing
+      # else. The benchmark itself uses only qio and base R.
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          needs: build
+
+      - name: Install qio
+        run: R CMD INSTALL --preclean .
+        shell: bash
+
+      - name: Run benchmark
+        run: |
+          Rscript bench/ci-benchmark.R \
+            --rows "${ROWS:-300000}" \
+            --reps "${REPS:-5}" \
+            --out bench-results.csv \
+            --max-seconds 60
+        shell: bash
+        env:
+          ROWS: ${{ inputs.rows }}
+          REPS: ${{ inputs.reps }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ github.sha }}
+          path: bench-results.csv
+          if-no-files-found: warn
+          # 1 is the minimum GitHub allows. The tables are in the job summary,
+          # which is kept with the run itself, so the CSV only has to survive
+          # long enough to download if someone wants to diff two runs.
+          retention-days: 1
+
+  # qio against arrow and nanoparquet, in its own job because it needs both of
+  # them installed and the qio-only benchmark above must not wait for that.
+  #
+  # It does not gate either. A comparison against other packages moves with
+  # their versions as well as with qio, so a threshold here would fail on
+  # someone else's release. The tables go to the job summary; read them as a
+  # trend, and rerun `bench/compare-readers.R` on a quiet machine before
+  # quoting a figure.
+  compare-readers:
+    runs-on: ubuntu-latest
+
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          needs: build
+          extra-packages: |
+            any::arrow
+            any::nanoparquet
+
+      - name: Install qio
+        run: R CMD INSTALL --preclean .
+        shell: bash
+
+      # Fewer rows than the local default: a shared runner is slower, and the
+      # script writes every workload with both writers before timing anything.
+      - name: Compare readers
+        run: |
+          Rscript bench/compare-readers.R \
+            --rows "${ROWS:-300000}" \
+            --reps "${REPS:-5}" \
+            --out compare-readers.csv
+        shell: bash
+        env:
+          ROWS: ${{ inputs.rows }}
+          REPS: ${{ inputs.reps }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compare-readers-${{ github.sha }}
+          path: compare-readers.csv
+          if-no-files-found: warn
+          retention-days: 1

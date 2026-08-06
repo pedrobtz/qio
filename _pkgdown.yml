@@ -1,0 +1,34 @@
+url: https://pedrobtz.github.io/qio/
+template:
+  bootstrap: 5
+
+reference:
+  - title: Read and write
+    contents:
+      - read_parquet
+      - write_parquet
+      - parquet_schema
+      - infer_parquet_schema
+      - parquet_type_mapping
+      - qio-types
+  - title: Lazy reading
+    contents:
+      - open_parquet
+      - close_parquet
+      - collect
+      - walk_batches
+  - title: Inspect files
+    contents:
+      - schema
+      - row_groups
+      - column_chunks
+      - column_statistics
+      - page_index
+      - bloom_filter_may_contain
+      - metadata
+      - read_plan
+      - validate_parquet
+  - title: Package
+    contents:
+      - qio-package
+      - qio-limitations

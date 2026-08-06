@@ -1,0 +1,27 @@
+# RStudio / R session
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# Compiled objects and shared libraries
+*.o
+*.so
+*.dll
+*.dylib
+*.a
+
+# R package build / check output
+*.tar.gz
+*.Rcheck/
+docs
+
+# GitHub Actions logs/artifacts (tools/check-actions.sh)
+.logs/
+
+# Scratch: downloaded fixtures and personal scripts. Ignored here rather than
+# by a .gitignore inside each directory, so the rule survives deleting them --
+# `.github/workflows/profile.yml` recreates `.cache/` and downloads tens of
+# megabytes into it.
+.cache/
+local-script/

@@ -1,0 +1,46 @@
+# Guards the vendored foundation: src/carquet must be exactly the pinned commit
+# of the carquet fork's qio branch, that branch must be the pinned upstream
+# commit plus one commit per ledger entry, and a change to a shared vendored
+# header must rebuild every object.
+#
+# See .agents/VENDORED.md for both pins and the patch ledger, and
+# .agents/plan.md phase 1 for why these are release gates.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+name: vendor
+
+permissions: read-all
+
+jobs:
+  patch-drift:
+    runs-on: ubuntu-latest
+    name: carquet patch drift
+    steps:
+      - uses: actions/checkout@v4
+
+      # Compares src/carquet with the fork at the fork pin, and checks that the
+      # fork's series sits on the upstream pin with one commit per ledger
+      # entry. Fails if a vendored file was edited in place rather than on the
+      # fork, or if the ledger and the series disagree.
+      - name: Check vendored tree against the pins
+        run: ./tools/check-vendor-drift.sh
+
+  header-deps:
+    runs-on: ubuntu-latest
+    name: vendored header dependencies
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      # Needs no package dependencies: the check only runs R CMD INSTALL.
+      - name: Check that a header change rebuilds every object
+        run: ./tools/check-header-deps.sh

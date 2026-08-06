@@ -1,0 +1,37 @@
+The qio package includes the following third-party source code. The complete
+license texts are retained with the corresponding sources.
+
+carquet
+  Files: src/carquet, except src/carquet/compression/snappy.c
+  Copyright: 2025 Johan HG Natter
+             2024 carquet contributors (Snappy implementation)
+  License: MIT
+  License file: src/carquet/LICENSE
+  Modification: qio applies correctness, build-portability, and error-handling
+                fixes to the vendored sources. Each is a separate commit on the
+                'qio' branch of https://github.com/pedrobtz/carquet, a fork of
+                the upstream project.
+
+Snappy implementation included with carquet
+  File: src/carquet/compression/snappy.c
+  Copyright: 2005 Google Inc.
+             2024 carquet contributors
+  License: BSD 3-clause
+  License notice: src/carquet/compression/snappy.c
+
+LZ4
+  Files: src/lz4
+  Copyright: 2011-2023 Yann Collet
+  License: BSD 2-clause
+  License file: src/lz4/LICENSE
+
+Zstandard
+  Files: src/zstd
+  Copyright: Meta Platforms, Inc. and affiliates
+             Yann Collet
+             2016 Tino Reichardt (threading implementation)
+  License: BSD 3-clause
+  License file: src/zstd/LICENSE
+  Modification: Compiler diagnostic pragmas were removed from zstd.h because
+                qio compiles the bundled sources as C and does not install the
+                header for C++ consumers.

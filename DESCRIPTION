@@ -1,0 +1,27 @@
+Package: qio
+Title: Read and Write 'Apache Parquet' Files
+Version: 0.1.0
+Authors@R: c(
+    person("Pedro", "Baltazar", email = "pedrobtz@gmail.com",
+           role = c("aut", "cre", "cph")),
+    person("Johan HG", "Natter", role = c("aut", "cph"),
+           comment = "carquet source code (MIT license)"))
+Description: Read and write 'Apache Parquet' files. Whole files are read with
+    a single call, and larger ones can be opened to inspect their schema and
+    read selected columns, row groups, or batches. Built on the bundled C
+    library 'carquet', with no required R package dependencies.
+URL: https://pedrobtz.github.io/qio/, https://github.com/pedrobtz/qio
+BugReports: https://github.com/pedrobtz/qio/issues
+License: MIT + file LICENSE
+Copyright: file inst/COPYRIGHTS
+Encoding: UTF-8
+SystemRequirements: GNU make, zlib
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 8.0.0
+Suggests:
+    bit64,
+    dplyr,
+    hms,
+    testthat (>= 3.0.0),
+    withr
+Config/testthat/edition: 3

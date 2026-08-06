@@ -1,0 +1,189 @@
+/**
+ * @file column_reader.c
+ * @brief Column reading implementation
+ */
+
+#include "core/allocator.h"
+#include <carquet/carquet.h>
+#include "reader_internal.h"
+#include "thrift/parquet_types.h"
+#include "encoding/plain.h"
+#include "encoding/rle.h"
+#include "core/endian.h"
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+/* Forward declaration */
+extern carquet_status_t carquet_read_next_page(
+    carquet_column_reader_t* reader,
+    void* values,
+    int64_t max_values,
+    int16_t* def_levels,
+    int16_t* rep_levels,
+    int64_t* values_read,
+    carquet_error_t* error);
+
+/* ============================================================================
+ * Batch Reading
+ * ============================================================================
+ */
+
+int64_t carquet_column_read_batch(
+    carquet_column_reader_t* reader,
+    void* values,
+    int64_t max_values,
+    int16_t* def_levels,
+    int16_t* rep_levels) {
+
+    /* max_values < 0 is invalid; max_values = 0 is a "peek" to trigger page loading */
+    if (max_values < 0) {
+        return -1;
+    }
+    if (max_values == 0) {
+        /* Load page if needed, but don't read any values */
+        if (reader->values_remaining > 0 && !reader->page_loaded) {
+            carquet_error_t error = CARQUET_ERROR_INIT;
+            carquet_status_t status = carquet_column_ensure_page_loaded(reader, &error);
+            if (status != CARQUET_OK) {
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+    if (reader->values_remaining <= 0) {
+        return 0;
+    }
+
+    carquet_error_t error = CARQUET_ERROR_INIT;
+    int64_t total_read = 0;
+    int64_t dense_values_read = 0;
+    size_t value_size = 0;
+    int16_t* scratch_def_levels = NULL;
+
+    /* Determine value size for pointer arithmetic. Preserved dictionary pages
+     * expose uint32_t indices instead of materialized physical values. */
+    if (reader->preserve_dictionary) {
+        value_size = sizeof(uint32_t);
+    } else switch (reader->type) {
+        case CARQUET_PHYSICAL_BOOLEAN:
+            value_size = 1;
+            break;
+        case CARQUET_PHYSICAL_INT32:
+        case CARQUET_PHYSICAL_FLOAT:
+            value_size = 4;
+            break;
+        case CARQUET_PHYSICAL_INT64:
+        case CARQUET_PHYSICAL_DOUBLE:
+            value_size = 8;
+            break;
+        case CARQUET_PHYSICAL_INT96:
+            value_size = 12;
+            break;
+        case CARQUET_PHYSICAL_FIXED_LEN_BYTE_ARRAY:
+            value_size = reader->type_length;
+            break;
+        case CARQUET_PHYSICAL_BYTE_ARRAY:
+            /* Variable length - handled differently */
+            value_size = sizeof(carquet_byte_array_t);
+            break;
+        default:
+            return -1;
+    }
+
+    if (reader->max_def_level > 0 && !def_levels) {
+        scratch_def_levels = carquet_mem_malloc((size_t)max_values * sizeof(*scratch_def_levels));
+        if (!scratch_def_levels) {
+            return -1;
+        }
+    }
+
+    /* Read pages until we have enough values or run out */
+    while (total_read < max_values && reader->values_remaining > 0) {
+        int64_t values_read = 0;
+        int64_t to_read = max_values - total_read;
+        bool nullable = reader->max_def_level > 0;
+
+        uint8_t* value_ptr = (uint8_t*)values +
+            (size_t)(nullable ? dense_values_read : total_read) * value_size;
+        int16_t* def_ptr = def_levels ? def_levels + total_read :
+            (scratch_def_levels ? scratch_def_levels + total_read : NULL);
+        int16_t* rep_ptr = rep_levels ? rep_levels + total_read : NULL;
+
+        carquet_status_t status = carquet_read_next_page(
+            reader, value_ptr, to_read, def_ptr, rep_ptr, &values_read, &error);
+
+        if (status != CARQUET_OK) {
+            if (total_read > 0) {
+                /* Return what we have so far */
+                break;
+            }
+            carquet_mem_free(scratch_def_levels);
+            return -1;
+        }
+
+        if (values_read == 0) {
+            break;
+        }
+
+        if (nullable && def_ptr) {
+            /* carquet_read_next_page already counted this batch's present values
+             * (reader->last_dense_read); reuse it rather than re-scanning def_ptr. */
+            dense_values_read += reader->last_dense_read;
+        } else {
+            dense_values_read += values_read;
+        }
+        total_read += values_read;
+    }
+
+    carquet_mem_free(scratch_def_levels);
+    return total_read;
+}
+
+/* ============================================================================
+ * Dictionary preservation on a standalone column reader
+ * ============================================================================
+ *
+ * The batch reader reaches these fields through its own config; a column
+ * reader obtained from carquet_reader_get_column() had no way to. Both
+ * functions only expose state the reader already maintains.
+ */
+
+carquet_status_t carquet_column_set_preserve_dictionary(
+    carquet_column_reader_t* reader,
+    bool preserve) {
+
+    if (!reader) {
+        return CARQUET_ERROR_INVALID_ARGUMENT;
+    }
+    /* decoded_value_size records the width the values buffer was allocated
+     * with, and carquet_column_ensure_page_loaded() reallocates when it no
+     * longer matches. Flipping this flag changes that width between
+     * sizeof(uint32_t) and the physical type's, so no buffer reset is needed
+     * here. */
+    reader->preserve_dictionary = preserve;
+    return CARQUET_OK;
+}
+
+bool carquet_column_get_dictionary(
+    const carquet_column_reader_t* reader,
+    const uint8_t** dictionary_data,
+    size_t* dictionary_size,
+    int32_t* dictionary_count,
+    const uint32_t** dictionary_offsets) {
+
+    if (!reader || !reader->has_dictionary || reader->dictionary_data == NULL) {
+        return false;
+    }
+    *dictionary_data = reader->dictionary_data;
+    *dictionary_size = reader->dictionary_size;
+    *dictionary_count = reader->dictionary_count;
+    /* NULL for fixed-width physical types, which need no offset table. */
+    *dictionary_offsets = reader->dictionary_offsets;
+    return true;
+}
+
+/* carquet_column_skip lives in page_reader.c: skipping is a page-state
+ * operation that advances whole pages by parsing only their headers (no
+ * decompression/decoding), so it belongs with the page-loading machinery. */

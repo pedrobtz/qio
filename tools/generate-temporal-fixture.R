@@ -1,0 +1,92 @@
+# Generates tests/testthat/parquet/temporal_types.parquet with Apache Arrow.
+# Run manually; arrow is not a qio dependency. Provenance: parquet/SOURCE.md.
+#
+# Boundary values for every integer width and every timestamp and time unit, so
+# the annotation contracts in .agents/TYPES.md are checked against bytes qio
+# cannot produce: its writer has no unsigned, narrow-integer, TIME, or non-UTC
+# timestamp support.
+
+cast <- function(values, type) arrow::Array$create(values)$cast(type)
+instant <- as.POSIXct(c("2020-01-01", "2020-07-01", NA), tz = "UTC")
+
+table <- arrow::arrow_table(
+  u8 = cast(c(0, 255, NA), arrow::uint8()),
+  u16 = cast(c(0, 65535, NA), arrow::uint16()),
+  u32 = cast(c(0, 4294967295, NA), arrow::uint32()),
+  i8 = cast(c(-128, 127, NA), arrow::int8()),
+  i16 = cast(c(-32768, 32767, NA), arrow::int16()),
+  i32 = cast(c(-2147483647, 2147483647, NA), arrow::int32()),
+  # An instant: tz changes only how it prints.
+  ts_utc_ms = cast(instant, arrow::timestamp("ms", "UTC")),
+  ts_utc_us = cast(instant, arrow::timestamp("us", "UTC")),
+  ts_utc_ns = cast(instant, arrow::timestamp("ns", "UTC")),
+  # A wall clock with no zone: its civil components are re-anchored in tz.
+  ts_local_ms = cast(instant, arrow::timestamp("ms")),
+  ts_local_us = cast(instant, arrow::timestamp("us")),
+  # Midnight, one second before midnight, and a null.
+  t_ms = cast(cast(c(0L, 86399999L, NA), arrow::int32()), arrow::time32("ms")),
+  t_us = cast(cast(c(0, 86399999999, NA), arrow::int64()), arrow::time64("us")),
+  t_ns = cast(
+    cast(c(0, 86399999999999, NA), arrow::int64()),
+    arrow::time64("ns")
+  )
+)
+
+out <- "tests/testthat/parquet/temporal_types.parquet"
+arrow::write_parquet(table, out, compression = "snappy", version = "2.6")
+cat("arrow:", as.character(utils::packageVersion("arrow")), "\n")
+cat("bytes:", file.info(out)$size, "\n")
+
+# --- Independent expected values -------------------------------------------
+#
+# Also write what qio should return, so the test compares against the data
+# rather than against a literal someone typed while looking at the reader's
+# output. Two rules make this worth having, and breaking either makes it
+# worthless:
+#
+#   1. Every value below is derived from the values written above, applying the
+#      contracts in .agents/TYPES.md by hand in base R. qio is never loaded
+#      here. A reference produced by reading the file with qio would pin
+#      current behaviour, bugs included.
+#   2. RDS rather than CSV. CSV cannot carry an INT64 past 2^53, sub-second
+#      timestamp precision, a raw byte column, or NA distinguished from the
+#      string "NA" -- which is exactly the set of things these fixtures exist
+#      to pin. A local TIMESTAMP silently losing its time of day is a bug that
+#      shipped in qio and that a CSV oracle could not have caught.
+#
+# Regenerate with this script if R's serialization format changes; do not edit
+# the .rds by hand.
+
+seconds <- as.numeric(instant)
+
+expected <- data.frame(
+  # Unsigned narrow widths fit R's signed integer.
+  u8 = c(0L, 255L, NA_integer_),
+  u16 = c(0L, 65535L, NA_integer_),
+  # Unsigned 32-bit does not: it widens to double so the top half stays
+  # positive, rather than wrapping to -1.
+  u32 = c(0, 4294967295, NA_real_),
+  i8 = c(-128L, 127L, NA_integer_),
+  i16 = c(-32768L, 32767L, NA_integer_),
+  i32 = c(-2147483647L, 2147483647L, NA_integer_),
+  # A UTC-adjusted TIMESTAMP is an instant, so every unit gives the same one.
+  ts_utc_ms = .POSIXct(seconds, tz = "UTC"),
+  ts_utc_us = .POSIXct(seconds, tz = "UTC"),
+  ts_utc_ns = .POSIXct(seconds, tz = "UTC"),
+  # A non-UTC TIMESTAMP is a wall clock. Its civil components are re-anchored
+  # in `tz`, which defaults to UTC; these were written from UTC instants, so
+  # re-anchoring returns them unchanged.
+  ts_local_ms = .POSIXct(seconds, tz = "UTC"),
+  ts_local_us = .POSIXct(seconds, tz = "UTC"),
+  # TIME is a count since midnight, not an instant, so it stays a double of
+  # seconds. Written as midnight, one unit before midnight, and a null.
+  t_ms = c(0, 86399999 / 1e3, NA_real_),
+  t_us = c(0, 86399999999 / 1e6, NA_real_),
+  t_ns = c(0, 86399999999999 / 1e9, NA_real_),
+  stringsAsFactors = FALSE
+)
+
+reference <- "tests/testthat/parquet/temporal_types-expected.rds"
+saveRDS(expected, reference, version = 2L)
+cat("wrote:", reference, "\n")
+cat("columns:", ncol(expected), " rows:", nrow(expected), "\n")

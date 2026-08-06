@@ -1,0 +1,35 @@
+# Makevars.win for qio (Windows / Rtools) — builds vendored carquet, zstd, lz4.
+# Repository-only vendoring notes live in .agents/VENDORED.md.
+#
+# zstd and lz4 are compiled from bundled source; only zlib is external and is
+# supplied by Rtools. carquet's worker_pool.c uses Win32 threads (no pthread).
+#
+# R CMD check covers windows-latest in .github/workflows/R-CMD-check.yaml.
+# Threaded mmap reads are not yet exercised there; see .agents/plan.md phase 1.
+
+# Makevars is read before R's own makefiles, so the header-dependency rule
+# below would otherwise become the default goal; see src/Makevars.
+all: $(SHLIB)
+
+PKG_SOURCES     = $(wildcard *.c)
+CARQUET_SOURCES = $(wildcard carquet/*/*.c) $(wildcard carquet/simd/*/*.c)
+ZSTD_SOURCES    = $(wildcard zstd/*/*.c)
+LZ4_SOURCES     = $(wildcard lz4/*.c)
+
+OBJECTS = $(PKG_SOURCES:.c=.o) $(CARQUET_SOURCES:.c=.o) \
+          $(ZSTD_SOURCES:.c=.o) $(LZ4_SOURCES:.c=.o)
+
+# Header dependencies; see src/Makevars for why this is deliberately coarse.
+HEADERS = $(wildcard *.h) \
+          $(wildcard carquet/*.h) $(wildcard carquet/*/*.h) \
+          $(wildcard carquet/simd/*/*.h) \
+          $(wildcard zstd/*.h) $(wildcard zstd/*/*.h) \
+          $(wildcard lz4/*.h)
+
+$(OBJECTS): $(HEADERS)
+
+PKG_CPPFLAGS = -Icarquet -Izstd -Izstd/common -Ilz4 \
+               -DXXH_NAMESPACE=ZSTD_ -DZSTD_DISABLE_ASM=1 -DZSTD_LEGACY_SUPPORT=0
+
+# x86 SIMD left disabled (scalar fallback); see src/Makevars for rationale.
+PKG_LIBS = -lz -lm
