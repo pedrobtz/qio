@@ -535,15 +535,28 @@ to be obsolete.
 4. Copy the source subsets listed under [Included source](#included-source) into
    `src/carquet/`, and update the license files.
 
-5. Reconcile this ledger with the rebased series: one `###` entry per commit, in
+5. Run carquet's own test suite against the rebased series, from the fork:
+
+   ```sh
+   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCARQUET_BUILD_TESTS=ON
+   cmake --build build -j8 && ctest --test-dir build -j8
+   ```
+
+   This is not optional and qio's suite is not a substitute for it. A patch can
+   break a carquet code path that no qio call reaches — `482e2cc` is exactly
+   that — and every R-level test plus `R CMD check` will stay green while it
+   does. The fork's CI runs this on every push; a red `qio` branch blocks
+   re-vendoring.
+
+6. Reconcile this ledger with the rebased series: one `###` entry per commit, in
    the same order. `tools/check-vendor-drift.sh` fails if the counts disagree.
 
-6. Clean all native objects, because vendored headers may have changed.
+7. Clean all native objects, because vendored headers may have changed.
 
-7. Build, run the focused native and interoperability tests, then the complete
+8. Build, run the focused native and interoperability tests, then the complete
    test suite and `R CMD check`.
 
-8. Confirm `tools/check-vendor-drift.sh` passes against the new pins.
+9. Confirm `tools/check-vendor-drift.sh` passes against the new pins.
 
-9. Dispatch the `native-checks` and `gctorture` workflows: a re-vendor changes
+10. Dispatch the `native-checks` and `gctorture` workflows: a re-vendor changes
    C that no R-level test exercises directly.
