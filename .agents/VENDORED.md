@@ -7,7 +7,7 @@ then re-vendor from it.
 | Library | Version | Commit | Retrieved | License |
 |---|---|---|---|---|
 | [carquet](https://github.com/Vitruves/carquet) | v0.6.0 | `06efab6dce5475a7faa86f0938d42e9078b6d440` | 2026-06-29 | MIT (`src/carquet/LICENSE`) |
-| [carquet fork](https://github.com/pedrobtz/carquet) | `qio` branch | `67abf61794140fbc658fdb6dae9ee1675c60e18d` | 2026-08-04 | MIT (`src/carquet/LICENSE`) |
+| [carquet fork](https://github.com/pedrobtz/carquet) | `qio` branch | `482e2cc5bab4a18e74bf2fde6a73be515d2b532b` | 2026-08-06 | MIT (`src/carquet/LICENSE`) |
 | [zstd](https://github.com/facebook/zstd) | v1.5.7 | `f8745da6ff1ad1e7bab384bd1f9d742439278e99` | 2026-06-29 | BSD-3-Clause (`src/zstd/LICENSE`) |
 | [lz4](https://github.com/lz4/lz4) | v1.10.0 | `ebb370ca83af193212df4dcbadcc5d87bc0de2f0` | 2026-06-29 | BSD-2-Clause (`src/lz4/LICENSE`) |
 
@@ -106,12 +106,36 @@ encoding for `FLOAT` and `DOUBLE` whenever a codec is set, so it silently
 corrupted the default write path. Raw values now accumulate and
 `apply_byte_stream_split()` transposes the page once at finalize, byte-wise so
 it does not depend on buffer alignment. Verified against Apache Arrow at sizes
-that previously corrupted everything; covered by `test-qio.R`. **Incomplete
-against v0.7.0**, which extended the encoding to `INT32`, `INT64` and
-`FIXED_LEN_BYTE_ARRAY` with the same defect: this patch would double-transpose
-those three at the wrong width. Take the version on the
-`fix/byte-stream-split-per-page` branch instead, which derives the width from
-the physical type.
+that previously corrupted everything; covered by `test-qio.R`. Covers `FLOAT`
+and `DOUBLE` only; the next entry extends it to the other three types the
+encoding supports. Upstream would receive the two as a single pull request —
+`fix/byte-stream-split-per-page` is already combined.
+
+### Extend the BYTE_STREAM_SPLIT transposition to INT32/INT64/FLBA (`482e2cc`)
+
+`writer/page_writer.c`. **Silent data corruption, introduced by the previous
+entry.** That patch moved the transposition to finalize but only removed the
+incremental encoder paths for `FLOAT` and `DOUBLE`. carquet supports the
+encoding for `INT32`, `INT64` and `FIXED_LEN_BYTE_ARRAY` too, and those three
+kept splitting per call and appending — then `apply_byte_stream_split()`, which
+runs for any column whose encoding is BYTE_STREAM_SPLIT, transposed them a
+second time at a width taken from a `FLOAT`-or-`DOUBLE` ternary rather than from
+the column's own type.
+
+**Not reachable from qio**, which is why it survived: carquet's default encoding
+selector chooses BYTE_STREAM_SPLIT only for `FLOAT` and `DOUBLE`, and qio's sole
+`carquet_writer_set_column_encoding()` call is `RLE_DICTIONARY` on `BYTE_ARRAY`
+columns. The three types get the encoding only from a caller that asks for it
+explicitly. Fixed anyway, because the vendored library should not be broken for
+such a caller, and because it would become reachable the moment qio exposed an
+encoding option.
+
+The width now comes from the physical type, using `type_length` for
+`FIXED_LEN_BYTE_ARRAY`. Found by carquet's own `bss_int32`, `bss_int64` and
+`bss_flba` roundtrip tests, which fail on the previous entry and pass here —
+qio's suite never exercised the path, and neither did anything in this
+repository. Running the vendored library's own test suite against the series is
+now part of re-vendoring for exactly this reason.
 
 ### Resume BOOLEAN bit packing across write batches (`0760cef`)
 
@@ -406,18 +430,23 @@ has been opened.**
 
 Two findings from preparing them are worth carrying into the next re-vendor:
 
-- **BYTE_STREAM_SPLIT is broken upstream for five types, not two.** v0.7.0
-  extended the encoding to `INT32`, `INT64` and `FIXED_LEN_BYTE_ARRAY` and
-  reproduced the same per-call transposition defect on each. qio's patch, which
-  only covers `FLOAT` and `DOUBLE`, is therefore *incomplete* against v0.7.0:
-  applied as-is it double-transposes the three new types at the wrong element
-  width. The prepared branch derives the width from the physical type and moves
-  all five to finalize. When re-vendoring, take the branch's version, not the
-  ledger's.
+- **BYTE_STREAM_SPLIT is broken for five types, not two** — upstream, and until
+  `482e2cc` here as well. v0.6.0 already supported the encoding for `INT32`,
+  `INT64` and `FIXED_LEN_BYTE_ARRAY`; v0.7.0 kept them and reproduced the same
+  per-call transposition defect on each. The prepared branch carries the
+  combined fix for all five.
 - **The RLE BOOLEAN branch upstream has the same shape of bug.** It appends a
   fresh length-prefixed RLE block per `add_values` call, so a page written in
   several calls holds several concatenated streams and the reader sees only the
   first. Not investigated further and not part of any prepared branch.
+
+The first of those was found by running carquet's own test suite, not qio's.
+The fork's CI runs it on every push, which is what surfaced it: the `qio` branch
+went red on `bss_int32`, `bss_int64` and `bss_flba` while every qio test and
+`R CMD check` stayed green, because nothing qio does reaches the encoding for
+those types. **Run the vendored library's suite against the series when
+re-vendoring** — `cmake -B build -DCARQUET_BUILD_TESTS=ON && ctest --test-dir
+build` — and treat the fork's CI as a gate, not decoration.
 
 Report roughly in this order, worst first:
 

@@ -1,0 +1,20 @@
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+name: coverage.yaml
+
+# The reusable workflow commits the rendered badge to .github/badges on push,
+# so it needs write access to contents; a called workflow cannot request more
+# than the caller grants. Pull requests still compute coverage and write the
+# job summary, but skip the commit.
+permissions:
+  contents: write
+
+jobs:
+  coverage:
+    uses: pedrobtz/r-actions/.github/workflows/coverage.yml@v1
+    permissions:
+      contents: write

@@ -1,6 +1,8 @@
 # qio
 
 <!-- badges: start -->
+[![R-CMD-check](https://github.com/pedrobtz/qio/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/pedrobtz/qio/actions/workflows/R-CMD-check.yaml)
+[![coverage](https://raw.githubusercontent.com/pedrobtz/qio/main/.github/badges/coverage.svg)](https://github.com/pedrobtz/qio/actions/workflows/coverage.yaml)
 <!-- badges: end -->
 
 qio reads and writes [Apache Parquet](https://parquet.apache.org/docs/) files
