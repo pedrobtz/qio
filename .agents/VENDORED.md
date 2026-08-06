@@ -399,12 +399,12 @@ branch, push it, re-copy, and update the fork pin in the table above.
 
 ## Upstream reporting
 
-Three issues were filed on 2026-08-06. No pull request has been opened.
+Three issues were filed on 2026-08-06; two carry a pull request.
 
 | Upstream | Ledger entry | State |
 |---|---|---|
-| [#24](https://github.com/Vitruves/carquet/issues/24) | Transpose BYTE_STREAM_SPLIT once per page, plus the INT32/INT64/FLBA extension — one defect as upstream sees it | open |
-| [#25](https://github.com/Vitruves/carquet/issues/25) | Resume BOOLEAN bit packing across write batches | open |
+| [#24](https://github.com/Vitruves/carquet/issues/24) → [PR #27](https://github.com/Vitruves/carquet/pull/27) | Transpose BYTE_STREAM_SPLIT once per page, plus the INT32/INT64/FLBA extension — one defect as upstream sees it | open |
+| [#25](https://github.com/Vitruves/carquet/issues/25) → [PR #28](https://github.com/Vitruves/carquet/pull/28) | Resume BOOLEAN bit packing across write batches | open |
 | [#26](https://github.com/Vitruves/carquet/issues/26) | Refuse dictionary preservation for non-dictionary encodings | **retracted, closed** |
 
 #26 was wrong: upstream guards `preserve_dictionary` at both sites that set it,
@@ -424,17 +424,30 @@ Two lessons that cost real time, worth keeping:
   without its invariant. When a patch relaxes something, check what was
   guarding it.
 
-Each open issue offers its prepared branch rather than assuming a pull request
-is wanted. carquet is issue-driven — 21 issues from about ten reporters against
-four pull requests in its whole history, both of those CI infrastructure from an
-outside contributor — so a report is the channel that moves, and the maintainer
-generally writes the fix. Do not open a pull request unasked; wait to be asked,
-then clear the `CONTRIBUTING.md` gate first (ASan and UBSan clean, at least 60s
-on every reachable fuzz target, byte-level assertions for wire-format encoders,
-new test files wired into both `CMakeLists.txt` and `xmake.lua`). The prepared
-branches are ASan- and UBSan-clean on the full suite but have not been fuzzed,
-and #24/#25 are wire-format changes whose tests are round-trips, which
-`CONTRIBUTING.md` explicitly calls insufficient.
+carquet is issue-driven — 21 issues from about ten reporters against four pull
+requests in its whole history before these, both of those CI infrastructure from
+an outside contributor — so a report is the channel that moves, and the
+maintainer generally writes the fix. Report first; offer the branch; open a pull
+request only for something confirmed against pristine upstream.
+
+PRs #27 and #28 were taken through the whole `CONTRIBUTING.md` gate before
+opening, and that is the bar for any future one:
+
+- `ctest` 39/39, Release and Debug.
+- ASan + UBSan with `-fno-sanitize-recover=all`, 39/39. LeakSanitizer does not
+  exist on macOS/arm64, so the "zero leaks" half is unproven there and both PRs
+  say so.
+- `python3 fuzz/run_fuzzer.py all --time 60` — all 12 targets, sanitizers on,
+  clean. Needs a real libFuzzer: Apple clang has none, so `brew install llvm`
+  is a prerequisite on macOS.
+- **Byte-level assertions on the emitted page payload.** The guide requires
+  these for any wire-format encoder and explicitly rejects round-trip-only
+  tests, because a self-consistently wrong encoder round-trips fine. Both PRs
+  pin the literal uncompressed payload against a buffer derived by hand from
+  the spec — the BSS planes, and `4D 0B` for the boolean bit stream, which is
+  `0D 5A` on unfixed upstream.
+- New test *files* would need wiring into both `CMakeLists.txt` and
+  `xmake.lua`; neither PR adds one.
 
 One entry is already covered by someone else's report:
 [#19](https://github.com/Vitruves/carquet/issues/19), closed, is what produced
