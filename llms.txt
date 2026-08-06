@@ -1,0 +1,266 @@
+# qio
+
+qio reads and writes [Apache Parquet](https://parquet.apache.org/docs/)
+files from R. Read a whole file with
+[`read_parquet()`](https://pedrobtz.github.io/qio/reference/read_parquet.md),
+or open a larger one with
+[`open_parquet()`](https://pedrobtz.github.io/qio/reference/open_parquet.md)
+to inspect its schema and read only the columns, row groups, or batches
+you need. It is built on the bundled C library
+[carquet](https://github.com/Vitruves/carquet) and has no required R
+package dependencies.
+
+## Installation
+
+qio is not on CRAN yet. Install the development version from GitHub:
+
+``` r
+
+pak::pak("pedrobtz/qio")
+```
+
+Building from source needs GNU make and a C compiler. Zstandard and LZ4
+are bundled; zlib comes from the system, or from Rtools on Windows.
+
+## Usage
+
+``` r
+
+library(qio)
+```
+
+[`write_parquet()`](https://pedrobtz.github.io/qio/reference/write_parquet.md)
+and
+[`read_parquet()`](https://pedrobtz.github.io/qio/reference/read_parquet.md)
+handle a whole file at a time.
+
+``` r
+
+write_parquet(mtcars, "mtcars.parquet")
+
+cars <- read_parquet("mtcars.parquet")
+```
+
+Read part of a file by naming columns or row groups. A column you do not
+select is never decompressed, which is the cheapest speed-up available
+on a wide file.
+
+``` r
+
+read_parquet("mtcars.parquet", columns = c("mpg", "cyl"))
+```
+
+[`open_parquet()`](https://pedrobtz.github.io/qio/reference/open_parquet.md)
+returns a handle. Inspecting one is cheap because it reads the footer,
+not the data, so you can look before deciding what to read.
+
+``` r
+
+# several row groups, so there is something to select
+write_parquet(mtcars, "mtcars.parquet", row_group_size = 16)
+
+pf <- open_parquet("mtcars.parquet")
+pf
+#> <qio_parquet_file>
+#> mtcars.parquet
+#> 32 rows x 11 columns; 2 row groups
+
+schema(pf)      # column paths, Parquet types, nullability
+row_groups(pf)  # rows and bytes per group
+read_plan(pf)   # the R type each column will become
+
+collect(pf, columns = c("mpg", "cyl"))
+collect(pf, row_groups = 1)
+
+close_parquet(pf)
+```
+
+Use
+[`walk_batches()`](https://pedrobtz.github.io/qio/reference/walk_batches.md)
+for a file that does not fit in memory. It calls your function once per
+batch and keeps only one batch alive at a time.
+
+``` r
+
+pf <- open_parquet("big.parquet")
+
+walk_batches(pf, batch_size = 100000, FUN = function(batch, index) {
+  # one data frame at a time
+})
+
+close_parquet(pf)
+```
+
+Handles hold an open file, so close them when you are done.
+[`read_parquet()`](https://pedrobtz.github.io/qio/reference/read_parquet.md)
+opens and closes one for you.
+
+## Type mapping
+
+Parquet describes storage with a *physical type* and meaning with an
+optional *logical type*. qio reads them like this by default:
+
+| Parquet                | Logical type             | R                  |
+|------------------------|--------------------------|--------------------|
+| `BOOLEAN`              |                          | `logical`          |
+| `INT32`                |                          | `integer`          |
+| `INT32`                | `DATE`                   | `Date`             |
+| `INT32`, `INT64`       | `TIME`                   | `double` (seconds) |
+| `INT64`                |                          | `double`           |
+| `INT64`                | `TIMESTAMP`              | `POSIXct` (UTC)    |
+| `INT96`                |                          | `POSIXct` (UTC)    |
+| `FLOAT`, `DOUBLE`      |                          | `double`           |
+| `BYTE_ARRAY`           | `STRING`, `ENUM`, `JSON` | `character`        |
+| `BYTE_ARRAY`           |                          | `list` of `raw`    |
+| `FIXED_LEN_BYTE_ARRAY` |                          | `list` of `raw`    |
+| `FIXED_LEN_BYTE_ARRAY` | `UUID`                   | `character`        |
+| `FIXED_LEN_BYTE_ARRAY` | `FLOAT16`                | `double`           |
+| any                    | `DECIMAL`                | `double`           |
+
+Bytes are text only when the file says so, which is why an unannotated
+`BYTE_ARRAY` stays raw. `INT64` is exact through 2^53 and `NA` beyond
+it; pass `int64 = "integer64"` for the full range. Nulls become `NA`.
+Nested and repeated columns are skipped for now.
+
+Writing infers the reverse, and
+[`parquet_schema()`](https://pedrobtz.github.io/qio/reference/parquet_schema.md)
+overrides it per column:
+
+| R                     | Parquet                                   |
+|-----------------------|-------------------------------------------|
+| `logical`             | `BOOLEAN`                                 |
+| `integer`             | `INT32`                                   |
+| `double`              | `DOUBLE`                                  |
+| `character`, `factor` | `BYTE_ARRAY` + `STRING`                   |
+| `Date`                | `INT32` + `DATE`                          |
+| `POSIXct`             | `INT64` + `TIMESTAMP` (UTC, microseconds) |
+
+``` r
+
+types <- parquet_schema(mpg = "FLOAT", cyl = "INT64")
+write_parquet(mtcars, "mtcars.parquet", schema = types)
+```
+
+[`read_plan()`](https://pedrobtz.github.io/qio/reference/read_plan.md)
+reports what any file will produce before you read it, and `?qio-types`
+documents every mapping, including where precision is lost.
+
+## Other functions
+
+[`write_parquet()`](https://pedrobtz.github.io/qio/reference/write_parquet.md)
+takes `compression`, `row_group_size`, `metadata`, `sorted_by`, and
+`append`. Beyond
+[`schema()`](https://pedrobtz.github.io/qio/reference/schema.md) and
+[`row_groups()`](https://pedrobtz.github.io/qio/reference/row_groups.md),
+a handle can report
+[`column_chunks()`](https://pedrobtz.github.io/qio/reference/column_chunks.md),
+[`column_statistics()`](https://pedrobtz.github.io/qio/reference/column_statistics.md),
+[`page_index()`](https://pedrobtz.github.io/qio/reference/page_index.md),
+[`metadata()`](https://pedrobtz.github.io/qio/reference/metadata.md),
+and
+[`bloom_filter_may_contain()`](https://pedrobtz.github.io/qio/reference/bloom_filter_may_contain.md).
+[`validate_parquet()`](https://pedrobtz.github.io/qio/reference/validate_parquet.md)
+checks that a file is structurally sound without reading it.
+
+See `?qio-limitations` for what qio deliberately does not do.
+
+## Performance
+
+The repository’s `bench/` directory holds a reproducible benchmark over
+fixed workloads. It is excluded from the source package, so run it from
+a checkout:
+
+``` sh
+Rscript bench/benchmark.R                    # run and print
+Rscript bench/benchmark.R --compare <tag>    # compare against a saved baseline
+```
+
+Figures recorded during development are in `bench/README.md`. They come
+from one machine and one build configuration, and exist to make
+regressions visible between commits – not to predict what any other
+machine will do. Measure on your own hardware before relying on a
+number.
+
+## Licensing
+
+qio is MIT licensed. It bundles third-party C sources, each under its
+own license and shipped with its license file:
+
+| Bundled             | License      | Location                           |
+|---------------------|--------------|------------------------------------|
+| carquet             | MIT          | `src/carquet/LICENSE`              |
+| Snappy (in carquet) | BSD-3-Clause | `src/carquet/compression/snappy.c` |
+| Zstandard           | BSD-3-Clause | `src/zstd/LICENSE`                 |
+| LZ4                 | BSD-2-Clause | `src/lz4/LICENSE`                  |
+
+`inst/COPYRIGHTS` lists every copyright holder, the files each covers,
+and the modifications qio makes; `DESCRIPTION` points at it through its
+`Copyright` field. Each bundled library is pinned to an exact upstream
+commit.
+
+qio carries local patches to carquet; most fix defects that silently
+corrupted or rejected valid data. They live as individual commits on the
+`qio` branch of [a carquet
+fork](https://github.com/pedrobtz/carquet/compare/main...qio), which is
+what `src/carquet` is vendored from, so each one can be read on its own
+and offered upstream. The reason for each is recorded in the
+repository’s `.agents/VENDORED.md`, which is not shipped in the source
+package.
+
+# Package index
+
+## Read and write
+
+- [`read_parquet()`](https://pedrobtz.github.io/qio/reference/read_parquet.md)
+  : Read a Parquet file
+- [`write_parquet()`](https://pedrobtz.github.io/qio/reference/write_parquet.md)
+  : Write a Parquet file
+- [`parquet_schema()`](https://pedrobtz.github.io/qio/reference/parquet_schema.md)
+  : Create a Parquet writer schema
+- [`infer_parquet_schema()`](https://pedrobtz.github.io/qio/reference/infer_parquet_schema.md)
+  : Infer the Parquet writer schema for an R object
+- [`parquet_type_mapping()`](https://pedrobtz.github.io/qio/reference/parquet_type_mapping.md)
+  : Show Parquet physical type mappings
+- [`qio-types`](https://pedrobtz.github.io/qio/reference/qio-types.md) :
+  Parquet type mapping
+
+## Lazy reading
+
+- [`open_parquet()`](https://pedrobtz.github.io/qio/reference/open_parquet.md)
+  : Open a Parquet file
+- [`close_parquet()`](https://pedrobtz.github.io/qio/reference/close_parquet.md)
+  : Close a Parquet file
+- [`collect()`](https://pedrobtz.github.io/qio/reference/collect.md) :
+  Collect data from a Parquet file
+- [`walk_batches()`](https://pedrobtz.github.io/qio/reference/walk_batches.md)
+  : Walk over batches from a Parquet file
+
+## Inspect files
+
+- [`schema()`](https://pedrobtz.github.io/qio/reference/schema.md) :
+  Inspect a Parquet schema
+- [`row_groups()`](https://pedrobtz.github.io/qio/reference/row_groups.md)
+  : Inspect Parquet row groups
+- [`column_chunks()`](https://pedrobtz.github.io/qio/reference/column_chunks.md)
+  : Inspect Parquet column chunks
+- [`column_statistics()`](https://pedrobtz.github.io/qio/reference/column_statistics.md)
+  : Inspect Parquet column statistics
+- [`page_index()`](https://pedrobtz.github.io/qio/reference/page_index.md)
+  : Inspect Parquet page indexes
+- [`bloom_filter_may_contain()`](https://pedrobtz.github.io/qio/reference/bloom_filter_may_contain.md)
+  : Test values against a Parquet bloom filter
+- [`metadata()`](https://pedrobtz.github.io/qio/reference/metadata.md) :
+  Inspect Parquet footer metadata
+- [`read_plan()`](https://pedrobtz.github.io/qio/reference/read_plan.md)
+  : Plan how a Parquet file is read into R
+- [`validate_parquet()`](https://pedrobtz.github.io/qio/reference/validate_parquet.md)
+  : Check that a file is structurally valid Parquet
+
+## Package
+
+- [`qio`](https://pedrobtz.github.io/qio/reference/qio-package.md)
+  [`qio-package`](https://pedrobtz.github.io/qio/reference/qio-package.md)
+  : qio: Read and Write 'Apache Parquet' Files
+- [`qio-limitations`](https://pedrobtz.github.io/qio/reference/qio-limitations.md)
+  : What qio does not do
+
