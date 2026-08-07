@@ -176,17 +176,38 @@ different mechanism (`TlsAlloc`/`TlsGetValue` rather than `__declspec(thread)`)
 
 ### Refuse dictionary preservation for non-dictionary encodings (`2276c5b`)
 
-`reader/page_reader.c`. **Memory-unsafe.** `decode_phase3_values()` writes
-materialized physical values, but its caller sizes the value buffer for
-`uint32_t` indices whenever `preserve_dictionary` is set. A
-`carquet_byte_array_t` is four times wider than a `uint32_t`, so a
+`reader/page_reader.c`. **Memory-unsafe in qio, and qio's own doing.**
+`decode_phase3_values()` writes materialized physical values, but its caller
+sizes the value buffer for `uint32_t` indices whenever `preserve_dictionary` is
+set. A `carquet_byte_array_t` is four times wider than a `uint32_t`, so a
 `DELTA_BYTE_ARRAY`, `DELTA_LENGTH_BYTE_ARRAY` or `BYTE_STREAM_SPLIT` page read
-in preserve mode overran the buffer and corrupted the heap. Upstream guards
-`PLAIN` and `RLE` at their own call sites but not these. None of the encodings
-that function handles is a dictionary encoding, so a single refusal at its entry
-is complete. Found as an intermittent SIGSEGV/SIGBUS in qio's suite and bisected
-to `parquet/delta_encodings.parquet`; `gctorture` was clean, which is what
+in preserve mode overran the buffer and corrupted the heap. Found as an
+intermittent SIGSEGV/SIGBUS in qio's suite and bisected to
+`parquet/delta_encodings.parquet`; `gctorture` was clean, which is what
 identified it as a buffer overrun rather than a protection fault.
+
+**Upstream is not affected, and this is not an upstream bug.** carquet sets
+`preserve_dictionary` in exactly two places, `batch_reader.c:828` and
+`batch_reader.c:1255`, and both gate it on
+`col_meta->has_dictionary_page_offset`; the only other assignment sets it to
+`false`, and there is no public setter. A chunk without a dictionary page
+therefore never enters preserve mode, and `decode_phase3_values()` is never
+reached with the flag set. Verified empirically: a `DELTA_BYTE_ARRAY` column
+read through a batch reader with `preserve_dictionaries = true` runs clean under
+ASan and UBSan on upstream `main`.
+
+The overrun exists in qio because the dictionary-preservation API added by
+[the next entry](#expose-dictionary-preservation-on-a-column-reader-4491443)
+reproduces the flag without reproducing the guard, and `qio_file.c` sets it
+before knowing whether the chunk has a dictionary — it discovers that from the
+zero-length read that follows. So this patch is load-bearing here and must not
+be dropped at a re-vendor, but it belongs to qio's own API surface, not to
+carquet's.
+
+Reported as [#26](https://github.com/Vitruves/carquet/issues/26) and **retracted
+and closed** on 2026-08-06 once the guard was found. Do not re-report it. If the
+column-level setter is ever offered upstream, the entry guard should go with it,
+because the setter is what removes the invariant.
 
 ### Find an undeclared dictionary page (`ebdb9c4`)
 
@@ -378,9 +399,65 @@ branch, push it, re-copy, and update the fork pin in the table above.
 
 ## Upstream reporting
 
-**Nothing here has been reported upstream yet.** No issue or pull request exists
-for any of these. When one is opened, record its number beside the ledger entry
-so a re-vendor can tell what upstream has already taken.
+Three issues were filed on 2026-08-06; two carry a pull request.
+
+| Upstream | Ledger entry | State |
+|---|---|---|
+| [#24](https://github.com/Vitruves/carquet/issues/24) → [PR #27](https://github.com/Vitruves/carquet/pull/27) | Transpose BYTE_STREAM_SPLIT once per page, plus the INT32/INT64/FLBA extension — one defect as upstream sees it | open |
+| [#25](https://github.com/Vitruves/carquet/issues/25) → [PR #28](https://github.com/Vitruves/carquet/pull/28) | Resume BOOLEAN bit packing across write batches | open |
+| [#26](https://github.com/Vitruves/carquet/issues/26) | Refuse dictionary preservation for non-dictionary encodings | **retracted, closed** |
+
+#26 was wrong: upstream guards `preserve_dictionary` at both sites that set it,
+so the overrun is qio's own, caused by qio's column-level setter removing that
+guard. It was retracted the same day, after the regression test written for the
+pull request failed to reproduce it on `main`. See the ledger entry. Do not
+re-report it.
+
+Two lessons that cost real time, worth keeping:
+
+- **Write the regression test against pristine upstream before reporting.** The
+  test is what tells you whether the bug is upstream's or yours. For #24 and
+  #25 it failed on `main` as expected; for #26 it passed, which is how the
+  mistake surfaced — after the report, not before.
+- **A vendored patch that adds API can create the bug it then fixes.** #26's
+  overrun exists only because a different qio patch reproduced upstream's flag
+  without its invariant. When a patch relaxes something, check what was
+  guarding it.
+
+carquet is issue-driven — 21 issues from about ten reporters against four pull
+requests in its whole history before these, both of those CI infrastructure from
+an outside contributor — so a report is the channel that moves, and the
+maintainer generally writes the fix. Report first; offer the branch; open a pull
+request only for something confirmed against pristine upstream.
+
+PRs #27 and #28 were taken through the whole `CONTRIBUTING.md` gate before
+opening, and that is the bar for any future one:
+
+- `ctest` 39/39, Release and Debug.
+- ASan + UBSan with `-fno-sanitize-recover=all`, 39/39. LeakSanitizer does not
+  exist on macOS/arm64, so the "zero leaks" half is unproven there and both PRs
+  say so.
+- `python3 fuzz/run_fuzzer.py all --time 60` — all 12 targets, sanitizers on,
+  clean. Needs a real libFuzzer: Apple clang has none, so `brew install llvm`
+  is a prerequisite on macOS.
+- **Byte-level assertions on the emitted page payload.** The guide requires
+  these for any wire-format encoder and explicitly rejects round-trip-only
+  tests, because a self-consistently wrong encoder round-trips fine. Both PRs
+  pin the literal uncompressed payload against a buffer derived by hand from
+  the spec — the BSS planes, and `4D 0B` for the boolean bit stream, which is
+  `0D 5A` on unfixed upstream.
+- New test *files* would need wiring into both `CMakeLists.txt` and
+  `xmake.lua`; neither PR adds one.
+
+One entry is already covered by someone else's report:
+[#19](https://github.com/Vitruves/carquet/issues/19), closed, is what produced
+the `carquet_column_read_batch_ex()` error parameter in v0.7.0. qio's
+propagate-preload-failures patch is a follow-up — the four discarded statuses it
+names are still discarded on `main` — so raise it as a comment there rather than
+as a new issue.
+
+Record the number beside any further entry reported, so a re-vendor can tell
+what upstream already knows about.
 
 A pull request is prepared from `main`, not from `qio`, so that it carries one
 fix and nothing else:
