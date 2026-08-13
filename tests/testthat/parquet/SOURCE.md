@@ -272,6 +272,14 @@ Bloom filters are probabilistic, so tests assert per-value only in the
 direction the structure guarantees -- no false negatives -- and assert on the
 bulk for the other direction.
 
+**A copy of this file ships as `inst/extdata/bloom_sorted.parquet`**, because
+`bloom_filter_may_contain()`, `page_index()`, and `column_statistics()` cannot
+have runnable examples against a file qio wrote -- qio's writer emits none of
+what they read. The two copies are byte-identical and must stay that way:
+regenerate with the command above and copy the result to both locations. The
+fixture stays here as well, rather than the tests reading the installed one,
+so interoperability fixtures keep a single documented home.
+
 ## Coverage fixtures from the phase 7 audit
 
 Phase 7 audited this corpus against what qio claims to support, across physical
