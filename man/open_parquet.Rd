@@ -7,7 +7,11 @@
 open_parquet(file, mmap = FALSE, verify_checksums = TRUE, threads = NULL)
 }
 \arguments{
-\item{file}{Path to a Parquet file.}
+\item{file}{Path to a Parquet file, or an \verb{http://}, \verb{https://},
+\verb{ftp://}, \verb{ftps://} or \verb{file://} URL. A URL is downloaded to the session
+temporary directory in full before any of it is read; the copy is removed
+by \code{\link[=close_parquet]{close_parquet()}}, so a handle opened from a URL must be closed to
+reclaim the space. See \link{qio-limitations}.}
 
 \item{mmap}{Use memory-mapped input. On Windows a path the active code page
 cannot represent is read with buffered input instead, because only the

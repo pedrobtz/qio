@@ -876,6 +876,23 @@ converter fixes that followed it**.
 
   Run win-builder and R-hub if and when qio is submitted to CRAN; they answer
   a question nobody is asking yet.
+
+  **Amended 2026-08-12, when qio was in fact prepared for CRAN.** The Windows
+  half of the audit held up: `{windows-latest, r: 'devel'}` covers what
+  win-builder would have, and R-hub's sanitizer platform still duplicates
+  `native-checks`. The audit was wrong about one thing, and it was not a
+  platform. R-hub's **`noSuggests`** configuration tested something no job
+  here did: every matrix row installs `bit64`, `hms`, `dplyr` and `withr`
+  through `needs: check`, so nothing exercised the package with `Suggests`
+  hidden -- which is exactly what the exit gate below claims.
+
+  Running `_R_CHECK_DEPENDS_ONLY_=true R CMD check --as-cran` by hand returned
+  **1 ERROR**: `test-parquet-file.R`'s verbose-output test read with
+  `int64 = "integer64"` and no `skip_if_not_installed("bit64")`. It was the
+  only unguarded site, and the suite is otherwise clean under that
+  configuration. The lesson is not "reinstate R-hub" -- it is that an audit of
+  what a service duplicates must enumerate what it *tests*, not what platforms
+  it runs on. The configuration is now a matrix row, so it runs on every push.
 - [x] Inspect the source tarball for object files, build products, patch
   records, and local artifacts; confirm that required vendored sources,
   licenses, generated documentation, and tests are present. `bench/`,
@@ -906,8 +923,17 @@ last code change rather than assuming an earlier pass still holds.
 ### Exit gate
 
 - [ ] Every earlier exit gate remains green on the release commit.
-- [ ] `Imports` remains empty; `bit64` and `hms` stay in `Suggests`, are reached
-  only through opt-in modes, and their tests skip cleanly when absent.
+- [ ] `Imports` contains no third-party package. **Amended 2026-08-12**: it was
+  "`Imports` remains empty" until URL reading landed, which needs
+  `utils::download.file()` and so needs `utils` declared. `utils` ships with
+  every R installation, so nothing about the user-facing promise changes --
+  installing qio still pulls in no packages, and `DESCRIPTION`'s "no required R
+  package dependencies" stays true. The gate is restated rather than dropped
+  because the thing worth protecting is that no *third-party* package becomes
+  required; an empty field was only ever a proxy for that.
+- [ ] `bit64` and `hms` stay in `Suggests`, are reached only through opt-in
+  modes, and their tests skip cleanly when absent. Proved by the
+  `_R_CHECK_DEPENDS_ONLY_` matrix row, not by inspection.
 - [ ] A clean user library can install qio from the source tarball and run the
   documented smoke examples without undeclared dependencies.
 - [ ] The tag, source archive, documentation site, and package metadata identify

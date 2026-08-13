@@ -3,7 +3,11 @@
 #' Opens a Parquet file for inexpensive metadata inspection and selective,
 #' batched reading. The returned handle is valid only in the current R session.
 #'
-#' @param file Path to a Parquet file.
+#' @param file Path to a Parquet file, or an `http://`, `https://`,
+#'   `ftp://`, `ftps://` or `file://` URL. A URL is downloaded to the session
+#'   temporary directory in full before any of it is read; the copy is removed
+#'   by [close_parquet()], so a handle opened from a URL must be closed to
+#'   reclaim the space. See [qio-limitations].
 #' @param mmap Use memory-mapped input. On Windows a path the active code page
 #'   cannot represent is read with buffered input instead, because only the
 #'   mapped path needs a name that page can express. The result is the same.
@@ -33,6 +37,14 @@ open_parquet <- function(
   threads = NULL
 ) {
   file <- qio_file_path(file)
+  # A downloaded copy belongs to the handle from here on: it must outlive
+  # open_parquet() and is removed by close_parquet(). If opening fails there is
+  # no handle to own it, so it is removed on the way out instead.
+  temporary <- if (isTRUE(attr(file, "qio_downloaded"))) as.character(file)
+  opened <- FALSE
+  on.exit(if (!opened && !is.null(temporary)) unlink(temporary), add = TRUE)
+  attributes(file) <- NULL
+
   mmap <- qio_flag(mmap, "mmap")
   verify_checksums <- qio_flag(verify_checksums, "verify_checksums")
   threads <- qio_threads(threads)
@@ -45,6 +57,10 @@ open_parquet <- function(
     threads
   )
   class(file) <- "qio_parquet_file"
+  if (!is.null(temporary)) {
+    attr(file, "qio_downloaded") <- temporary
+  }
+  opened <- TRUE
   file
 }
 
@@ -66,6 +82,12 @@ open_parquet <- function(
 #' close_parquet(pf)
 close_parquet <- function(x) {
   .Call(C_qio_parquet_close, x)
+  # Only a copy qio downloaded is removed, and unlink() on an already-removed
+  # file is a no-op, so closing twice stays harmless.
+  temporary <- attr(x, "qio_downloaded")
+  if (!is.null(temporary)) {
+    unlink(temporary)
+  }
   invisible(x)
 }
 
@@ -403,9 +425,82 @@ print.qio_parquet_file <- function(x, ...) {
   invisible(x)
 }
 
+# Schemes qio will fetch. Anything else -- including a bare "example.com/x" or
+# a Windows drive letter such as "C:/data.parquet" -- is a local path, which is
+# why this matches a scheme followed by "://" rather than looking for a colon.
+qio_url_schemes <- "^(https?|ftps?|file)://"
+
+qio_is_url <- function(x) {
+  grepl(qio_url_schemes, x, ignore.case = TRUE)
+}
+
+# Fetch a remote file into the session temp directory and return its path.
+#
+# The whole file is downloaded before any of it is read. That is not a
+# shortcut that a later version optimizes away column by column: carquet reads
+# from a path, a FILE* or a buffer, and exposes no way to supply read and seek
+# callbacks, so there is no seam through which HTTP range requests could reach
+# it. Reading only the footer and the selected column chunks needs a custom IO
+# interface added to carquet itself; see `.agents/roadmap.md`.
+qio_download <- function(url) {
+  destination <- tempfile(fileext = ".parquet")
+  complete <- FALSE
+  on.exit(if (!complete) unlink(destination), add = TRUE)
+
+  message(
+    "Downloading '",
+    url,
+    "'; qio reads Parquet from local files, so the whole file is fetched ",
+    "before any of it is read."
+  )
+
+  status <- tryCatch(
+    utils::download.file(url, destination, mode = "wb", quiet = TRUE),
+    error = function(e) {
+      stop(
+        "Could not download '",
+        url,
+        "': ",
+        conditionMessage(e),
+        call. = FALSE
+      )
+    }
+  )
+  if (!identical(as.integer(status), 0L)) {
+    stop(
+      "Could not download '",
+      url,
+      "': download.file() reported status ",
+      status,
+      ".",
+      call. = FALSE
+    )
+  }
+  if (!file.exists(destination)) {
+    stop(
+      "Could not download '",
+      url,
+      "': no file was written.",
+      call. = FALSE
+    )
+  }
+
+  complete <- TRUE
+  destination
+}
+
+# Resolve a user-supplied location to a readable local path. A URL is fetched
+# first and the result carries `qio_downloaded`, which tells the caller it owns
+# a temporary copy and must remove it. A local path is returned unchanged and
+# carries no attribute, so nothing qio did not create is ever unlinked.
 qio_file_path <- function(file) {
   if (!is.character(file) || length(file) != 1L || is.na(file)) {
-    stop("`file` must be a single file path.", call. = FALSE)
+    stop("`file` must be a single file path or URL.", call. = FALSE)
+  }
+  if (qio_is_url(file)) {
+    downloaded <- qio_download(file)
+    attr(downloaded, "qio_downloaded") <- TRUE
+    return(downloaded)
   }
   file <- path.expand(file)
   if (!file.exists(file)) {
@@ -892,6 +987,22 @@ page_index.qio_parquet_file <- function(x, ...) {
 #'   definitely absent, `TRUE` where it may be present.
 #' @seealso [column_chunks()]
 #' @export
+#' @examples
+#' # qio's writer emits no bloom filters, so this uses a bundled file written
+#' # by pyarrow. Its `key` column runs 0..3999 across four row groups.
+#' path <- system.file("extdata", "bloom_sorted.parquet", package = "qio")
+#' pf <- open_parquet(path)
+#'
+#' # Row group 1 holds keys 0..999. A present value may be present; absent
+#' # values are ruled out, and never wrongly, because there are no false
+#' # negatives.
+#' bloom_filter_may_contain(pf, "key", c(42, 123456))
+#'
+#' # Which chunks even have a filter to test.
+#' chunks <- column_chunks(pf)
+#' chunks[chunks$row_group == 1, c("path", "bloom_filter")]
+#'
+#' close_parquet(pf)
 bloom_filter_may_contain <- function(x, column, values, row_group = 1L, ...) {
   UseMethod("bloom_filter_may_contain")
 }

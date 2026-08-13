@@ -189,9 +189,11 @@ generated numbers alone; every defect that mattered was found by pointing
   the qio-side schema check that makes it safe; carquet's own check is not
   sufficient, and the evidence is recorded in
   [`plan.md`](plan.md#phase-6-expose-the-remaining-inspection-and-writer-controls).
-- [ ] Publish pkgdown. The URL is set to
-  `https://pedrobtz.github.io/qio/`, `check_pkgdown()` reports no problems, and
-  the site builds without warnings; only publishing it remains.
+- [x] Publish pkgdown. The URL is set to `https://pedrobtz.github.io/qio/`,
+  `check_pkgdown()` reports no problems, and the site builds without warnings.
+  Published and serving; the `pkgdown.yaml` workflow deploys it to `gh-pages`.
+  The site gained a `Getting started` article in 2026-08-12's release polish,
+  so the reference index is no longer its only content.
 - [x] Add an honest README feature matrix and reproducible benchmarks.
 - [x] Document vendored-code licensing. `inst/COPYRIGHTS` is authoritative --
   every holder, the files each covers, the license, and the modifications qio
@@ -268,6 +270,25 @@ For v0.1.0:
 - Parquet I/O is path-based. Any future raw-vector API must keep input bytes
   alive for the reader, return R-owned output, and document that it buffers a
   whole file rather than streaming.
+- **Reading a URL downloads the whole file first, and that is not a placeholder
+  for range requests.** Reads accept `http`, `https`, `ftp`, `ftps` and `file`
+  URLs by fetching to the session temp directory, so the input stays a local
+  path and the exclusion above holds. Selecting columns or row groups therefore
+  saves decoding but not transfer.
+
+  Partial reads over HTTP are blocked in carquet, not in qio.
+  `carquet_reader_open`, `carquet_reader_open_file` and
+  `carquet_reader_open_buffer` are the only three entry points, and
+  `carquet_reader_options_t` carries `use_mmap`, `verify_checksums`,
+  `buffer_size` and `num_threads` -- no IO hook. There is nowhere to supply
+  read and seek callbacks, so range requests cannot reach the reader. Two
+  routes were considered and rejected: an R connection is not a `FILE*`, has no
+  public conversion to one, is not seekable for `url()`, and is main-thread
+  only, which would forfeit the private-reader parallelism; and synthesizing a
+  `FILE*` with `fopencookie`/`funopen` has no Windows equivalent.
+
+  So v0.2.0's version of this is a custom IO interface added to carquet on the
+  fork and offered upstream, not an R-side change. Do not re-derive this.
 - There is no predicate language, exact filtering, or predicate pushdown.
   Explicit column and row-group selection remains supported. A future design
   must define construction, nulls, unsupported operations, and fallback when
