@@ -13,7 +13,7 @@ jobs:
   R-CMD-check:
     runs-on: ${{ matrix.config.os }}
 
-    name: ${{ matrix.config.os }} (${{ matrix.config.r }})
+    name: ${{ matrix.config.os }} (${{ matrix.config.r }})${{ matrix.config.depends-only && ' noSuggests' || '' }}
 
     strategy:
       fail-fast: false
@@ -31,6 +31,14 @@ jobs:
           - {os: ubuntu-latest,   r: 'devel', http-user-agent: 'release'}
           - {os: ubuntu-latest,   r: 'release'}
           - {os: ubuntu-latest,   r: 'oldrel-1'}
+          # Suggests hidden from the check, which is what CRAN's noSuggests
+          # flavor does. Every other row installs bit64, hms, dplyr and withr,
+          # so none of them can prove qio's claim of no required dependencies
+          # -- and the first run of this configuration found a real ERROR: an
+          # `int64 = "integer64"` read in a verbose-output test with no
+          # `skip_if_not_installed("bit64")`. The packages are still installed
+          # here; `_R_CHECK_DEPENDS_ONLY_` hides them at check time.
+          - {os: ubuntu-latest,   r: 'release', depends-only: 'true'}
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
@@ -55,6 +63,10 @@ jobs:
         with:
           upload-snapshots: true
           build_args: 'c("--no-manual","--compact-vignettes=gs+qpdf")'
+        env:
+          # Explicit 'false' rather than an empty value: R parses this as a
+          # logical and an empty string is not one.
+          _R_CHECK_DEPENDS_ONLY_: ${{ matrix.config.depends-only || 'false' }}
 
       # The action streams the whole check to the log and uploads the directory
       # only when it fails, so the outcome is not visible without opening one or
@@ -71,7 +83,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: check-logs-${{ matrix.config.os }}-${{ matrix.config.r }}
+          # The suffix keeps this distinct from the plain ubuntu release row;
+          # upload-artifact rejects two artifacts with one name in a run.
+          name: check-logs-${{ matrix.config.os }}-${{ matrix.config.r }}${{ matrix.config.depends-only && '-nosuggests' || '' }}
           path: |
             check/**/00check.log
             check/**/00install.out
@@ -84,6 +98,6 @@ jobs:
         run: Rscript tools/summarize-check.R check
         shell: bash
         env:
-          QIO_CHECK_LABEL: ${{ matrix.config.os }} (${{ matrix.config.r }})
+          QIO_CHECK_LABEL: ${{ matrix.config.os }} (${{ matrix.config.r }})${{ matrix.config.depends-only && ' noSuggests' || '' }}
           QIO_CHECK_ARTIFACT_URL: ${{ steps.check-logs.outputs.artifact-url }}
           QIO_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
