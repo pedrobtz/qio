@@ -50,7 +50,7 @@
 #' exceed `.Machine$integer.max` rows. `INT64` columns lose precision beyond
 #' 2^53 unless read as [bit64::integer64]. R's `integer` reserves
 #' `-2147483648` for `NA`, so a Parquet `INT32` holding that value reads as
-#' `NA` with a warning. See `vignette` topics and [collect()] for the details.
+#' `NA` with a warning. See [qio-types] and [collect()] for the details.
 #'
 #' @name qio-limitations
 #' @seealso [column_chunks()], [validate_parquet()], [collect()]

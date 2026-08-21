@@ -57,7 +57,7 @@ Some limits come from R rather than from Parquet. A single result cannot
 exceed \code{.Machine$integer.max} rows. \code{INT64} columns lose precision beyond
 2^53 unless read as \link[bit64:integer64]{bit64::integer64}. R's \code{integer} reserves
 \code{-2147483648} for \code{NA}, so a Parquet \code{INT32} holding that value reads as
-\code{NA} with a warning. See \code{vignette} topics and \code{\link[=collect]{collect()}} for the details.
+\code{NA} with a warning. See \link{qio-types} and \code{\link[=collect]{collect()}} for the details.
 }
 
 \seealso{

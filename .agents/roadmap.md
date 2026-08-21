@@ -193,7 +193,14 @@ generated numbers alone; every defect that mattered was found by pointing
   `check_pkgdown()` reports no problems, and the site builds without warnings.
   Published and serving; the `pkgdown.yaml` workflow deploys it to `gh-pages`.
   The site gained a `Getting started` article in 2026-08-12's release polish,
-  so the reference index is no longer its only content.
+  so the reference index is no longer its only content. It is an article and
+  not a vignette on purpose: it lives in `vignettes/articles/`, which
+  `.Rbuildignore` excludes, so it is built for the website and never shipped
+  in the tarball. `knitr` and `rmarkdown` moved out of `Suggests` into
+  `Config/Needs/website` to match, and `VignetteBuilder` is gone -- the
+  installed package has no vignettes to build. The cost is that `R CMD check`
+  no longer runs the article's code; the `pkgdown.yaml` workflow does, on
+  every pull request, which is what keeps it honest.
 - [x] Add an honest README feature matrix and reproducible benchmarks.
 - [x] Document vendored-code licensing. `inst/COPYRIGHTS` is authoritative --
   every holder, the files each covers, the license, and the modifications qio

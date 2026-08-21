@@ -1,10 +1,6 @@
 ---
 title: "Getting started with qio"
-output: rmarkdown::html_vignette
-vignette: >
-  %\VignetteIndexEntry{Getting started with qio}
-  %\VignetteEngine{knitr::rmarkdown}
-  %\VignetteEncoding{UTF-8}
+output: rmarkdown::html_document
 ---
 
 ```{r, include = FALSE}
@@ -37,7 +33,7 @@ Everything else does, subject to the type mapping in `?qio-types`.
 
 ## Looking before reading
 
-The rest of this vignette uses a bundled file written by pyarrow, so the
+The rest of this article uses a bundled file written by pyarrow, so the
 inspection functions have something real to report.
 
 ```{r}

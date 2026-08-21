@@ -24,9 +24,7 @@ Suggests:
     bit64,
     dplyr,
     hms,
-    knitr,
-    rmarkdown,
     testthat (>= 3.0.0),
     withr
-VignetteBuilder: knitr
 Config/testthat/edition: 3
+Config/Needs/website: knitr, rmarkdown
