@@ -25,7 +25,8 @@ write_parquet(
 
 - file:
 
-  Output path.
+  Output path. Must be local: qio reads from a URL but cannot write to
+  one.
 
 - compression:
 

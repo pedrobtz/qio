@@ -164,23 +164,6 @@ checks that a file is structurally sound without reading it.
 
 See `?qio-limitations` for what qio deliberately does not do.
 
-## Performance
-
-The repository’s `bench/` directory holds a reproducible benchmark over
-fixed workloads. It is excluded from the source package, so run it from
-a checkout:
-
-``` sh
-Rscript bench/benchmark.R                    # run and print
-Rscript bench/benchmark.R --compare <tag>    # compare against a saved baseline
-```
-
-Figures recorded during development are in `bench/README.md`. They come
-from one machine and one build configuration, and exist to make
-regressions visible between commits – not to predict what any other
-machine will do. Measure on your own hardware before relying on a
-number.
-
 ## Licensing
 
 qio is MIT licensed. It bundles third-party C sources, each under its

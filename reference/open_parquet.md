@@ -14,7 +14,13 @@ open_parquet(file, mmap = FALSE, verify_checksums = TRUE, threads = NULL)
 
 - file:
 
-  Path to a Parquet file.
+  Path to a Parquet file, or an `http://`, `https://`, `ftp://`,
+  `ftps://` or `file://` URL. A URL is downloaded to the session
+  temporary directory in full before any of it is read; the copy is
+  removed by
+  [`close_parquet()`](https://pedrobtz.github.io/qio/reference/close_parquet.md),
+  so a handle opened from a URL must be closed to reclaim the space. See
+  [qio-limitations](https://pedrobtz.github.io/qio/reference/qio-limitations.md).
 
 - mmap:
 

@@ -21,7 +21,11 @@ read_parquet(
 
 - file:
 
-  Path to a Parquet file.
+  Path to a Parquet file, or an `http://`, `https://`, `ftp://`,
+  `ftps://` or `file://` URL. A URL is downloaded to the session
+  temporary directory in full before any of it is read, and the copy is
+  removed when the read finishes; see
+  [qio-limitations](https://pedrobtz.github.io/qio/reference/qio-limitations.md).
 
 - ...:
 

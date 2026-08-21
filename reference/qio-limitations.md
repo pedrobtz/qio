@@ -59,6 +59,17 @@ an oversight.
 
   Read as their physical storage, without interpretation.
 
+- Partial reads over HTTP:
+
+  A URL is supported by downloading the whole file to the session
+  temporary directory first, so selecting columns or row groups saves
+  decoding but not transfer. Reading only the footer and the chosen
+  column chunks needs HTTP range requests, and carquet accepts input
+  only as a path, a `FILE*`, or a buffer – there is no way to supply
+  read and seek callbacks, so there is no seam for range requests to
+  reach it. That needs a custom IO interface in carquet itself and is
+  deferred to 0.2.0.
+
 ## Boundaries that are not carquet's
 
 Some limits come from R rather than from Parquet. A single result cannot
@@ -66,9 +77,10 @@ exceed `.Machine$integer.max` rows. `INT64` columns lose precision
 beyond 2^53 unless read as
 [bit64::integer64](https://bit64.r-lib.org/reference/bit64-package.html).
 R's `integer` reserves `-2147483648` for `NA`, so a Parquet `INT32`
-holding that value reads as `NA` with a warning. See `vignette` topics
-and [`collect()`](https://pedrobtz.github.io/qio/reference/collect.md)
-for the details.
+holding that value reads as `NA` with a warning. See
+[qio-types](https://pedrobtz.github.io/qio/reference/qio-types.md) and
+[`collect()`](https://pedrobtz.github.io/qio/reference/collect.md) for
+the details.
 
 ## See also
 

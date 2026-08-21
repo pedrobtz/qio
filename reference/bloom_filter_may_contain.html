@@ -19,7 +19,8 @@ there; TRUE means it may be, and only reading can settle it."></head><body>
     </button>
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
-      <ul class="navbar-nav me-auto"><li class="active nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
+      <ul class="navbar-nav me-auto"><li class="nav-item"><a class="nav-link" href="../articles/qio.html">Get started</a></li>
+<li class="active nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
  <input class="form-control" type="search" name="search-input" id="search-input" autocomplete="off" aria-label="Search site" placeholder="Search for" data-search-index="../search.json"></form></li>
@@ -97,6 +98,30 @@ than a <code>FALSE</code>, which would read as "definitely absent".</p>
     <div class="dont-index"><p><code><a href="column_chunks.html">column_chunks()</a></code></p></div>
     </div>
 
+    <div class="section level2">
+    <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="co"># qio's writer emits no bloom filters, so this uses a bundled file written</span></span></span>
+<span class="r-in"><span><span class="co"># by pyarrow. Its `key` column runs 0..3999 across four row groups.</span></span></span>
+<span class="r-in"><span><span class="va">path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/system.file.html" class="external-link">system.file</a></span><span class="op">(</span><span class="st">"extdata"</span>, <span class="st">"bloom_sorted.parquet"</span>, package <span class="op">=</span> <span class="st">"qio"</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="va">pf</span> <span class="op">&lt;-</span> <span class="fu"><a href="open_parquet.html">open_parquet</a></span><span class="op">(</span><span class="va">path</span><span class="op">)</span></span></span>
+<span class="r-in"><span></span></span>
+<span class="r-in"><span><span class="co"># Row group 1 holds keys 0..999. A present value may be present; absent</span></span></span>
+<span class="r-in"><span><span class="co"># values are ruled out, and never wrongly, because there are no false</span></span></span>
+<span class="r-in"><span><span class="co"># negatives.</span></span></span>
+<span class="r-in"><span><span class="fu">bloom_filter_may_contain</span><span class="op">(</span><span class="va">pf</span>, <span class="st">"key"</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">42</span>, <span class="fl">123456</span><span class="op">)</span><span class="op">)</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1]  TRUE FALSE</span>
+<span class="r-in"><span></span></span>
+<span class="r-in"><span><span class="co"># Which chunks even have a filter to test.</span></span></span>
+<span class="r-in"><span><span class="va">chunks</span> <span class="op">&lt;-</span> <span class="fu"><a href="column_chunks.html">column_chunks</a></span><span class="op">(</span><span class="va">pf</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="va">chunks</span><span class="op">[</span><span class="va">chunks</span><span class="op">$</span><span class="va">row_group</span> <span class="op">==</span> <span class="fl">1</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"path"</span>, <span class="st">"bloom_filter"</span><span class="op">)</span><span class="op">]</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>    path bloom_filter</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1   key         TRUE</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2 label         TRUE</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 3 score        FALSE</span>
+<span class="r-in"><span></span></span>
+<span class="r-in"><span><span class="fu"><a href="close_parquet.html">close_parquet</a></span><span class="op">(</span><span class="va">pf</span><span class="op">)</span></span></span>
+</code></pre></div>
+    </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>
 

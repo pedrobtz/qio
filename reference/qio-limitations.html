@@ -19,7 +19,8 @@ so an absent function reads as a decision rather than an oversight."></head><bod
     </button>
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
-      <ul class="navbar-nav me-auto"><li class="active nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
+      <ul class="navbar-nav me-auto"><li class="nav-item"><a class="nav-link" href="../articles/qio.html">Get started</a></li>
+<li class="active nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
  <input class="form-control" type="search" name="search-input" id="search-input" autocomplete="off" aria-label="Search site" placeholder="Search for" data-search-index="../search.json"></form></li>
@@ -92,6 +93,16 @@ deferred to 0.2.0 rather than guessed at now.</p></dd>
 <dd><p>Read as their physical storage, without
 interpretation.</p></dd>
 
+<dt>Partial reads over HTTP</dt>
+<dd><p>A URL is supported by downloading the whole
+file to the session temporary directory first, so selecting columns or
+row groups saves decoding but not transfer. Reading only the footer and
+the chosen column chunks needs HTTP range requests, and carquet accepts
+input only as a path, a <code>FILE*</code>, or a buffer – there is no way to
+supply read and seek callbacks, so there is no seam for range requests
+to reach it. That needs a custom IO interface in carquet itself and is
+deferred to 0.2.0.</p></dd>
+
 
 </dl></div>
     <div class="section level2">
@@ -103,7 +114,7 @@ interpretation.</p></dd>
 exceed <code>.Machine$integer.max</code> rows. <code>INT64</code> columns lose precision beyond
 2^53 unless read as <a href="https://bit64.r-lib.org/reference/bit64-package.html" class="external-link">bit64::integer64</a>. R's <code>integer</code> reserves
 <code>-2147483648</code> for <code>NA</code>, so a Parquet <code>INT32</code> holding that value reads as
-<code>NA</code> with a warning. See <code>vignette</code> topics and <code><a href="collect.html">collect()</a></code> for the details.</p>
+<code>NA</code> with a warning. See <a href="qio-types.html">qio-types</a> and <code><a href="collect.html">collect()</a></code> for the details.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>

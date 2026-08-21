@@ -15,7 +15,9 @@ validate_parquet(file)
 
 - file:
 
-  Path to a file.
+  Path to a file, or a URL as in
+  [`read_parquet()`](https://pedrobtz.github.io/qio/reference/read_parquet.md).
+  A downloaded copy is removed before this returns.
 
 ## Value
 

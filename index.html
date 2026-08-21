@@ -31,6 +31,7 @@
 
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
+<li class="nav-item"><a class="nav-link" href="articles/qio.html">Get started</a></li>
 <li class="nav-item"><a class="nav-link" href="reference/index.html">Reference</a></li>
 <li class="nav-item"><a class="nav-link" href="news/index.html">Changelog</a></li>
       </ul>
@@ -250,14 +251,6 @@
 </h2>
 <p><code><a href="reference/write_parquet.html">write_parquet()</a></code> takes <code>compression</code>, <code>row_group_size</code>, <code>metadata</code>, <code>sorted_by</code>, and <code>append</code>. Beyond <code><a href="reference/schema.html">schema()</a></code> and <code><a href="reference/row_groups.html">row_groups()</a></code>, a handle can report <code><a href="reference/column_chunks.html">column_chunks()</a></code>, <code><a href="reference/column_statistics.html">column_statistics()</a></code>, <code><a href="reference/page_index.html">page_index()</a></code>, <code><a href="reference/metadata.html">metadata()</a></code>, and <code><a href="reference/bloom_filter_may_contain.html">bloom_filter_may_contain()</a></code>. <code><a href="reference/validate_parquet.html">validate_parquet()</a></code> checks that a file is structurally sound without reading it.</p>
 <p>See <code>?qio-limitations</code> for what qio deliberately does not do.</p>
-</div>
-<div class="section level2">
-<h2 id="performance">Performance<a class="anchor" aria-label="anchor" href="#performance"></a>
-</h2>
-<p>The repository’s <code>bench/</code> directory holds a reproducible benchmark over fixed workloads. It is excluded from the source package, so run it from a checkout:</p>
-<div class="sourceCode" id="cb8"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a><span class="ex">Rscript</span> bench/benchmark.R                    <span class="co"># run and print</span></span>
-<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a><span class="ex">Rscript</span> bench/benchmark.R <span class="at">--compare</span> <span class="op">&lt;</span>tag<span class="op">&gt;</span>    <span class="co"># compare against a saved baseline</span></span></code></pre></div>
-<p>Figures recorded during development are in <code>bench/README.md</code>. They come from one machine and one build configuration, and exist to make regressions visible between commits – not to predict what any other machine will do. Measure on your own hardware before relying on a number.</p>
 </div>
 <div class="section level2">
 <h2 id="licensing">Licensing<a class="anchor" aria-label="anchor" href="#licensing"></a>
