@@ -107,6 +107,24 @@ test_that("validate_parquet() accepts a URL and cleans up after itself", {
   expect_identical(after, before)
 })
 
+test_that("validate_parquet() removes the copy only after closing the file", {
+  # The copy is removed by an on.exit() expression, and those run in the order
+  # they were added -- so a removal registered before the connection and the
+  # handle are opened runs while both are still open. Deleting an open file
+  # succeeds on Unix and fails on Windows, so the ordering has to be checked
+  # here rather than left to a Windows-only test failure.
+  path <- local_parquet_file()
+  open_at_removal <- NULL
+  local_mocked_bindings(
+    qio_remove_temp = function(path) {
+      open_at_removal <<- path %in% showConnections()[, "description"]
+      unlink(path)
+    }
+  )
+  expect_true(suppressMessages(validate_parquet(as_file_url(path))))
+  expect_false(open_at_removal)
+})
+
 test_that("validate_parquet() removes the copy even when the file is invalid", {
   path <- withr::local_tempfile(fileext = ".parquet")
   writeBin(charToRaw("not a parquet file at all"), path)

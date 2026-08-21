@@ -42,7 +42,10 @@ open_parquet <- function(
   # no handle to own it, so it is removed on the way out instead.
   temporary <- if (isTRUE(attr(file, "qio_downloaded"))) as.character(file)
   opened <- FALSE
-  on.exit(if (!opened && !is.null(temporary)) unlink(temporary), add = TRUE)
+  on.exit(
+    if (!opened && !is.null(temporary)) qio_remove_temp(temporary),
+    add = TRUE
+  )
   attributes(file) <- NULL
 
   mmap <- qio_flag(mmap, "mmap")
@@ -86,7 +89,7 @@ close_parquet <- function(x) {
   # file is a no-op, so closing twice stays harmless.
   temporary <- attr(x, "qio_downloaded")
   if (!is.null(temporary)) {
-    unlink(temporary)
+    qio_remove_temp(temporary)
   }
   invisible(x)
 }
@@ -445,7 +448,7 @@ qio_is_url <- function(x) {
 qio_download <- function(url) {
   destination <- tempfile(fileext = ".parquet")
   complete <- FALSE
-  on.exit(if (!complete) unlink(destination), add = TRUE)
+  on.exit(if (!complete) qio_remove_temp(destination), add = TRUE)
 
   message(
     "Downloading '",
@@ -487,6 +490,20 @@ qio_download <- function(url) {
 
   complete <- TRUE
   destination
+}
+
+# Remove a temporary copy qio downloaded.
+#
+# Windows refuses to delete a file that is still open, so every caller must
+# close its connections and handles on the copy *before* this runs. `on.exit()`
+# expressions run in the order they were added, which makes an unlink
+# registered early run first; a caller that opens the file later must do its
+# work in a separate frame so that frame's cleanup finishes first. Deleting an
+# open file succeeds everywhere else, so getting this wrong leaks a file on
+# Windows alone.
+qio_remove_temp <- function(path) {
+  unlink(path)
+  invisible(NULL)
 }
 
 # Resolve a user-supplied location to a readable local path. A URL is fetched

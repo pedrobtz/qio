@@ -441,11 +441,21 @@ validate_parquet <- function(file) {
   # qio_file_path() already rejects a non-path and a file that does not exist,
   # and downloads a URL. Nothing here outlives the call, so a downloaded copy
   # is removed on the way out however the checks below end.
+  #
+  # The checks run in their own frame so that the copy is removed only after
+  # the connection and the handle they open have been closed: on.exit()
+  # expressions run in the order they were added, so an unlink registered here
+  # would otherwise run first and leak the copy on Windows, which refuses to
+  # delete a file that is still open. as.character() drops the attribute, so
+  # the inner call sees a plain path and owns nothing.
   file <- qio_file_path(file)
   if (isTRUE(attr(file, "qio_downloaded"))) {
-    on.exit(unlink(file), add = TRUE)
+    on.exit(qio_remove_temp(as.character(file)), add = TRUE)
   }
+  qio_validate_file(as.character(file))
+}
 
+qio_validate_file <- function(file) {
   if (dir.exists(file)) {
     stop("`file` is a directory, not a Parquet file: ", file, call. = FALSE)
   }

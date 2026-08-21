@@ -276,6 +276,16 @@ For v0.1.0:
   path and the exclusion above holds. Selecting columns or row groups therefore
   saves decoding but not transfer.
 
+  The downloaded copy is owned by whoever resolved the URL and is removed
+  only after every connection and handle on it has been closed. That ordering
+  is not cosmetic: Windows refuses to delete an open file, while Unix deletes
+  it happily, so a removal registered too early leaks a temp file on Windows
+  alone and passes everywhere else. `on.exit()` runs its expressions in the
+  order they were added, so a function that opens the file after registering
+  the removal must do that work in a separate frame -- which is why
+  `validate_parquet()` is a wrapper around `qio_validate_file()`. All removals
+  go through `qio_remove_temp()`, which carries the rule.
+
   Partial reads over HTTP are blocked in carquet, not in qio.
   `carquet_reader_open`, `carquet_reader_open_file` and
   `carquet_reader_open_buffer` are the only three entry points, and
