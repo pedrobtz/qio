@@ -41,6 +41,23 @@ than a \code{FALSE}, which would read as "definitely absent".
 qio's own writer does not emit bloom filters; see \link{qio-limitations}. Use
 \code{\link[=column_chunks]{column_chunks()}} to find out whether a chunk has one.
 }
+\examples{
+# qio's writer emits no bloom filters, so this uses a bundled file written
+# by pyarrow. Its `key` column runs 0..3999 across four row groups.
+path <- system.file("extdata", "bloom_sorted.parquet", package = "qio")
+pf <- open_parquet(path)
+
+# Row group 1 holds keys 0..999. A present value may be present; absent
+# values are ruled out, and never wrongly, because there are no false
+# negatives.
+bloom_filter_may_contain(pf, "key", c(42, 123456))
+
+# Which chunks even have a filter to test.
+chunks <- column_chunks(pf)
+chunks[chunks$row_group == 1, c("path", "bloom_filter")]
+
+close_parquet(pf)
+}
 \seealso{
 \code{\link[=column_chunks]{column_chunks()}}
 }

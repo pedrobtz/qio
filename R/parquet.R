@@ -29,7 +29,10 @@
 #' Use [open_parquet()] with [collect()] for the rest: `batch_size`, `mmap`,
 #' `threads`, and `verify_checksums`.
 #'
-#' @param file Path to a Parquet file.
+#' @param file Path to a Parquet file, or an `http://`, `https://`,
+#'   `ftp://`, `ftps://` or `file://` URL. A URL is downloaded to the session
+#'   temporary directory in full before any of it is read, and the copy is
+#'   removed when the read finishes; see [qio-limitations].
 #' @param ... Must be empty. Every argument after it is name-only, matching
 #'   [collect()], [walk_batches()] and [read_plan()], which take the same
 #'   arguments the same way.
@@ -120,7 +123,8 @@ read_parquet <- function(
 #' Parquet defines no meaning for them.
 #'
 #' @param x A data frame (or a list of equal-length atomic vectors).
-#' @param file Output path.
+#' @param file Output path. Must be local: qio reads from a URL but cannot
+#'   write to one.
 #' @param compression Compression codec: one of `"snappy"` (default), `"zstd"`,
 #'   `"gzip"`, `"lz4"`, or `"uncompressed"`.
 #' @param schema An optional schema created by [parquet_schema()]. Named entries
@@ -169,6 +173,17 @@ write_parquet <- function(
   x <- qio_as_data_frame(x)
   if (!is.character(file) || length(file) != 1L || is.na(file)) {
     stop("`file` must be a single file path.", call. = FALSE)
+  }
+  # Reads accept a URL by downloading it first; writes have no equivalent,
+  # since there is nothing to upload to. Rejected here, before the schema is
+  # resolved or any file is created or truncated.
+  if (qio_is_url(file)) {
+    stop(
+      "`file` must be a local file path. qio can read a Parquet file from a ",
+      "URL but cannot write to one: ",
+      file,
+      call. = FALSE
+    )
   }
   compression <- match.arg(compression)
   file <- path.expand(file)
@@ -406,7 +421,8 @@ qio_sorted_by <- function(sorted_by, columns) {
 #' `open_parquet(verify_checksums = TRUE)` and [collect()]; that costs a full
 #' read, which is why it is not done here.
 #'
-#' @param file Path to a file.
+#' @param file Path to a file, or a URL as in [read_parquet()]. A downloaded
+#'   copy is removed before this returns.
 #'
 #' @return `TRUE`, invisibly. Raises an error describing the first problem
 #'   found otherwise.
@@ -422,9 +438,24 @@ qio_sorted_by <- function(sorted_by, columns) {
 #' writeLines("not parquet", plain)
 #' try(validate_parquet(plain))
 validate_parquet <- function(file) {
-  # qio_file_path() already rejects a non-path and a file that does not exist.
+  # qio_file_path() already rejects a non-path and a file that does not exist,
+  # and downloads a URL. Nothing here outlives the call, so a downloaded copy
+  # is removed on the way out however the checks below end.
+  #
+  # The checks run in their own frame so that the copy is removed only after
+  # the connection and the handle they open have been closed: on.exit()
+  # expressions run in the order they were added, so an unlink registered here
+  # would otherwise run first and leak the copy on Windows, which refuses to
+  # delete a file that is still open. as.character() drops the attribute, so
+  # the inner call sees a plain path and owns nothing.
   file <- qio_file_path(file)
+  if (isTRUE(attr(file, "qio_downloaded"))) {
+    on.exit(qio_remove_temp(as.character(file)), add = TRUE)
+  }
+  qio_validate_file(as.character(file))
+}
 
+qio_validate_file <- function(file) {
   if (dir.exists(file)) {
     stop("`file` is a directory, not a Parquet file: ", file, call. = FALSE)
   }

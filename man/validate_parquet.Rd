@@ -7,7 +7,8 @@
 validate_parquet(file)
 }
 \arguments{
-\item{file}{Path to a file.}
+\item{file}{Path to a file, or a URL as in \code{\link[=read_parquet]{read_parquet()}}. A downloaded
+copy is removed before this returns.}
 }
 \value{
 \code{TRUE}, invisibly. Raises an error describing the first problem

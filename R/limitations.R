@@ -34,6 +34,14 @@
 #'     deferred to 0.2.0 rather than guessed at now.}
 #'   \item{Geospatial and variant types}{Read as their physical storage, without
 #'     interpretation.}
+#'   \item{Partial reads over HTTP}{A URL is supported by downloading the whole
+#'     file to the session temporary directory first, so selecting columns or
+#'     row groups saves decoding but not transfer. Reading only the footer and
+#'     the chosen column chunks needs HTTP range requests, and carquet accepts
+#'     input only as a path, a `FILE*`, or a buffer -- there is no way to
+#'     supply read and seek callbacks, so there is no seam for range requests
+#'     to reach it. That needs a custom IO interface in carquet itself and is
+#'     deferred to 0.2.0.}
 #' }
 #'
 #' @section Boundaries that are not carquet's:
@@ -42,7 +50,7 @@
 #' exceed `.Machine$integer.max` rows. `INT64` columns lose precision beyond
 #' 2^53 unless read as [bit64::integer64]. R's `integer` reserves
 #' `-2147483648` for `NA`, so a Parquet `INT32` holding that value reads as
-#' `NA` with a warning. See `vignette` topics and [collect()] for the details.
+#' `NA` with a warning. See [qio-types] and [collect()] for the details.
 #'
 #' @name qio-limitations
 #' @seealso [column_chunks()], [validate_parquet()], [collect()]

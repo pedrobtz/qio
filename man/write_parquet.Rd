@@ -18,7 +18,8 @@ write_parquet(
 \arguments{
 \item{x}{A data frame (or a list of equal-length atomic vectors).}
 
-\item{file}{Output path.}
+\item{file}{Output path. Must be local: qio reads from a URL but cannot
+write to one.}
 
 \item{compression}{Compression codec: one of \code{"snappy"} (default), \code{"zstd"},
 \code{"gzip"}, \code{"lz4"}, or \code{"uncompressed"}.}

@@ -17,3 +17,6 @@
 ^bench$
 ^AGENTS\.md$
 ^CLAUDE\.md$
+^cran-comments\.md$
+^\.covrignore$
+^vignettes/articles$

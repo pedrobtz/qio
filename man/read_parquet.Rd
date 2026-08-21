@@ -16,7 +16,10 @@ read_parquet(
 )
 }
 \arguments{
-\item{file}{Path to a Parquet file.}
+\item{file}{Path to a Parquet file, or an \verb{http://}, \verb{https://},
+\verb{ftp://}, \verb{ftps://} or \verb{file://} URL. A URL is downloaded to the session
+temporary directory in full before any of it is read, and the copy is
+removed when the read finishes; see \link{qio-limitations}.}
 
 \item{...}{Must be empty. Every argument after it is name-only, matching
 \code{\link[=collect]{collect()}}, \code{\link[=walk_batches]{walk_batches()}} and \code{\link[=read_plan]{read_plan()}}, which take the same

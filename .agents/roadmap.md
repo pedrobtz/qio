@@ -189,9 +189,18 @@ generated numbers alone; every defect that mattered was found by pointing
   the qio-side schema check that makes it safe; carquet's own check is not
   sufficient, and the evidence is recorded in
   [`plan.md`](plan.md#phase-6-expose-the-remaining-inspection-and-writer-controls).
-- [ ] Publish pkgdown. The URL is set to
-  `https://pedrobtz.github.io/qio/`, `check_pkgdown()` reports no problems, and
-  the site builds without warnings; only publishing it remains.
+- [x] Publish pkgdown. The URL is set to `https://pedrobtz.github.io/qio/`,
+  `check_pkgdown()` reports no problems, and the site builds without warnings.
+  Published and serving; the `pkgdown.yaml` workflow deploys it to `gh-pages`.
+  The site gained a `Getting started` article in 2026-08-12's release polish,
+  so the reference index is no longer its only content. It is an article and
+  not a vignette on purpose: it lives in `vignettes/articles/`, which
+  `.Rbuildignore` excludes, so it is built for the website and never shipped
+  in the tarball. `knitr` and `rmarkdown` moved out of `Suggests` into
+  `Config/Needs/website` to match, and `VignetteBuilder` is gone -- the
+  installed package has no vignettes to build. The cost is that `R CMD check`
+  no longer runs the article's code; the `pkgdown.yaml` workflow does, on
+  every pull request, which is what keeps it honest.
 - [x] Add an honest README feature matrix and reproducible benchmarks.
 - [x] Document vendored-code licensing. `inst/COPYRIGHTS` is authoritative --
   every holder, the files each covers, the license, and the modifications qio
@@ -268,6 +277,35 @@ For v0.1.0:
 - Parquet I/O is path-based. Any future raw-vector API must keep input bytes
   alive for the reader, return R-owned output, and document that it buffers a
   whole file rather than streaming.
+- **Reading a URL downloads the whole file first, and that is not a placeholder
+  for range requests.** Reads accept `http`, `https`, `ftp`, `ftps` and `file`
+  URLs by fetching to the session temp directory, so the input stays a local
+  path and the exclusion above holds. Selecting columns or row groups therefore
+  saves decoding but not transfer.
+
+  The downloaded copy is owned by whoever resolved the URL and is removed
+  only after every connection and handle on it has been closed. That ordering
+  is not cosmetic: Windows refuses to delete an open file, while Unix deletes
+  it happily, so a removal registered too early leaks a temp file on Windows
+  alone and passes everywhere else. `on.exit()` runs its expressions in the
+  order they were added, so a function that opens the file after registering
+  the removal must do that work in a separate frame -- which is why
+  `validate_parquet()` is a wrapper around `qio_validate_file()`. All removals
+  go through `qio_remove_temp()`, which carries the rule.
+
+  Partial reads over HTTP are blocked in carquet, not in qio.
+  `carquet_reader_open`, `carquet_reader_open_file` and
+  `carquet_reader_open_buffer` are the only three entry points, and
+  `carquet_reader_options_t` carries `use_mmap`, `verify_checksums`,
+  `buffer_size` and `num_threads` -- no IO hook. There is nowhere to supply
+  read and seek callbacks, so range requests cannot reach the reader. Two
+  routes were considered and rejected: an R connection is not a `FILE*`, has no
+  public conversion to one, is not seekable for `url()`, and is main-thread
+  only, which would forfeit the private-reader parallelism; and synthesizing a
+  `FILE*` with `fopencookie`/`funopen` has no Windows equivalent.
+
+  So v0.2.0's version of this is a custom IO interface added to carquet on the
+  fork and offered upstream, not an R-side change. Do not re-derive this.
 - There is no predicate language, exact filtering, or predicate pushdown.
   Explicit column and row-group selection remains supported. A future design
   must define construction, nulls, unsupported operations, and fallback when

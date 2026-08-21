@@ -810,6 +810,8 @@ test_that("verbose reports the plan for the selected columns only", {
 })
 
 test_that("verbose reports the row groups and options the read will use", {
+  # The assertion names the bit64 converter, so the read itself needs bit64.
+  skip_if_not_installed("bit64")
   path <- fixture_path()
   text <- paste(
     capture.output(

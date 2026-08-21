@@ -1,0 +1,8 @@
+# Vendored third-party C. qio does not write or test these lines, and they
+# outnumber the package's own by roughly fifty to one, so counting them makes
+# the coverage figure a measure of how much carquet, zstd and LZ4 happen to be
+# exercised rather than of how well qio is tested. Package-owned C under
+# src/qio*.c is deliberately not excluded.
+src/carquet
+src/zstd
+src/lz4
