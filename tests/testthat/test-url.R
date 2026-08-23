@@ -1,8 +1,7 @@
 # Reading from a URL. Nearly everything here uses a `file://` URL, which
 # exercises the real download path -- detection, download.file(), the temporary
 # copy and its removal -- without touching the network, so these tests run
-# everywhere including on CRAN. Only the two tests that need a live server are
-# skipped.
+# everywhere including on CRAN. None of them needs a live server.
 
 local_parquet_file <- function(env = parent.frame()) {
   path <- withr::local_tempfile(fileext = ".parquet", .local_envir = env)

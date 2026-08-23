@@ -1465,18 +1465,10 @@ static void qio_lane_run(void *arg) {
     }
 }
 
-/* Resolve threads for parallel collect: explicit count, or core count when
- * the handle was opened with threads = 0 ("let carquet choose"). */
+/* R resolves the public default before opening the handle. Keep zero as a
+ * defensive spelling of that default for callers of the native entry point. */
 static int32_t qio_collect_threads(int32_t requested) {
-    if (requested > 0) return requested;
-#ifdef _WIN32
-    SYSTEM_INFO info;
-    GetSystemInfo(&info);
-    return (int32_t)info.dwNumberOfProcessors;
-#else
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    return n > 0 ? (int32_t)n : 4;
-#endif
+    return requested > 0 ? requested : 2;
 }
 
 static bool qio_row_group_filter(const carquet_reader_t *reader,
@@ -2383,6 +2375,7 @@ SEXP qio_parquet_open(SEXP path, SEXP use_mmap, SEXP verify_checksums,
     if (num_threads == NA_INTEGER || num_threads < 0) {
         Rf_error("qio: `threads` must be a non-negative whole number");
     }
+    if (num_threads == 0) num_threads = 2;
 
     carquet_reader_options_t options;
     carquet_reader_options_init(&options);

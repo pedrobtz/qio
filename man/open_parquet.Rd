@@ -19,11 +19,12 @@ mapped path needs a name that page can express. The result is the same.}
 
 \item{verify_checksums}{Verify Parquet page checksums when present.}
 
-\item{threads}{Number of reader threads, or \code{NULL} (the default) to pick the
-machine's core count. \code{0} means the same as \code{NULL}. \code{\link[=collect]{collect()}} decodes
-columns in parallel either way: a mapped file shares one reader, and a
-buffered one gives each worker its own. Pass \code{threads = 1} to force serial
-reads.}
+\item{threads}{Number of reader threads. \code{NULL} (the default) and \code{0} both
+use two threads. Larger explicit values are honored in ordinary use and
+capped at two when R requests CRAN-compatible core limits. \code{\link[=collect]{collect()}}
+decodes columns in parallel either way: a mapped file shares one reader,
+and a buffered one gives each worker its own. Pass \code{threads = 1} to force
+serial reads.}
 }
 \value{
 A \code{qio_parquet_file} object. Close it with \code{\link[=close_parquet]{close_parquet()}}.

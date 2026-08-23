@@ -35,3 +35,11 @@ Zstandard
   Modification: Compiler diagnostic pragmas were removed from zstd.h because
                 qio compiles the bundled sources as C and does not install the
                 header for C++ consumers.
+
+vctrs S3 registration helper
+  File: R/zzz.R (qio_s3_register)
+  Copyright: 2023 vctrs authors
+  License: MIT
+  Source: https://github.com/r-lib/vctrs
+  Modification: Renamed for qio and kept behaviorally equivalent to the
+                upstream s3_register() helper.

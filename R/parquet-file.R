@@ -12,11 +12,12 @@
 #'   cannot represent is read with buffered input instead, because only the
 #'   mapped path needs a name that page can express. The result is the same.
 #' @param verify_checksums Verify Parquet page checksums when present.
-#' @param threads Number of reader threads, or `NULL` (the default) to pick the
-#'   machine's core count. `0` means the same as `NULL`. [collect()] decodes
-#'   columns in parallel either way: a mapped file shares one reader, and a
-#'   buffered one gives each worker its own. Pass `threads = 1` to force serial
-#'   reads.
+#' @param threads Number of reader threads. `NULL` (the default) and `0` both
+#'   use two threads. Larger explicit values are honored in ordinary use and
+#'   capped at two when R requests CRAN-compatible core limits. [collect()]
+#'   decodes columns in parallel either way: a mapped file shares one reader,
+#'   and a buffered one gives each worker its own. Pass `threads = 1` to force
+#'   serial reads.
 #'
 #' @return A `qio_parquet_file` object. Close it with [close_parquet()].
 #'
@@ -526,14 +527,24 @@ qio_file_path <- function(file) {
   file
 }
 
-# `NULL` and `0` both mean "pick the machine's core count". The native layer
-# spells that as 0, so the R default is `NULL` -- which is what every other
-# automatic argument here uses -- and is normalized to 0 on the way through.
+# `NULL` and `0` both use the policy-safe default. Explicitly asking for more is
+# useful for local workloads, but CRAN sets `_R_CHECK_LIMIT_CORES_` while it
+# checks a package and requires that request to win over package arguments.
 qio_threads <- function(threads) {
   if (is.null(threads)) {
-    return(0L)
+    threads <- 2L
+  } else {
+    threads <- qio_whole_number(threads, "threads", minimum = 0L)
+    if (threads == 0L) {
+      threads <- 2L
+    }
   }
-  qio_whole_number(threads, "threads", minimum = 0L)
+
+  limit_cores <- tolower(Sys.getenv("_R_CHECK_LIMIT_CORES_", unset = ""))
+  if (nzchar(limit_cores) && limit_cores != "false") {
+    threads <- min(threads, 2L)
+  }
+  threads
 }
 
 qio_flag <- function(x, name) {

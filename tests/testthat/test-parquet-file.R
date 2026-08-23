@@ -770,11 +770,23 @@ test_that("a parallel read of a non-ASCII path keeps its lanes", {
 })
 
 test_that("open_parquet() treats threads = NULL and threads = 0 alike", {
-  # NULL is the documented default and the native layer spells "auto" as 0.
-  # They must reach the same place, or the default stops meaning what it says.
+  # NULL is the documented default and zero is its explicit spelling. They
+  # must reach the same place, or the default stops meaning what it says.
   expected <- collect(local_parquet_file(threads = 0L))
   expect_equal(collect(local_parquet_file(threads = NULL)), expected)
   expect_equal(collect(local_parquet_file()), expected)
+})
+
+test_that("thread selection respects CRAN's core limit", {
+  withr::local_envvar(`_R_CHECK_LIMIT_CORES_` = "false")
+  expect_identical(qio_threads(NULL), 2L)
+  expect_identical(qio_threads(0L), 2L)
+  expect_identical(qio_threads(8L), 8L)
+
+  withr::local_envvar(`_R_CHECK_LIMIT_CORES_` = "TRUE")
+  expect_identical(qio_threads(NULL), 2L)
+  expect_identical(qio_threads(0L), 2L)
+  expect_identical(qio_threads(8L), 2L)
 })
 
 test_that("open_parquet() still rejects a bad thread count", {

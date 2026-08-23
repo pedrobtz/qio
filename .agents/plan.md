@@ -900,6 +900,18 @@ converter fixes that followed it**.
 - [x] Install and test from that source tarball, not only from the working
   tree. Run it with `NOT_CRAN=true`, or the thirteen `skip_on_cran()` tests
   stay skipped and the run proves less than it appears to.
+- [x] Make the reader's thread default comply with CRAN's shared-resource
+  policy. `NULL` and `0` now mean two threads rather than every online core,
+  and `_R_CHECK_LIMIT_CORES_` caps even an explicit larger request during CRAN
+  checks. Explicit larger counts remain available for ordinary local work.
+- [x] Preserve the copyright and MIT attribution for the `vctrs`
+  `s3_register()` helper copied into `R/zzz.R`, in both `Authors@R` and
+  `inst/COPYRIGHTS`.
+- [x] Protect the writer's derived column-name vector across allocating calls.
+  It was reachable through the `.Call()` argument and therefore safe, but the
+  explicit `PROTECT()` also makes that lifetime visible to rchk.
+- [x] Declare `R (>= 3.5.0)`, when the `R_UnwindProtect()` interface used by
+  the native cleanup paths was introduced.
 - [x] Set `Version: 0.1.0`. `DESCRIPTION` and the `NEWS.md` heading agree, and
   the help topics that describe behavior as "qio 0.1.0" are now accurate rather
   than aspirational.

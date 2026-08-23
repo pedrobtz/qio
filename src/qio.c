@@ -545,7 +545,7 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
     if (nrow > INT_MAX)
         Rf_error("qio: more than %d rows is not supported", INT_MAX);
 
-    SEXP nms = Rf_getAttrib(x, R_NamesSymbol);
+    SEXP nms = PROTECT(Rf_getAttrib(x, R_NamesSymbol));
 
     /* R has already validated and normalized both of these; the checks here
      * guard the native contract, not the user. */
@@ -664,7 +664,7 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
     SEXP result = R_UnwindProtect(qio_write_body, &ctx,
                                   qio_write_cleanup, &ctx,
                                   continuation);
-    UNPROTECT(1);
+    UNPROTECT(2);
     return result;
 }
 

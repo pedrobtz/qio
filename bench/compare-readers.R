@@ -357,7 +357,7 @@ cat(sprintf(
   parallel::detectCores()
 ))
 cat(sprintf(
-  "qio %s (threads: auto), arrow %s (threads: %d), nanoparquet %s (single-threaded)\n\n",
+  "qio %s (threads: default 2), arrow %s (threads: %d), nanoparquet %s (single-threaded)\n\n",
   utils::packageVersion("qio"),
   utils::packageVersion("arrow"),
   arrow::cpu_count(),

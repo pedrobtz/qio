@@ -4,8 +4,9 @@
 # zstd and lz4 are compiled from bundled source; only zlib is external and is
 # supplied by Rtools. carquet's worker_pool.c uses Win32 threads (no pthread).
 #
-# R CMD check covers windows-latest in .github/workflows/R-CMD-check.yaml.
-# Threaded mmap reads are not yet exercised there; see .agents/plan.md phase 1.
+# R CMD check covers Windows release and devel in
+# .github/workflows/R-CMD-check.yaml. The test suite exercises mapped reads with
+# two threads on Windows; see .agents/plan.md phase 1.
 
 # Makevars is read before R's own makefiles, so the header-dependency rule
 # below would otherwise become the default goal; see src/Makevars.

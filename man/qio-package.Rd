@@ -26,5 +26,10 @@ Authors:
   \item Johan HG Natter (carquet source code (MIT license)) [copyright holder]
 }
 
+Other contributors:
+\itemize{
+  \item vctrs authors (qio_s3_register() helper (MIT license)) [contributor, copyright holder]
+}
+
 }
 \keyword{internal}
