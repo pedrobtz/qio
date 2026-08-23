@@ -25,3 +25,8 @@ Authors:
 
 - Johan HG Natter (carquet source code (MIT license)) \[copyright
   holder\]
+
+Other contributors:
+
+- vctrs authors (qio_s3_register() helper (MIT license)) \[contributor,
+  copyright holder\]

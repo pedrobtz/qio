@@ -7,6 +7,9 @@
 - **Johan HG Natter**. Author, copyright holder.  
   carquet source code (MIT license)
 
+- **vctrs authors**. Contributor, copyright holder.  
+  qio_s3_register() helper (MIT license)
+
 ## Citation
 
 Source:

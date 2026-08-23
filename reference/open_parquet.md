@@ -34,8 +34,9 @@ open_parquet(file, mmap = FALSE, verify_checksums = TRUE, threads = NULL)
 
 - threads:
 
-  Number of reader threads, or `NULL` (the default) to pick the
-  machine's core count. `0` means the same as `NULL`.
+  Number of reader threads. `NULL` (the default) and `0` both use two
+  threads. Larger explicit values are honored in ordinary use and capped
+  at two when R requests CRAN-compatible core limits.
   [`collect()`](https://pedrobtz.github.io/qio/reference/collect.md)
   decodes columns in parallel either way: a mapped file shares one
   reader, and a buffered one gives each worker its own. Pass

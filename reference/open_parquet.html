@@ -69,11 +69,12 @@ mapped path needs a name that page can express. The result is the same.</p></dd>
 
 
 <dt id="arg-threads">threads<a class="anchor" aria-label="anchor" href="#arg-threads"></a></dt>
-<dd><p>Number of reader threads, or <code>NULL</code> (the default) to pick the
-machine's core count. <code>0</code> means the same as <code>NULL</code>. <code><a href="collect.html">collect()</a></code> decodes
-columns in parallel either way: a mapped file shares one reader, and a
-buffered one gives each worker its own. Pass <code>threads = 1</code> to force serial
-reads.</p></dd>
+<dd><p>Number of reader threads. <code>NULL</code> (the default) and <code>0</code> both
+use two threads. Larger explicit values are honored in ordinary use and
+capped at two when R requests CRAN-compatible core limits. <code><a href="collect.html">collect()</a></code>
+decodes columns in parallel either way: a mapped file shares one reader,
+and a buffered one gives each worker its own. Pass <code>threads = 1</code> to force
+serial reads.</p></dd>
 
 </dl></div>
     <div class="section level2">
