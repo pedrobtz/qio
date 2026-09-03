@@ -20,3 +20,4 @@
 ^cran-comments\.md$
 ^\.covrignore$
 ^vignettes/articles$
+^CRAN-SUBMISSION$
