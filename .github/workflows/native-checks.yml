@@ -1,29 +1,47 @@
 on:
   push:
     branches: [main, master]
+  pull_request:
   workflow_dispatch:
 
 name: native-checks
 
-# The reusable workflows declare `permissions: read-all`; a called workflow
-# cannot request more than the caller grants, so grant read-all here. (Repos
-# with a restricted default GITHUB_TOKEN need this explicitly.)
+# A called workflow cannot be granted more than its caller holds, so grant
+# read-all here; the reusable workflows ask for no more than `contents: read`.
 permissions: read-all
 
-# Every job here finishes inside six minutes, so this workflow is the fast
-# native signal and runs on every push to the default branch. gctorture is
-# deliberately not part of it: it takes about nine times as long as all four of
-# these combined, and gating them behind it would delay the answers that
-# arrive quickly. See .github/workflows/gctorture.yml.
+# A push to a pull request supersedes the run for the one before it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+# Every job here finishes in minutes, so this workflow is the fast
+# native signal and runs on every push to the default branch and every pull
+# request. gctorture is deliberately not part of it: it takes about nine times
+# as long as all of these combined, and gating them behind it would delay the
+# answers that arrive quickly. See .github/workflows/gctorture.yml.
+#
+# Pinned to the r-actions major tag rather than `main`, so a breaking change
+# upstream arrives as a deliberate bump here instead of a red run.
 jobs:
+  # UBSan as CRAN runs it: one clang leg (clang-UBSAN) and one gcc leg with
+  # `bounds-strict` (gcc-UBSAN), each report collected from every process and
+  # the job failing on any. The gcc leg is the one that sees the pre-C99
+  # struct hack, `T items[1]` indexed past its end, which clang treats as a
+  # flexible array and never checks -- worth having over three vendored trees.
+  #
+  # `asan: true` adds CRAN's clang-ASAN and gcc-ASAN flavors in the R-hub
+  # containers, whose R is already built to host an instrumented package.
   sanitizers:
-    uses: pedrobtz/r-actions/.github/workflows/sanitizers.yml@main
+    uses: pedrobtz/r-actions/.github/workflows/sanitizers.yml@v1
+    with:
+      asan: true
 
   valgrind:
-    uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@main
+    uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@v1
 
   lto:
-    uses: pedrobtz/r-actions/.github/workflows/lto.yml@main
+    uses: pedrobtz/r-actions/.github/workflows/lto.yml@v1
 
   rchk:
-    uses: pedrobtz/r-actions/.github/workflows/rchk.yml@main
+    uses: pedrobtz/r-actions/.github/workflows/rchk.yml@v1
