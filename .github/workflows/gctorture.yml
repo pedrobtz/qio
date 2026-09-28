@@ -37,6 +37,8 @@ concurrency:
 # Tests are deliberately not in the path filter. A test can reveal a PROTECT
 # bug but cannot introduce one, so new coverage over unchanged C is caught by
 # the release-time dispatch rather than by every push.
+#
+# Pinned to the r-actions major tag rather than `main`, like native-checks.
 jobs:
   gctorture:
-    uses: pedrobtz/r-actions/.github/workflows/gctorture.yml@main
+    uses: pedrobtz/r-actions/.github/workflows/gctorture.yml@v1
