@@ -1,7 +1,9 @@
 on:
   push:
     branches: [main, master]
+  # `labeled` so that adding `full-ci` to a pull request reruns it in full.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 name: native-checks
@@ -21,6 +23,12 @@ concurrency:
 # as long as all of these combined, and gating them behind it would delay the
 # answers that arrive quickly. See .github/workflows/gctorture.yml.
 #
+# Quick on each push to a pull request, full on the push to main: `profile:
+# quick` drops the ASan containers and Valgrind, and keeps both UBSan legs.
+# Label a pull request `full-ci` to run the full set before merging -- worth it
+# for anything that changes how memory is allocated or freed, which UBSan does
+# not see. lto and rchk take minutes either way and always run.
+#
 # Pinned to the r-actions major tag rather than `main`, so a breaking change
 # upstream arrives as a deliberate bump here instead of a red run.
 jobs:
@@ -36,9 +44,12 @@ jobs:
     uses: pedrobtz/r-actions/.github/workflows/sanitizers.yml@v1
     with:
       asan: true
+      profile: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-ci') && 'quick' || 'full' }}
 
   valgrind:
     uses: pedrobtz/r-actions/.github/workflows/valgrind.yml@v1
+    with:
+      profile: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-ci') && 'quick' || 'full' }}
 
   lto:
     uses: pedrobtz/r-actions/.github/workflows/lto.yml@v1
