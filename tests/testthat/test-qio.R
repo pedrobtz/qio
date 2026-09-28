@@ -397,7 +397,11 @@ test_that("degenerate frames round-trip", {
     "all-NA logical" = data.frame(v = rep(NA, 500L)),
     "single row" = data.frame(v = 1.5),
     "constant" = data.frame(v = rep(3.14, 5000L)),
-    "empty strings" = data.frame(v = rep("", 5000L), stringsAsFactors = FALSE)
+    "empty strings" = data.frame(v = rep("", 5000L), stringsAsFactors = FALSE),
+    "mixed empty strings" = data.frame(
+      v = rep(c("", "b", "a"), length.out = 5000L),
+      stringsAsFactors = FALSE
+    )
   )
   for (name in names(cases)) {
     path <- withr::local_tempfile(fileext = ".parquet")
