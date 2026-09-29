@@ -25,3 +25,6 @@ docs
 # megabytes into it.
 .cache/
 local-script/
+
+# Written by devtools::submit_cran(); records one submission, not the source.
+CRAN-SUBMISSION
