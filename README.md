@@ -1,6 +1,7 @@
 # qio
 
 <!-- badges: start -->
+[![CRAN status](https://www.r-pkg.org/badges/version/qio)](https://CRAN.R-project.org/package=qio)
 [![R-CMD-check](https://github.com/pedrobtz/qio/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/pedrobtz/qio/actions/workflows/R-CMD-check.yaml)
 [![coverage](https://raw.githubusercontent.com/pedrobtz/qio/main/.github/badges/coverage.svg)](https://github.com/pedrobtz/qio/actions/workflows/coverage.yaml)
 <!-- badges: end -->
@@ -14,7 +15,13 @@ dependencies.
 
 ## Installation
 
-qio is not on CRAN yet. Install the development version from GitHub:
+Install the released version from CRAN:
+
+``` r
+install.packages("qio")
+```
+
+Or the development version from GitHub:
 
 ``` r
 pak::pak("pedrobtz/qio")
