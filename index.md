@@ -12,7 +12,14 @@ package dependencies.
 
 ## Installation
 
-qio is not on CRAN yet. Install the development version from GitHub:
+Install the released version from CRAN:
+
+``` r
+
+install.packages("qio")
+```
+
+Or the development version from GitHub:
 
 ``` r
 

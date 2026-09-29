@@ -7,7 +7,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">qio</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.0</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.1</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -30,14 +30,19 @@
   <main id="main" class="col-md-9"><div class="page-header">
 
       <h1>Changelog</h1>
-      <small>Source: <a href="https://github.com/pedrobtz/qio/blob/0.1.0/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
+      <small>Source: <a href="https://github.com/pedrobtz/qio/blob/0.1.1/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
     </div>
 
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.1.1" id="qio-011">qio 0.1.1<a class="anchor" aria-label="anchor" href="#qio-011"></a></h2>
+<ul><li>Fixed undefined behavior reported by CRAN’s sanitizer checks (M1-SAN, clang-UBSAN and gcc-UBSAN). Batch reads no longer load integer and floating-point values through misaligned pointers, and writing a string column that contains empty strings no longer passes a NULL pointer to <code>memcmp()</code> or <code>memcpy()</code>. Results were already correct; only the undefined behavior is removed.</li>
+</ul></div>
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.1.0" id="qio-010">qio 0.1.0<a class="anchor" aria-label="anchor" href="#qio-010"></a></h2><p class="text-muted">CRAN release: 2026-09-28</p>
 <ul><li>Initial release.</li>
 </ul></div>
-  </main></div>
+  </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
+    </nav></aside></div>
 
 
     <footer><div class="pkgdown-footer-left">
