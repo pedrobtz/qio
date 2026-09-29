@@ -7,7 +7,7 @@ then re-vendor from it.
 | Library | Version | Commit | Retrieved | License |
 |---|---|---|---|---|
 | [carquet](https://github.com/Vitruves/carquet) | v0.6.0 | `06efab6dce5475a7faa86f0938d42e9078b6d440` | 2026-06-29 | MIT (`src/carquet/LICENSE`) |
-| [carquet fork](https://github.com/pedrobtz/carquet) | `qio` branch | `482e2cc5bab4a18e74bf2fde6a73be515d2b532b` | 2026-08-06 | MIT (`src/carquet/LICENSE`) |
+| [carquet fork](https://github.com/pedrobtz/carquet) | `qio` branch | `428c07010a3dd205f526cc822a9088904d7eb757` | 2026-09-28 | MIT (`src/carquet/LICENSE`) |
 | [zstd](https://github.com/facebook/zstd) | v1.5.7 | `f8745da6ff1ad1e7bab384bd1f9d742439278e99` | 2026-06-29 | BSD-3-Clause (`src/zstd/LICENSE`) |
 | [lz4](https://github.com/lz4/lz4) | v1.10.0 | `ebb370ca83af193212df4dcbadcc5d87bc0de2f0` | 2026-06-29 | BSD-2-Clause (`src/lz4/LICENSE`) |
 
@@ -349,6 +349,35 @@ control. Verified bit-exact against the previous algorithm over 4,800,000
 unpacks by `tools/bitunpack-differential.c`. **Superseded upstream in v0.7.0**,
 which rewrote the same kernel around a 64-bit word with shift/mask. Retire at
 the next re-vendor unless a benchmark shows the rolling accumulator still wins.
+
+### Keep dictionary byte storage allocated for empty strings (`428c070`)
+
+`writer/column_writer.c`, `encoding/dictionary.c`. **Undefined behavior, output
+correct.** A `BYTE_ARRAY` dictionary stores each value as an offset into
+`dict_ba_storage` and resolves offsets to pointers once the chunk is final. An
+empty string appends no bytes, so a chunk whose dictionary held only empty
+strings left the storage unallocated, and every resolved pointer was `NULL + 0`.
+Those pointers then reached `memcmp` and `memcpy`, which may not be given NULL
+even with a zero length. CRAN's clang-UBSAN check reported this against qio
+0.1.0 at `column_writer.c:532` and `dictionary.c:232`/`256`. r-actions' clang
+leg also reported the `NULL + 0` offsets at `column_writer.c:1080`-`1093` and
+`1214`. It is reachable from qio because qio dictionary-encodes every string
+column, so writing a column of `""` was enough.
+
+`dict_accumulate()` now allocates the storage before the first value, and
+clearing it between chunks keeps the allocation. `compare_stat_values()` and
+`dict_builder_add()` also skip zero-length `memcmp`/`memcpy`, because both can
+be given an empty value with a NULL pointer by other callers. Covered by
+all-empty and mixed empty/non-empty dictionary columns in carquet's
+`test_writer_extensions`, which abort under ASan+UBSan with
+`-fno-sanitize-recover=all` before the patch and pass after it. The two
+nonnull reports are not reproducible on macOS: its `string.h` does not mark
+`memcmp`/`memcpy` nonnull, which is also why CRAN's M1-SAN never reported
+them. They are confirmed on Linux by the r-actions UBSan legs.
+
+The same code is on upstream `main` as of `5c35328`. **Not yet reported**:
+first run the regression test against pristine upstream, as
+[Upstream reporting](#upstream-reporting) requires.
 
 ## Header dependencies
 

@@ -662,6 +662,14 @@ static void qio_scatter_int64(double *dst, const void *values,
     if (any && coerced) *coerced = 1;
 }
 
+/* Load element `i` of a fixed-width column without assuming alignment. A
+ * batch can point straight into a PLAIN page, where values sit at whatever
+ * byte offset the page gives them; dereferencing a typed pointer there is
+ * undefined, and UBSan reports it. memcpy folds into a single load. */
+#define QIO_LOAD_AT(T, base, i, dst) \
+    memcpy(&(dst), (const uint8_t *)(base) + (size_t)(i) * sizeof(T), \
+           sizeof(T))
+
 static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                                   carquet_physical_type_t type,
                                   const void *data, const uint8_t *bitmap,
@@ -753,7 +761,8 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
                                             : FALSE;
             break;
         case CARQUET_PHYSICAL_INT32: {
-            int32_t value = ((const int32_t *)data)[i];
+            int32_t value;
+            QIO_LOAD_AT(int32_t, data, i, value);
             if (kind == QIO_KIND_UINT32) {
                 REAL(destination)[out] = (double)(uint32_t)value;
                 break;
@@ -764,26 +773,36 @@ static void qio_copy_batch_column(SEXP destination, R_xlen_t offset,
             INTEGER(destination)[out] = value;
             break;
         }
-        case CARQUET_PHYSICAL_INT64:
+        case CARQUET_PHYSICAL_INT64: {
+            int64_t value;
+            QIO_LOAD_AT(int64_t, data, i, value);
             if (int64_mode < 0) {
-                REAL(destination)[out] = (double)((const int64_t *)data)[i];
-            } else if (qio_place_int64(&REAL(destination)[out],
-                                       ((const int64_t *)data)[i], int64_mode,
-                                       is_unsigned64) &&
+                REAL(destination)[out] = (double)value;
+            } else if (qio_place_int64(&REAL(destination)[out], value,
+                                       int64_mode, is_unsigned64) &&
                        int64_coerced) {
                 *int64_coerced = 1;
             }
             break;
-        case CARQUET_PHYSICAL_INT96:
-            REAL(destination)[out] =
-                qio_int96_to_seconds(((const carquet_int96_t *)data)[i]);
+        }
+        case CARQUET_PHYSICAL_INT96: {
+            carquet_int96_t value;
+            QIO_LOAD_AT(carquet_int96_t, data, i, value);
+            REAL(destination)[out] = qio_int96_to_seconds(value);
             break;
-        case CARQUET_PHYSICAL_FLOAT:
-            REAL(destination)[out] = (double)((const float *)data)[i];
+        }
+        case CARQUET_PHYSICAL_FLOAT: {
+            float value;
+            QIO_LOAD_AT(float, data, i, value);
+            REAL(destination)[out] = (double)value;
             break;
-        case CARQUET_PHYSICAL_DOUBLE:
-            REAL(destination)[out] = ((const double *)data)[i];
+        }
+        case CARQUET_PHYSICAL_DOUBLE: {
+            double value;
+            QIO_LOAD_AT(double, data, i, value);
+            REAL(destination)[out] = value;
             break;
+        }
         case CARQUET_PHYSICAL_BYTE_ARRAY: {
             const carquet_byte_array_t *value =
                 &((const carquet_byte_array_t *)data)[i];

@@ -10,6 +10,13 @@ on:
     paths:
       - "src/**"
       - ".github/workflows/gctorture.yml"
+  # The same filter on pull requests, and `labeled` so that adding `full-ci`
+  # reruns it at the sensitive step.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - "src/**"
+      - ".github/workflows/gctorture.yml"
   workflow_dispatch:
 
 name: gctorture
@@ -29,14 +36,22 @@ concurrency:
 # meant waiting an hour to learn which job produced it.
 #
 # The cost also grows with the suite: about five seconds per added assertion,
-# against a `timeout-minutes: 60` in the reusable workflow. At 944 assertions
-# that leaves little headroom, and the job would fail *as a timeout* -- which
-# reads like an infrastructure flake rather than the real signal it is. Raising
-# that cap lives in pedrobtz/r-actions.
+# against the reusable workflow's `timeout-minutes` input, 120 by default. The
+# job would fail *as a timeout* -- which reads like an infrastructure flake
+# rather than the real signal it is -- so raise that input here before the
+# suite reaches it.
+#
+# `profile: quick` runs at step 500 instead of 20, a few minutes instead of
+# most of an hour, so a pull request that changes C gets an answer while it is
+# open; the push to main, a `full-ci` label, or a dispatch runs at step 20.
 #
 # Tests are deliberately not in the path filter. A test can reveal a PROTECT
 # bug but cannot introduce one, so new coverage over unchanged C is caught by
 # the release-time dispatch rather than by every push.
+#
+# Pinned to the r-actions major tag rather than `main`, like native-checks.
 jobs:
   gctorture:
-    uses: pedrobtz/r-actions/.github/workflows/gctorture.yml@main
+    uses: pedrobtz/r-actions/.github/workflows/gctorture.yml@v1
+    with:
+      profile: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-ci') && 'quick' || 'full' }}

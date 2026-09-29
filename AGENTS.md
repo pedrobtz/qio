@@ -85,7 +85,10 @@ use scalar fallbacks. The workflows under `.github/workflows/` cover Linux,
 Windows, sanitizers, Valgrind, LTO, rchk, and gctorture. `gctorture` is its own
 workflow and runs only when `src/**` changes, because it costs about nine times
 the other native jobs combined; dispatch it by hand for a release or for a
-change that alters how C is called without changing C.
+change that alters how C is called without changing C. Pull requests run a
+quick profile: UBSan without the ASan containers or Valgrind, and gctorture at
+step 500 instead of 20. Label a pull request `full-ci` to run the full set
+before merging; pushes to `main` always run it.
 
 ## Build and test
 
