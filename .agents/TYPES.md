@@ -71,10 +71,23 @@ path and row when they are not.
 | character, factor | `BYTE_ARRAY` + `STRING` | Factors lose their levels |
 | `Date` | `INT32` + `DATE` | Days since 1970-01-01 |
 | `POSIXct` | `INT64` + UTC `TIMESTAMP` | Microseconds by default |
+| list of raw vectors | `BYTE_ARRAY` | `NULL` is null; since 0.1.2 |
 
 `parquet_schema()` supplies reusable partial overrides. Explicit schemas
 currently support `BOOLEAN`, `INT32`, `INT64`, `FLOAT`, `DOUBLE`, `STRING`,
-`DATE`, and UTC `TIMESTAMP` in millisecond, microsecond, or nanosecond units.
+`DATE`, UTC `TIMESTAMP` in millisecond, microsecond, or nanosecond units, and,
+since 0.1.2, `BINARY`, `GEOMETRY`, and `GEOGRAPHY` over a list of raw vectors.
+
+`GEOMETRY` and `GEOGRAPHY` take WKB, which qio stores without parsing.
+`crs` defaults to `OGC:CRS84` and holds at most 127 bytes, the size carquet
+gives it; a longer CRS such as PROJJSON goes in the footer metadata, with
+`crs = "projjson:<key>"` naming the key, as the Parquet specification
+provides. `GEOGRAPHY` takes `algorithm` (`SPHERICAL` by default, `VINCENTY`,
+`THOMAS`, `ANDOYER`, `KARNEY`). carquet records each column chunk's
+GeospatialStatistics (bounding box and ISO WKB geometry types) from the WKB,
+and `geospatial_statistics()` reads them back from any writer's file. The
+schema details string is the one `schema()` reports when reading back:
+`crs=<crs>`, and `crs=<crs>, algorithm=<algorithm>` for `GEOGRAPHY`.
 Explicit `INT64` input must be finite, whole, and within `[-2^53, 2^53]`.
 
 Double-backed 64-bit integer objects currently infer `DOUBLE`.
@@ -120,8 +133,9 @@ define rounding. New `INT96` output will not be added.
 | `UUID` | canonical character UUID |
 | `DECIMAL` | `double` in v0.1.0; exact fixed-point character in v0.2.0 |
 
-Ordinary character input continues to infer `STRING`. Writes of binary, fixed
-binary, `UUID`, `FLOAT16`, `ENUM`, `BSON`, and decimal are deferred to v0.2.0;
+Ordinary character input continues to infer `STRING`. Writes of fixed
+binary, `UUID`, `FLOAT16`, `ENUM`, `BSON`, and decimal are deferred to v0.2.0
+(binary arrived in 0.1.2, as a list of raw vectors);
 `write_parquet()` rejects those R inputs with a clear error today. When they
 land they will require explicit schemas, since none of these is identified
 unambiguously by an ordinary R type.
@@ -131,7 +145,10 @@ falls out of the rules above is the whole of their v0.1.0 behavior:
 
 - `GEOMETRY` and `GEOGRAPHY` are single `BYTE_ARRAY` leaves, so their WKB bytes
   read as raw list-columns. `schema()` continues to report `crs` and the edge
-  algorithm; no other metadata is attached to the column.
+  algorithm; no other metadata is attached to the column. Since 0.1.2 qio also
+  writes them and reports their GeospatialStatistics; turning the WKB into
+  geometries is a downstream package's job (zugeo's GeoParquet support is
+  built on these).
 - `VARIANT` is a group, so it is skipped with the other nested columns.
 - `INTERVAL` is a fixed 12-byte leaf, so it reads as a fixed-length raw vector.
 

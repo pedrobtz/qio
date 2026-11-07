@@ -33,7 +33,9 @@
 #'     surface. The reusable writer configuration that would carry them is
 #'     deferred to 0.2.0 rather than guessed at now.}
 #'   \item{Geospatial and variant types}{Read as their physical storage, without
-#'     interpretation.}
+#'     interpretation. `GEOMETRY` and `GEOGRAPHY` columns are written from
+#'     well-known binary and their geospatial statistics read with
+#'     [geospatial_statistics()], but qio does not parse the geometries.}
 #'   \item{Partial reads over HTTP}{A URL is supported by downloading the whole
 #'     file to the session temporary directory first, so selecting columns or
 #'     row groups saves decoding but not transfer. Reading only the footer and

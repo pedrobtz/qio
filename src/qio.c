@@ -19,6 +19,7 @@
  *   POSIXct               INT64 + TIMESTAMP(MICROS, UTC)
  *   character             BYTE_ARRAY + STRING
  *   factor                character -> BYTE_ARRAY + STRING
+ *   list of raw / NULL    BYTE_ARRAY (+ GEOMETRY or GEOGRAPHY by schema)
  *
  * NULL handling: a column is written OPTIONAL when it contains any NA, else
  * REQUIRED. Parquet nulls map to R NA. For doubles, R's NA maps to null while
@@ -94,6 +95,10 @@ typedef struct {
     const int *ltype;
     const int *time_unit;
     const int *nullable;
+    /* Per column, for GEOMETRY and GEOGRAPHY: the CRS (NA for the default,
+     * OGC:CRS84) and the edge algorithm (NA for the default, spherical). */
+    SEXP geo_crs;
+    const int *geo_algorithm;
 } qio_write_context_t;
 
 static void qio_write_cleanup(void *data, Rboolean jump) {
@@ -166,10 +171,41 @@ static SEXP qio_write_body(void *data) {
             (carquet_time_unit_t)(time_unit[c] - 1);
         timestamp_lt.params.timestamp.is_adjusted_to_utc = 1;
 
+        /* GEOMETRY (4) and GEOGRAPHY (5): WKB in BYTE_ARRAY, with a CRS and,
+         * for GEOGRAPHY, an edge algorithm. carquet fills the column chunks'
+         * GeospatialStatistics from the WKB itself. */
+        carquet_logical_type_t geo_lt;
+        memset(&geo_lt, 0, sizeof(geo_lt));
+        if (ltype[c] == 4 || ltype[c] == 5) {
+            SEXP crs_elt = STRING_ELT(ctx->geo_crs, c);
+            const char *crs = crs_elt == NA_STRING ? "" : Rf_translateCharUTF8(crs_elt);
+            if (strlen(crs) >= CARQUET_GEOSPATIAL_CRS_MAX) {
+                Rf_error("qio: the CRS of column '%s' is %d bytes; Parquet's "
+                         "geospatial types hold at most %d here. Store a long "
+                         "CRS (such as PROJJSON) in the footer metadata and set "
+                         "`crs` to \"projjson:<key>\".",
+                         nm, (int)strlen(crs), CARQUET_GEOSPATIAL_CRS_MAX - 1);
+            }
+            if (ltype[c] == 4) {
+                geo_lt.id = CARQUET_LOGICAL_GEOMETRY;
+                strncpy(geo_lt.params.geometry.crs, crs, CARQUET_GEOSPATIAL_CRS_MAX - 1);
+            } else {
+                geo_lt.id = CARQUET_LOGICAL_GEOGRAPHY;
+                strncpy(geo_lt.params.geography.crs, crs, CARQUET_GEOSPATIAL_CRS_MAX - 1);
+                int algorithm = ctx->geo_algorithm[c];
+                if (algorithm != NA_INTEGER) {
+                    geo_lt.params.geography.algorithm =
+                        (carquet_geospatial_edge_algorithm_t)algorithm;
+                    geo_lt.params.geography.has_algorithm = true;
+                }
+            }
+        }
+
         const carquet_logical_type_t *lt = NULL;
         if (ltype[c] == 1) lt = &date_lt;
         else if (ltype[c] == 2) lt = &timestamp_lt;
         else if (ltype[c] == 3) lt = &string_lt;
+        else if (ltype[c] == 4 || ltype[c] == 5) lt = &geo_lt;
         carquet_field_repetition_t rep =
             nullable[c] ? CARQUET_REPETITION_OPTIONAL
                         : CARQUET_REPETITION_REQUIRED;
@@ -438,6 +474,26 @@ static SEXP qio_write_body(void *data) {
                  * batch-size estimate scans every entry and reads
                  * arrays[i].length. Zero it so those reads are defined. */
                 memset(out, 0, (size_t)len * sizeof(carquet_byte_array_t));
+                if (TYPEOF(v) == VECSXP) {
+                    /* Binary: a list of raw vectors, NULL for a null. */
+                    for (i = 0; i < len; i++) {
+                        SEXP e = VECTOR_ELT(v, row0 + i);
+                        if (e != R_NilValue) {
+                            if (XLENGTH(e) > INT32_MAX) {
+                                Rf_error("qio: column %d, row %lld: a value is longer "
+                                         "than Parquet's 2^31 - 1 bytes",
+                                         c + 1, (long long)(row0 + i + 1));
+                            }
+                            out[k].data = RAW(e);
+                            out[k].length = (int32_t)XLENGTH(e);
+                            k++;
+                            if (def) def[i] = 1;
+                        } else if (def) {
+                            def[i] = 0;
+                        }
+                    }
+                    break;
+                }
                 for (i = 0; i < len; i++) {
                     SEXP e = STRING_ELT(v, row0 + i);
                     if (e != NA_STRING) {
@@ -525,7 +581,7 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
         Rf_error("qio: `file` must be a single path");
     if (TYPEOF(codec_sexp) != STRSXP || LENGTH(codec_sexp) < 1)
         Rf_error("qio: `compression` must be a string");
-    if (TYPEOF(spec_sexp) != VECSXP || LENGTH(spec_sexp) != 4)
+    if (TYPEOF(spec_sexp) != VECSXP || LENGTH(spec_sexp) != 6)
         Rf_error("qio: invalid writer schema");
 
     /* Resolved here, before the protected window: it calls into R, which the
@@ -595,10 +651,14 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
     SEXP ltype_sexp = VECTOR_ELT(spec_sexp, 1);
     SEXP unit_sexp = VECTOR_ELT(spec_sexp, 2);
     SEXP nullable_sexp = VECTOR_ELT(spec_sexp, 3);
+    SEXP crs_sexp = VECTOR_ELT(spec_sexp, 4);
+    SEXP algorithm_sexp = VECTOR_ELT(spec_sexp, 5);
     if (TYPEOF(ptype_sexp) != INTSXP || TYPEOF(ltype_sexp) != INTSXP ||
         TYPEOF(unit_sexp) != INTSXP || TYPEOF(nullable_sexp) != LGLSXP ||
+        TYPEOF(crs_sexp) != STRSXP || TYPEOF(algorithm_sexp) != INTSXP ||
         LENGTH(ptype_sexp) != ncol || LENGTH(ltype_sexp) != ncol ||
-        LENGTH(unit_sexp) != ncol || LENGTH(nullable_sexp) != ncol)
+        LENGTH(unit_sexp) != ncol || LENGTH(nullable_sexp) != ncol ||
+        LENGTH(crs_sexp) != ncol || LENGTH(algorithm_sexp) != ncol)
         Rf_error("qio: invalid writer schema vectors");
 
     int *ptype = INTEGER(ptype_sexp);
@@ -616,9 +676,12 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
             Rf_error("qio: column %d has length %lld, expected %lld",
                      c + 1, (long long)XLENGTH(v), (long long)nrow);
         }
+        /* BYTE_ARRAY is character for STRING, a list of raw otherwise. */
         int expected = ptype[c] == CARQUET_PHYSICAL_BOOLEAN ? LGLSXP :
                        ptype[c] == CARQUET_PHYSICAL_INT32 ? INTSXP :
-                       ptype[c] == CARQUET_PHYSICAL_BYTE_ARRAY ? STRSXP : REALSXP;
+                       ptype[c] == CARQUET_PHYSICAL_BYTE_ARRAY
+                           ? (ltype[c] == 3 ? STRSXP : VECSXP)
+                           : REALSXP;
         if (ptype[c] != CARQUET_PHYSICAL_BOOLEAN &&
             ptype[c] != CARQUET_PHYSICAL_INT32 &&
             ptype[c] != CARQUET_PHYSICAL_INT64 &&
@@ -626,17 +689,29 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
             ptype[c] != CARQUET_PHYSICAL_DOUBLE &&
             ptype[c] != CARQUET_PHYSICAL_BYTE_ARRAY)
             Rf_error("qio: invalid physical type for column %d", c + 1);
-        if (ltype[c] < 0 || ltype[c] > 3 ||
+        if (ltype[c] < 0 || ltype[c] > 5 ||
             (ltype[c] == 1 && ptype[c] != CARQUET_PHYSICAL_INT32) ||
             (ltype[c] == 2 && (ptype[c] != CARQUET_PHYSICAL_INT64 ||
                               time_unit[c] < 1 || time_unit[c] > 3)) ||
-            (ltype[c] == 3 && ptype[c] != CARQUET_PHYSICAL_BYTE_ARRAY))
+            (ltype[c] == 3 && ptype[c] != CARQUET_PHYSICAL_BYTE_ARRAY) ||
+            ((ltype[c] == 4 || ltype[c] == 5) &&
+             ptype[c] != CARQUET_PHYSICAL_BYTE_ARRAY) ||
+            (ltype[c] == 5 && INTEGER(algorithm_sexp)[c] != NA_INTEGER &&
+             (INTEGER(algorithm_sexp)[c] < 0 || INTEGER(algorithm_sexp)[c] > 4)))
             Rf_error("qio: invalid logical type for column %d", c + 1);
         if (nullable[c] != 0 && nullable[c] != 1)
             Rf_error("qio: invalid repetition for column %d", c + 1);
         if (ltype[c] == 1 || ltype[c] == 2) expected = REALSXP;
         if (TYPEOF(v) != expected)
             Rf_error("qio: column %d does not match its writer schema", c + 1);
+        if (expected == VECSXP) {
+            for (R_xlen_t i = 0; i < nrow; i++) {
+                SEXP e = VECTOR_ELT(v, i);
+                if (e != R_NilValue && TYPEOF(e) != RAWSXP)
+                    Rf_error("qio: column %d, row %lld is not a raw vector or NULL",
+                             c + 1, (long long)(i + 1));
+            }
+        }
     }
 
     qio_write_context_t ctx;
@@ -659,6 +734,8 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
     ctx.ltype = ltype;
     ctx.time_unit = time_unit;
     ctx.nullable = nullable;
+    ctx.geo_crs = crs_sexp;
+    ctx.geo_algorithm = INTEGER(algorithm_sexp);
 
     SEXP continuation = PROTECT(R_MakeUnwindCont());
     SEXP result = R_UnwindProtect(qio_write_body, &ctx,
@@ -685,6 +762,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"qio_parquet_metadata", (DL_FUNC)&qio_parquet_metadata, 1},
     {"qio_parquet_column_chunks", (DL_FUNC)&qio_parquet_column_chunks, 1},
     {"qio_parquet_column_statistics", (DL_FUNC)&qio_parquet_column_statistics, 1},
+    {"qio_parquet_geospatial_statistics", (DL_FUNC)&qio_parquet_geospatial_statistics, 1},
     {"qio_parquet_page_index", (DL_FUNC)&qio_parquet_page_index, 1},
     {"qio_parquet_bloom_check", (DL_FUNC)&qio_parquet_bloom_check, 4},
     {"qio_parquet_collect", (DL_FUNC)&qio_parquet_collect, 6},

@@ -6,7 +6,8 @@
 #' qio's automatic mapping.
 #'
 #' Supported declarations are `"AUTO"`, `"BOOLEAN"`, `"INT32"`, `"INT64"`,
-#' `"FLOAT"`, `"DOUBLE"`, `"STRING"`, `"DATE"`, and `"TIMESTAMP"`.
+#' `"FLOAT"`, `"DOUBLE"`, `"STRING"`, `"DATE"`, `"TIMESTAMP"`, `"BINARY"`,
+#' `"GEOMETRY"`, and `"GEOGRAPHY"`.
 #' `TIMESTAMP` accepts `unit` (`"MILLIS"`, `"MICROS"`, or `"NANOS"`) and must
 #' be adjusted to UTC. All types accept `repetition_type` (`"AUTO"`,
 #' `"REQUIRED"`, or `"OPTIONAL"`).
@@ -17,6 +18,16 @@
 #' factor input, `DATE` accepts `Date` or whole-number days, and `TIMESTAMP`
 #' accepts `POSIXct`.
 #'
+#' `"BINARY"`, `"GEOMETRY"` and `"GEOGRAPHY"` take a list of raw vectors, with
+#' `NULL` for a missing value; such a list is written as `BINARY` without a
+#' schema. `GEOMETRY` and `GEOGRAPHY` hold well-known binary (WKB) and accept
+#' `crs`, a string of at most 127 bytes such as `"OGC:CRS84"` (the default),
+#' `"EPSG:4326"`, or `"projjson:<key>"` naming a footer [write_parquet()]
+#' `metadata` entry that holds the PROJJSON. `GEOGRAPHY` also accepts
+#' `algorithm`, the edge interpolation: `"SPHERICAL"` (the default),
+#' `"VINCENTY"`, `"THOMAS"`, `"ANDOYER"`, or `"KARNEY"`. qio does not parse the
+#' WKB beyond what [geospatial_statistics()] records.
+#'
 #' @param ... Named Parquet type specifications.
 #'
 #' @return A `qio_parquet_schema` data frame.
@@ -26,6 +37,10 @@
 #'   id = "INT64",
 #'   price = "FLOAT",
 #'   created_at = list("TIMESTAMP", unit = "MILLIS")
+#' )
+#' parquet_schema(
+#'   shape = list("GEOMETRY", crs = "EPSG:4326"),
+#'   route = list("GEOGRAPHY", algorithm = "KARNEY")
 #' )
 parquet_schema <- function(...) {
   specs <- list(...)
@@ -97,7 +112,14 @@ qio_parse_type_spec <- function(spec, name) {
       call. = FALSE
     )
   }
-  allowed <- c("type", "unit", "is_adjusted_utc", "repetition_type")
+  allowed <- c(
+    "type",
+    "unit",
+    "is_adjusted_utc",
+    "repetition_type",
+    "crs",
+    "algorithm"
+  )
   unknown <- setdiff(names(args), allowed)
   if (length(unknown)) {
     stop(
@@ -136,6 +158,17 @@ qio_parse_type_spec <- function(spec, name) {
       )
     }
     return(qio_new_schema(name, type, NA_character_, NA_character_, repetition))
+  }
+  if (type %in% c("BINARY", "GEOMETRY", "GEOGRAPHY")) {
+    return(qio_parse_binary_spec(type, args, name, repetition))
+  }
+  if (any(c("crs", "algorithm") %in% names(args))) {
+    stop(
+      "Schema type `",
+      type,
+      "` does not accept `crs` or `algorithm`.",
+      call. = FALSE
+    )
   }
   if (type == "STRING") {
     return(qio_new_schema(
@@ -222,6 +255,100 @@ qio_as_data_frame <- function(x) {
   stop("`x` must be a data frame.", call. = FALSE)
 }
 
+qio_edge_algorithms <- c("SPHERICAL", "VINCENTY", "THOMAS", "ANDOYER", "KARNEY")
+
+# BINARY is unannotated BYTE_ARRAY. GEOMETRY and GEOGRAPHY are WKB in
+# BYTE_ARRAY with a CRS (Parquet's default is OGC:CRS84) and, for GEOGRAPHY,
+# an edge algorithm (default SPHERICAL). The details string is the one
+# schema() reports when reading the file back.
+qio_parse_binary_spec <- function(type, args, name, repetition) {
+  if (any(c("unit", "is_adjusted_utc") %in% names(args))) {
+    stop(
+      "Schema type `",
+      type,
+      "` does not accept time parameters.",
+      call. = FALSE
+    )
+  }
+  if (type == "BINARY") {
+    if (any(c("crs", "algorithm") %in% names(args))) {
+      stop(
+        "Schema type `BINARY` does not accept `crs` or `algorithm`.",
+        call. = FALSE
+      )
+    }
+    return(qio_new_schema(
+      name,
+      "BYTE_ARRAY",
+      NA_character_,
+      NA_character_,
+      repetition
+    ))
+  }
+  crs <- qio_or(args$crs, "OGC:CRS84")
+  if (!is.character(crs) || length(crs) != 1L || is.na(crs) || !nzchar(crs)) {
+    stop("`crs` for `", name, "` must be one non-empty string.", call. = FALSE)
+  }
+  if (nchar(crs, type = "bytes") > 127L) {
+    stop(
+      "`crs` for `",
+      name,
+      "` is longer than the 127 bytes Parquet's geospatial types hold here. ",
+      "Store a long CRS, such as PROJJSON, in the footer `metadata` and set ",
+      "`crs` to \"projjson:<key>\".",
+      call. = FALSE
+    )
+  }
+  if (type == "GEOMETRY") {
+    if ("algorithm" %in% names(args)) {
+      stop("Schema type `GEOMETRY` does not accept `algorithm`.", call. = FALSE)
+    }
+    return(qio_new_schema(
+      name,
+      "BYTE_ARRAY",
+      "GEOMETRY",
+      paste0("crs=", crs),
+      repetition
+    ))
+  }
+  algorithm <- toupper(qio_or(args$algorithm, "SPHERICAL"))
+  if (length(algorithm) != 1L || !algorithm %in% qio_edge_algorithms) {
+    stop(
+      "`algorithm` for `",
+      name,
+      "` must be one of ",
+      paste(qio_edge_algorithms, collapse = ", "),
+      ".",
+      call. = FALSE
+    )
+  }
+  qio_new_schema(
+    name,
+    "BYTE_ARRAY",
+    "GEOGRAPHY",
+    paste0("crs=", crs, ", algorithm=", algorithm),
+    repetition
+  )
+}
+
+# The CRS and edge algorithm of GEOMETRY and GEOGRAPHY details strings.
+qio_parse_geo_details <- function(details) {
+  algorithm <- ifelse(
+    grepl(", algorithm=[A-Z]+$", details),
+    sub("^.*, algorithm=([A-Z]+)$", "\\1", details),
+    NA_character_
+  )
+  crs <- sub(", algorithm=[A-Z]+$", "", sub("^crs=", "", details))
+  list(crs = crs, algorithm = algorithm)
+}
+
+# A list column holds binary when every element is a raw vector or NULL.
+qio_is_binary_list <- function(x) {
+  is.list(x) &&
+    !is.data.frame(x) &&
+    all(vapply(x, function(e) is.null(e) || is.raw(e), logical(1)))
+}
+
 qio_infer_schema <- function(x) {
   if (!ncol(x)) {
     stop("`x` has no columns.", call. = FALSE)
@@ -256,6 +383,15 @@ qio_infer_column <- function(x, name) {
       repetition
     ))
   }
+  if (qio_is_binary_list(x)) {
+    return(qio_new_schema(
+      name,
+      "BYTE_ARRAY",
+      NA_character_,
+      NA_character_,
+      repetition
+    ))
+  }
   physical <- switch(
     typeof(x),
     logical = "BOOLEAN",
@@ -270,6 +406,9 @@ qio_infer_column <- function(x, name) {
       "` has unsupported type `",
       typeof(x),
       "`.",
+      if (is.list(x)) {
+        " A list column is written only as binary: a list of raw vectors, with NULL for a missing value."
+      },
       call. = FALSE
     )
   }
@@ -376,6 +515,9 @@ qio_validate_schema_object <- function(schema) {
     "FLOAT NA",
     "DOUBLE NA",
     "BYTE_ARRAY STRING",
+    "BYTE_ARRAY NA",
+    "BYTE_ARRAY GEOMETRY",
+    "BYTE_ARRAY GEOGRAPHY",
     "INT32 DATE",
     "INT64 TIMESTAMP"
   )
@@ -418,9 +560,17 @@ qio_prepare_write_columns <- function(x, schema) {
   )]
   logical_codes <- match(
     schema$logical_type,
-    c("DATE", "TIMESTAMP", "STRING"),
+    c("DATE", "TIMESTAMP", "STRING", "GEOMETRY", "GEOGRAPHY"),
     nomatch = 0L
   )
+  geo <- logical_codes %in% c(4L, 5L)
+  crs <- rep(NA_character_, nrow(schema))
+  algorithm <- rep(NA_integer_, nrow(schema))
+  if (any(geo)) {
+    parsed <- qio_parse_geo_details(schema$logical_details[geo])
+    crs[geo] <- enc2utf8(parsed$crs)
+    algorithm[geo] <- match(parsed$algorithm, qio_edge_algorithms) - 1L
+  }
   units <- rep(0L, nrow(schema))
   ts <- !is.na(schema$logical_type) & schema$logical_type == "TIMESTAMP"
   units[ts] <- match(
@@ -433,7 +583,9 @@ qio_prepare_write_columns <- function(x, schema) {
       physical_type = as.integer(codes),
       logical_type = as.integer(logical_codes),
       time_unit = as.integer(units),
-      nullable = schema$repetition_type == "OPTIONAL"
+      nullable = schema$repetition_type == "OPTIONAL",
+      crs = crs,
+      algorithm = as.integer(algorithm)
     ),
     schema = schema
   )
@@ -538,6 +690,19 @@ qio_prepare_write_column <- function(x, spec) {
     }
     return(x)
   }
+  if (physical == "BYTE_ARRAY") {
+    if (!qio_is_binary_list(x)) {
+      stop(
+        if (is.na(logical)) "BINARY" else logical,
+        " column `",
+        name,
+        "` must be a list of raw vectors, with NULL for a missing value.",
+        call. = FALSE
+      )
+    }
+    attributes(x) <- NULL
+    return(x)
+  }
   stop("Unsupported writer mapping for column `", name, "`.", call. = FALSE)
 }
 
@@ -562,6 +727,9 @@ qio_validate_integral <- function(x, name, min, max) {
 }
 
 qio_has_null <- function(x) {
+  if (is.list(x)) {
+    return(any(vapply(x, is.null, logical(1))))
+  }
   if (is.double(x)) {
     return(any(is.na(x) & !is.nan(x)))
   }

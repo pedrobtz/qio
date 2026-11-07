@@ -3276,3 +3276,91 @@ SEXP qio_parquet_walk(SEXP file, SEXP columns, SEXP row_groups,
     UNPROTECT(2);
     return result;
 }
+
+/* GeospatialStatistics of every GEOMETRY and GEOGRAPHY column chunk: one row
+ * per (row group, geospatial column), whether or not the chunk carries them.
+ * Absent bounds are NA; `geometry_types` is a list of ISO WKB type codes, and
+ * NULL when none were recorded (which Parquet reads as "unknown"). */
+SEXP qio_parquet_geospatial_statistics(SEXP file) {
+    qio_parquet_handle_t *handle = qio_get_handle(file, 0);
+    const carquet_schema_t *schema = carquet_reader_schema(handle->reader);
+    int32_t groups = carquet_reader_num_row_groups(handle->reader);
+    int32_t columns = carquet_reader_num_columns(handle->reader);
+
+    const carquet_schema_node_t **leaves =
+        (const carquet_schema_node_t **)R_alloc(
+            (size_t)(columns > 0 ? columns : 1), sizeof(*leaves));
+    if (qio_leaf_nodes(schema, leaves, columns) != columns) {
+        Rf_error("qio: parquet schema does not describe all %d columns",
+                 columns);
+    }
+    int32_t geo_columns = 0;
+    int *is_geo = (int *)R_alloc((size_t)(columns > 0 ? columns : 1), sizeof(int));
+    for (int32_t c = 0; c < columns; c++) {
+        const carquet_logical_type_t *logical =
+            carquet_schema_node_logical_type(leaves[c]);
+        is_geo[c] = logical && (logical->id == CARQUET_LOGICAL_GEOMETRY ||
+                                logical->id == CARQUET_LOGICAL_GEOGRAPHY);
+        geo_columns += is_geo[c];
+    }
+    R_xlen_t rows = (R_xlen_t)groups * geo_columns;
+
+    const int ncol = 12;
+    const char *column_names[] = {"row_group", "column", "path", "xmin",
+                                  "xmax",      "ymin",   "ymax", "zmin",
+                                  "zmax",      "mmin",   "mmax", "geometry_types"};
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, ncol));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, ncol));
+    SET_VECTOR_ELT(result, 0, Rf_allocVector(INTSXP, rows));
+    SET_VECTOR_ELT(result, 1, Rf_allocVector(INTSXP, rows));
+    SET_VECTOR_ELT(result, 2, Rf_allocVector(STRSXP, rows));
+    for (int i = 3; i < 11; i++) SET_VECTOR_ELT(result, i, Rf_allocVector(REALSXP, rows));
+    SET_VECTOR_ELT(result, 11, Rf_allocVector(VECSXP, rows));
+    for (int i = 0; i < ncol; i++)
+        SET_STRING_ELT(names, i, Rf_mkChar(column_names[i]));
+
+    R_xlen_t at = 0;
+    for (int32_t g = 0; g < groups; g++) {
+        for (int32_t c = 0; c < columns; c++) {
+            if (!is_geo[c]) continue;
+            INTEGER(VECTOR_ELT(result, 0))[at] = g + 1;
+            INTEGER(VECTOR_ELT(result, 1))[at] = c + 1;
+            SET_STRING_ELT(VECTOR_ELT(result, 2), at,
+                           qio_column_path_string(schema, c));
+            for (int i = 3; i < 11; i++) REAL(VECTOR_ELT(result, i))[at] = NA_REAL;
+
+            carquet_geospatial_statistics_t stats;
+            memset(&stats, 0, sizeof(stats));
+            carquet_status_t status = carquet_reader_geospatial_statistics(
+                handle->reader, g, c, &stats);
+            if (status == CARQUET_OK) {
+                if (stats.has_bbox) {
+                    REAL(VECTOR_ELT(result, 3))[at] = stats.xmin;
+                    REAL(VECTOR_ELT(result, 4))[at] = stats.xmax;
+                    REAL(VECTOR_ELT(result, 5))[at] = stats.ymin;
+                    REAL(VECTOR_ELT(result, 6))[at] = stats.ymax;
+                    if (stats.has_z) {
+                        REAL(VECTOR_ELT(result, 7))[at] = stats.zmin;
+                        REAL(VECTOR_ELT(result, 8))[at] = stats.zmax;
+                    }
+                    if (stats.has_m) {
+                        REAL(VECTOR_ELT(result, 9))[at] = stats.mmin;
+                        REAL(VECTOR_ELT(result, 10))[at] = stats.mmax;
+                    }
+                }
+                int32_t nt = stats.num_geometry_types;
+                if (nt > CARQUET_MAX_GEOSPATIAL_TYPES) nt = CARQUET_MAX_GEOSPATIAL_TYPES;
+                if (nt > 0) {
+                    SEXP types = PROTECT(Rf_allocVector(INTSXP, nt));
+                    for (int32_t t = 0; t < nt; t++) INTEGER(types)[t] = stats.geometry_types[t];
+                    SET_VECTOR_ELT(VECTOR_ELT(result, 11), at, types);
+                    UNPROTECT(1);
+                }
+            }
+            at++;
+        }
+    }
+    qio_set_data_frame_attributes(result, names, (int32_t)rows);
+    UNPROTECT(2);
+    return result;
+}
