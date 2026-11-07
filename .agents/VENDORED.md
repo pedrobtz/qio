@@ -396,9 +396,9 @@ from qio since 0.1.2 writes `GEOMETRY` and `GEOGRAPHY`; covered by
 `geospatial_statistics()` over two row groups in `test-parquet-file.R`, and
 verified against DuckDB's `parquet_metadata()`.
 
-The same code is on upstream `main`. **Not yet reported**: first run a
-regression test against pristine upstream, as
-[Upstream reporting](#upstream-reporting) requires.
+**Reported 2026-11-07** as [#41](https://github.com/Vitruves/carquet/issues/41)
+with [PR #42](https://github.com/Vitruves/carquet/pull/42), the same change plus
+a regression test that fails on upstream `main` (v0.7.3).
 
 ### Keep a long GEOMETRY or GEOGRAPHY CRS whole (`7ba0b94`)
 
@@ -417,9 +417,14 @@ than 127 bytes from R stays an error (the `projjson:<key>` hint). Covered by
 carquet's `test_thrift` and by `test-external.R` over the parquet-testing CRS
 files.
 
-The same code is on upstream `main`. **Not yet reported**: first run a
-regression test against pristine upstream, as
-[Upstream reporting](#upstream-reporting) requires.
+**Reported 2026-11-07** as [#43](https://github.com/Vitruves/carquet/issues/43)
+with [PR #44](https://github.com/Vitruves/carquet/pull/44), which fixes it
+differently: adding `crs_long` to the public `carquet_logical_type_t` changes
+its size, an ABI break upstream (callers allocate it, and the Python binding
+mirrors its layout). The PR keeps the whole CRS in the internal schema element
+and adds `carquet_schema_node_geospatial_crs()`. When upstream merges it,
+re-vendoring drops this patch for that one, and `qio_logical_type_details()`
+moves to the new accessor.
 
 ## Header dependencies
 
@@ -470,13 +475,16 @@ branch, push it, re-copy, and update the fork pin in the table above.
 
 ## Upstream reporting
 
-Three issues were filed on 2026-08-06; two carry a pull request.
+Three issues were filed on 2026-08-06, two with a pull request; two more on
+2026-11-07, both with a pull request.
 
 | Upstream | Ledger entry | State |
 |---|---|---|
 | [#24](https://github.com/Vitruves/carquet/issues/24) → [PR #27](https://github.com/Vitruves/carquet/pull/27) | Transpose BYTE_STREAM_SPLIT once per page, plus the INT32/INT64/FLBA extension — one defect as upstream sees it | open |
 | [#25](https://github.com/Vitruves/carquet/issues/25) → [PR #28](https://github.com/Vitruves/carquet/pull/28) | Resume BOOLEAN bit packing across write batches | open |
 | [#26](https://github.com/Vitruves/carquet/issues/26) | Refuse dictionary preservation for non-dictionary encodings | **retracted, closed** |
+| [#41](https://github.com/Vitruves/carquet/issues/41) → [PR #42](https://github.com/Vitruves/carquet/pull/42) | Reset GeospatialStatistics for each row group | open |
+| [#43](https://github.com/Vitruves/carquet/issues/43) → [PR #44](https://github.com/Vitruves/carquet/pull/44) | Keep a long GEOMETRY or GEOGRAPHY CRS whole (fixed differently upstream) | open |
 
 #26 was wrong: upstream guards `preserve_dictionary` at both sites that set it,
 so the overrun is qio's own, caused by qio's column-level setter removing that
@@ -501,7 +509,7 @@ an outside contributor — so a report is the channel that moves, and the
 maintainer generally writes the fix. Report first; offer the branch; open a pull
 request only for something confirmed against pristine upstream.
 
-PRs #27 and #28 were taken through the whole `CONTRIBUTING.md` gate before
+PRs #27, #28, #42 and #44 were taken through the whole `CONTRIBUTING.md` gate before
 opening, and that is the bar for any future one:
 
 - `ctest` 39/39, Release and Debug.
@@ -518,7 +526,13 @@ opening, and that is the bar for any future one:
   the spec — the BSS planes, and `4D 0B` for the boolean bit stream, which is
   `0D 5A` on unfixed upstream.
 - New test *files* would need wiring into both `CMakeLists.txt` and
-  `xmake.lua`; neither PR adds one.
+  `xmake.lua`; none of these PRs adds one.
+- Since v0.7.3 the `writer` fuzz target reports a UBSan pointer overflow in
+  `reader/page_reader.c:2792` within seconds on pristine `main`; #42 and #44
+  say so rather than claim a clean run. It is not reported yet.
+- `interop/run_interop.py` needs `pyarrow`, `duckdb`, `pytz`, `numpy` and
+  `pandas` in the Python that runs it; the Python tests need a
+  `CARQUET_BUILD_SHARED=ON CARQUET_BUNDLE_DEPS=ON` build (`python/README.md`).
 
 One entry is already covered by someone else's report:
 [#19](https://github.com/Vitruves/carquet/issues/19), closed, is what produced
