@@ -36,6 +36,8 @@
   : Inspect Parquet column chunks
 - [`column_statistics()`](https://pedrobtz.github.io/qio/reference/column_statistics.md)
   : Inspect Parquet column statistics
+- [`geospatial_statistics()`](https://pedrobtz.github.io/qio/reference/geospatial_statistics.md)
+  : Inspect Parquet geospatial statistics
 - [`page_index()`](https://pedrobtz.github.io/qio/reference/page_index.md)
   : Inspect Parquet page indexes
 - [`bloom_filter_may_contain()`](https://pedrobtz.github.io/qio/reference/bloom_filter_may_contain.md)

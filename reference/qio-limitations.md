@@ -57,7 +57,11 @@ an oversight.
 
 - Geospatial and variant types:
 
-  Read as their physical storage, without interpretation.
+  Read as their physical storage, without interpretation. `GEOMETRY` and
+  `GEOGRAPHY` columns are written from well-known binary and their
+  geospatial statistics read with
+  [`geospatial_statistics()`](https://pedrobtz.github.io/qio/reference/geospatial_statistics.md),
+  but qio does not parse the geometries.
 
 - Partial reads over HTTP:
 

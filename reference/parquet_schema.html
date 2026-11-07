@@ -13,7 +13,7 @@ qio's automatic mapping."></head><body>
 
     <a class="navbar-brand me-2" href="../index.html">qio</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.1.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -36,7 +36,7 @@ qio's automatic mapping."></head><body>
   <main id="main" class="col-md-9"><div class="page-header">
 
       <h1>Create a Parquet writer schema</h1>
-      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/qio/blob/0.1.1/R/parquet-schema.R" class="external-link"><code>R/parquet-schema.R</code></a></small>
+      <small class="dont-index">Source: <a href="https://github.com/pedrobtz/qio/blob/main/R/parquet-schema.R" class="external-link"><code>R/parquet-schema.R</code></a></small>
       <div class="d-none name"><code>parquet_schema.Rd</code></div>
     </div>
 
@@ -67,7 +67,8 @@ qio's automatic mapping.</p>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p>Supported declarations are <code>"AUTO"</code>, <code>"BOOLEAN"</code>, <code>"INT32"</code>, <code>"INT64"</code>,
-<code>"FLOAT"</code>, <code>"DOUBLE"</code>, <code>"STRING"</code>, <code>"DATE"</code>, and <code>"TIMESTAMP"</code>.
+<code>"FLOAT"</code>, <code>"DOUBLE"</code>, <code>"STRING"</code>, <code>"DATE"</code>, <code>"TIMESTAMP"</code>, <code>"BINARY"</code>,
+<code>"GEOMETRY"</code>, and <code>"GEOGRAPHY"</code>.
 <code>TIMESTAMP</code> accepts <code>unit</code> (<code>"MILLIS"</code>, <code>"MICROS"</code>, or <code>"NANOS"</code>) and must
 be adjusted to UTC. All types accept <code>repetition_type</code> (<code>"AUTO"</code>,
 <code>"REQUIRED"</code>, or <code>"OPTIONAL"</code>).</p>
@@ -76,6 +77,15 @@ is limited to R's exact double-integer range from <code>-2^53</code> through <co
 <code>FLOAT</code> and <code>DOUBLE</code> accept numeric input, <code>STRING</code> accepts character or
 factor input, <code>DATE</code> accepts <code>Date</code> or whole-number days, and <code>TIMESTAMP</code>
 accepts <code>POSIXct</code>.</p>
+<p><code>"BINARY"</code>, <code>"GEOMETRY"</code> and <code>"GEOGRAPHY"</code> take a list of raw vectors, with
+<code>NULL</code> for a missing value; such a list is written as <code>BINARY</code> without a
+schema. <code>GEOMETRY</code> and <code>GEOGRAPHY</code> hold well-known binary (WKB) and accept
+<code>crs</code>, a string of at most 127 bytes such as <code>"OGC:CRS84"</code> (the default),
+<code>"EPSG:4326"</code>, or <code>"projjson:&lt;key&gt;"</code> naming a footer <code><a href="write_parquet.html">write_parquet()</a></code>
+<code>metadata</code> entry that holds the PROJJSON. <code>GEOGRAPHY</code> also accepts
+<code>algorithm</code>, the edge interpolation: <code>"SPHERICAL"</code> (the default),
+<code>"VINCENTY"</code>, <code>"THOMAS"</code>, <code>"ANDOYER"</code>, or <code>"KARNEY"</code>. qio does not parse the
+WKB beyond what <code><a href="geospatial_statistics.html">geospatial_statistics()</a></code> records.</p>
     </div>
 
     <div class="section level2">
@@ -94,6 +104,17 @@ accepts <code>POSIXct</code>.</p>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 1            AUTO</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 2            AUTO</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 3            AUTO</span>
+<span class="r-in"><span><span class="fu">parquet_schema</span><span class="op">(</span></span></span>
+<span class="r-in"><span>  shape <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="st">"GEOMETRY"</span>, crs <span class="op">=</span> <span class="st">"EPSG:4326"</span><span class="op">)</span>,</span></span>
+<span class="r-in"><span>  route <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="st">"GEOGRAPHY"</span>, algorithm <span class="op">=</span> <span class="st">"KARNEY"</span><span class="op">)</span></span></span>
+<span class="r-in"><span><span class="op">)</span></span></span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;qio_parquet_schema: 2 columns&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>    name physical_type logical_type                 logical_details</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1 shape    BYTE_ARRAY     GEOMETRY                   crs=EPSG:4326</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2 route    BYTE_ARRAY    GEOGRAPHY crs=OGC:CRS84, algorithm=KARNEY</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   repetition_type</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1            AUTO</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2            AUTO</span>
 </code></pre></div>
     </div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>

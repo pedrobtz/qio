@@ -7,7 +7,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">qio</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.1</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.1.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -30,11 +30,21 @@
   <main id="main" class="col-md-9"><div class="page-header">
 
       <h1>Changelog</h1>
-      <small>Source: <a href="https://github.com/pedrobtz/qio/blob/0.1.1/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
+      <small>Source: <a href="https://github.com/pedrobtz/qio/blob/main/NEWS.md" class="external-link"><code>NEWS.md</code></a></small>
     </div>
 
     <div class="section level2">
-<h2 class="pkg-version" data-toc-text="0.1.1" id="qio-011">qio 0.1.1<a class="anchor" aria-label="anchor" href="#qio-011"></a></h2>
+<h2 class="pkg-version" data-toc-text="development version" id="qio-development-version">qio (development version)<a class="anchor" aria-label="anchor" href="#qio-development-version"></a></h2>
+<ul><li>
+<code><a href="../reference/write_parquet.html">write_parquet()</a></code> writes a list of raw vectors as a binary (<code>BYTE_ARRAY</code>) column, with <code>NULL</code> for a missing value, and <code><a href="../reference/parquet_schema.html">parquet_schema()</a></code> declares it as <code>"BINARY"</code>, <code>"GEOMETRY"</code> or <code>"GEOGRAPHY"</code>. The geospatial types hold well-known binary with a <code>crs</code> (and, for <code>GEOGRAPHY</code>, an edge <code>algorithm</code>), and qio records each column chunk’s geospatial statistics.</li>
+<li>
+<code><a href="../reference/geospatial_statistics.html">geospatial_statistics()</a></code> reports the bounding box and geometry types of every <code>GEOMETRY</code> and <code>GEOGRAPHY</code> column chunk, so readers can choose row groups by box before reading data.</li>
+<li>Fixed the vendored carquet writer recording, for every row group after the first, geospatial statistics that included the earlier row groups.</li>
+<li>
+<code><a href="../reference/schema.html">schema()</a></code> reports a <code>GEOMETRY</code> or <code>GEOGRAPHY</code> CRS whole however long it is. Files that put inline PROJJSON there, as DuckDB does, had it cut to 127 bytes.</li>
+</ul></div>
+    <div class="section level2">
+<h2 class="pkg-version" data-toc-text="0.1.1" id="qio-011">qio 0.1.1<a class="anchor" aria-label="anchor" href="#qio-011"></a></h2><p class="text-muted">CRAN release: 2026-09-29</p>
 <ul><li>Fixed undefined behavior reported by CRAN’s sanitizer checks (M1-SAN, clang-UBSAN and gcc-UBSAN). Batch reads no longer load integer and floating-point values through misaligned pointers, and writing a string column that contains empty strings no longer passes a NULL pointer to <code>memcmp()</code> or <code>memcpy()</code>. Results were already correct; only the undefined behavior is removed.</li>
 </ul></div>
     <div class="section level2">
