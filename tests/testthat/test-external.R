@@ -1312,3 +1312,31 @@ test_that("a non-UTC nanosecond timestamp keeps its civil components", {
   expect_false(isTRUE(all.equal(as.numeric(utc[1]), as.numeric(paris[1]))))
   expect_true(is.na(utc[3]))
 })
+
+test_that("a GEOMETRY CRS of any length is reported whole", {
+  # Inline PROJJSON is nearly always longer than carquet's 128-byte buffer;
+  # before 0.1.2 it came back cut to 127 bytes.
+  geometry_details <- function(name) {
+    s <- schema(open_parquet(ext(name)))
+    s$logical_details[s$logical_type %in% c("GEOMETRY", "GEOGRAPHY")]
+  }
+  long <- geometry_details("geospatial-crs-arbitrary-value.parquet")
+  expect_identical(nchar(long, type = "bytes"), 2320L)
+  expect_true(startsWith(long, "crs={\"$schema\""))
+  expect_true(endsWith(long, "\"id\":{\"authority\":\"EPSG\",\"code\":5070}}"))
+  expect_identical(
+    geometry_details("geospatial-crs-projjson.parquet"),
+    "crs=projjson:projjson_epsg_5070"
+  )
+  pf <- open_parquet(ext("geospatial-crs-projjson.parquet"))
+  expect_true("projjson_epsg_5070" %in% metadata(pf)$key)
+  close_parquet(pf)
+  expect_identical(
+    geometry_details("geospatial-crs-srid.parquet"),
+    "crs=srid:5070"
+  )
+  expect_identical(
+    geometry_details("geospatial-crs-geography.parquet"),
+    "crs=OGC:CRS84, algorithm=SPHERICAL"
+  )
+})

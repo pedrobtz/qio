@@ -23,6 +23,7 @@ reference:
       - row_groups
       - column_chunks
       - column_statistics
+      - geospatial_statistics
       - page_index
       - bloom_filter_may_contain
       - metadata

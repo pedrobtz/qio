@@ -20,7 +20,8 @@ qio's automatic mapping.
 }
 \details{
 Supported declarations are \code{"AUTO"}, \code{"BOOLEAN"}, \code{"INT32"}, \code{"INT64"},
-\code{"FLOAT"}, \code{"DOUBLE"}, \code{"STRING"}, \code{"DATE"}, and \code{"TIMESTAMP"}.
+\code{"FLOAT"}, \code{"DOUBLE"}, \code{"STRING"}, \code{"DATE"}, \code{"TIMESTAMP"}, \code{"BINARY"},
+\code{"GEOMETRY"}, and \code{"GEOGRAPHY"}.
 \code{TIMESTAMP} accepts \code{unit} (\code{"MILLIS"}, \code{"MICROS"}, or \code{"NANOS"}) and must
 be adjusted to UTC. All types accept \code{repetition_type} (\code{"AUTO"},
 \code{"REQUIRED"}, or \code{"OPTIONAL"}).
@@ -30,11 +31,25 @@ is limited to R's exact double-integer range from \code{-2^53} through \code{2^5
 \code{FLOAT} and \code{DOUBLE} accept numeric input, \code{STRING} accepts character or
 factor input, \code{DATE} accepts \code{Date} or whole-number days, and \code{TIMESTAMP}
 accepts \code{POSIXct}.
+
+\code{"BINARY"}, \code{"GEOMETRY"} and \code{"GEOGRAPHY"} take a list of raw vectors, with
+\code{NULL} for a missing value; such a list is written as \code{BINARY} without a
+schema. \code{GEOMETRY} and \code{GEOGRAPHY} hold well-known binary (WKB) and accept
+\code{crs}, a string of at most 127 bytes such as \code{"OGC:CRS84"} (the default),
+\code{"EPSG:4326"}, or \code{"projjson:<key>"} naming a footer \code{\link[=write_parquet]{write_parquet()}}
+\code{metadata} entry that holds the PROJJSON. \code{GEOGRAPHY} also accepts
+\code{algorithm}, the edge interpolation: \code{"SPHERICAL"} (the default),
+\code{"VINCENTY"}, \code{"THOMAS"}, \code{"ANDOYER"}, or \code{"KARNEY"}. qio does not parse the
+WKB beyond what \code{\link[=geospatial_statistics]{geospatial_statistics()}} records.
 }
 \examples{
 parquet_schema(
   id = "INT64",
   price = "FLOAT",
   created_at = list("TIMESTAMP", unit = "MILLIS")
+)
+parquet_schema(
+  shape = list("GEOMETRY", crs = "EPSG:4326"),
+  route = list("GEOGRAPHY", algorithm = "KARNEY")
 )
 }

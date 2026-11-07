@@ -15,6 +15,7 @@ SEXP qio_parquet_row_groups(SEXP file);
 SEXP qio_parquet_metadata(SEXP file);
 SEXP qio_parquet_column_chunks(SEXP file);
 SEXP qio_parquet_column_statistics(SEXP file);
+SEXP qio_parquet_geospatial_statistics(SEXP file);
 SEXP qio_parquet_page_index(SEXP file);
 SEXP qio_parquet_bloom_check(SEXP file, SEXP column, SEXP values,
                              SEXP row_group);

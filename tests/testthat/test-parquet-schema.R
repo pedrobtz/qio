@@ -312,3 +312,124 @@ test_that("row_group_size requires a whole number", {
   withr::defer(close_parquet(file))
   expect_equal(nrow(row_groups(file)), 2L)
 })
+
+test_that("a list of raw vectors writes as BINARY and reads back", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  df <- data.frame(id = 1:3)
+  df$blob <- list(as.raw(1:3), NULL, raw())
+  expect_identical(infer_parquet_schema(df)$physical_type[2], "BYTE_ARRAY")
+  expect_true(is.na(infer_parquet_schema(df)$logical_type[2]))
+  expect_identical(infer_parquet_schema(df)$repetition_type[2], "OPTIONAL")
+  write_parquet(df, path)
+  expect_identical(read_parquet(path)$blob, df$blob)
+  write_parquet(df, path, schema = parquet_schema(blob = "BINARY"))
+  expect_identical(read_parquet(path)$blob, df$blob)
+})
+
+test_that("GEOMETRY and GEOGRAPHY write WKB with their CRS and algorithm", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  df <- data.frame(id = 1:3)
+  df$geom <- list(wkb_point(1, 2), NULL, wkb_linestring(c(0, 5), c(-1, 3)))
+  df$geog <- list(wkb_point(10, 20), wkb_point(30, 40), NULL)
+  write_parquet(
+    df,
+    path,
+    schema = parquet_schema(
+      geom = list("GEOMETRY", crs = "EPSG:4326"),
+      geog = list("GEOGRAPHY", algorithm = "KARNEY")
+    )
+  )
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf))
+  s <- schema(pf)
+  expect_identical(s$logical_type[2:3], c("GEOMETRY", "GEOGRAPHY"))
+  expect_identical(
+    s$logical_details[2:3],
+    c("crs=EPSG:4326", "crs=OGC:CRS84, algorithm=KARNEY")
+  )
+  out <- collect(pf)
+  expect_identical(out$geom, df$geom)
+  expect_identical(out$geog, df$geog)
+
+  defaults <- parquet_schema(g = "GEOMETRY", h = "GEOGRAPHY")
+  expect_identical(
+    defaults$logical_details,
+    c("crs=OGC:CRS84", "crs=OGC:CRS84, algorithm=SPHERICAL")
+  )
+})
+
+test_that("a PROJJSON CRS goes in the footer and the column names its key", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  projjson <- strrep("x", 500)
+  df <- data.frame(id = 1)
+  df$geom <- list(wkb_point(1, 2))
+  write_parquet(
+    df,
+    path,
+    schema = parquet_schema(geom = list("GEOMETRY", crs = "projjson:geom_crs")),
+    metadata = c(geom_crs = projjson)
+  )
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf))
+  expect_identical(schema(pf)$logical_details[2], "crs=projjson:geom_crs")
+  meta <- metadata(pf)
+  expect_identical(meta$value[meta$key == "geom_crs"], projjson)
+})
+
+test_that("geospatial schema declarations are checked", {
+  expect_error(
+    parquet_schema(g = list("GEOMETRY", crs = strrep("a", 128))),
+    "127 bytes"
+  )
+  expect_error(
+    parquet_schema(g = list("GEOMETRY", algorithm = "KARNEY")),
+    "algorithm"
+  )
+  expect_error(
+    parquet_schema(g = list("GEOGRAPHY", algorithm = "GREAT_CIRCLE")),
+    "must be one of"
+  )
+  expect_error(
+    parquet_schema(g = list("GEOMETRY", crs = NA_character_)),
+    "non-empty"
+  )
+  expect_error(
+    parquet_schema(g = list("STRING", crs = "EPSG:4326")),
+    "does not accept"
+  )
+  expect_error(
+    parquet_schema(g = list("BINARY", crs = "EPSG:4326")),
+    "does not accept"
+  )
+  expect_error(
+    parquet_schema(g = list("GEOMETRY", unit = "MILLIS")),
+    "time parameters"
+  )
+  path <- withr::local_tempfile(fileext = ".parquet")
+  df <- data.frame(id = 1:2)
+  df$geom <- list(wkb_point(1, 2), "POINT (1 2)")
+  expect_error(
+    write_parquet(df, path, schema = parquet_schema(geom = "GEOMETRY")),
+    "list of raw vectors"
+  )
+  expect_error(write_parquet(df, path), "list of raw vectors")
+  df$geom <- c("a", "b")
+  expect_error(
+    write_parquet(df, path, schema = parquet_schema(geom = "GEOMETRY")),
+    "list of raw vectors"
+  )
+})
+
+test_that("geospatial columns append", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  df <- data.frame(id = 1:2)
+  df$geom <- list(wkb_point(1, 2), wkb_point(3, 4))
+  sch <- parquet_schema(geom = list("GEOMETRY", crs = "EPSG:3857"))
+  write_parquet(df, path, schema = sch)
+  write_parquet(df, path, schema = sch, append = TRUE)
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf))
+  expect_identical(nrow(row_groups(pf)), 2L)
+  expect_identical(collect(pf)$geom, c(df$geom, df$geom))
+  expect_identical(nrow(geospatial_statistics(pf)), 2L)
+})

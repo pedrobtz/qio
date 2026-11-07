@@ -7,7 +7,7 @@ then re-vendor from it.
 | Library | Version | Commit | Retrieved | License |
 |---|---|---|---|---|
 | [carquet](https://github.com/Vitruves/carquet) | v0.6.0 | `06efab6dce5475a7faa86f0938d42e9078b6d440` | 2026-06-29 | MIT (`src/carquet/LICENSE`) |
-| [carquet fork](https://github.com/pedrobtz/carquet) | `qio` branch | `428c07010a3dd205f526cc822a9088904d7eb757` | 2026-09-28 | MIT (`src/carquet/LICENSE`) |
+| [carquet fork](https://github.com/pedrobtz/carquet) | `qio` branch | `7ba0b94e7bfe6aa0732de099979d48a0ae48fbdc` | 2026-11-07 | MIT (`src/carquet/LICENSE`) |
 | [zstd](https://github.com/facebook/zstd) | v1.5.7 | `f8745da6ff1ad1e7bab384bd1f9d742439278e99` | 2026-06-29 | BSD-3-Clause (`src/zstd/LICENSE`) |
 | [lz4](https://github.com/lz4/lz4) | v1.10.0 | `ebb370ca83af193212df4dcbadcc5d87bc0de2f0` | 2026-06-29 | BSD-2-Clause (`src/lz4/LICENSE`) |
 
@@ -377,6 +377,48 @@ them. They are confirmed on Linux by the r-actions UBSan legs.
 
 The same code is on upstream `main` as of `5c35328`. **Not yet reported**:
 first run the regression test against pristine upstream, as
+[Upstream reporting](#upstream-reporting) requires.
+
+### Reset GeospatialStatistics for each row group (`3bb99c8`)
+
+`writer/page_writer.c`, `writer/column_writer.c`. **Wrong metadata, data
+correct.** A `GEOMETRY` or `GEOGRAPHY` column chunk's GeospatialStatistics
+accumulated from the start of the file rather than of the chunk.
+`carquet_column_writer_reset()`, which runs for every new row group, clears the
+min/max statistics through `carquet_page_writer_reset()`, but that function
+runs after every page too and so deliberately leaves the geospatial
+accumulator alone; nothing cleared it per chunk. Every row group after the
+first therefore reported the bounding box and geometry types of all earlier
+ones as well: harmless for a single row group, and wrong for a reader that
+prunes row groups by box, which is what the statistics are for. A new
+`carquet_page_writer_reset_geo_stats()` clears it once per chunk. Reachable
+from qio since 0.1.2 writes `GEOMETRY` and `GEOGRAPHY`; covered by
+`geospatial_statistics()` over two row groups in `test-parquet-file.R`, and
+verified against DuckDB's `parquet_metadata()`.
+
+The same code is on upstream `main`. **Not yet reported**: first run a
+regression test against pristine upstream, as
+[Upstream reporting](#upstream-reporting) requires.
+
+### Keep a long GEOMETRY or GEOGRAPHY CRS whole (`7ba0b94`)
+
+`include/carquet/types.h`, `thrift/parquet_types.c`. **Silent data loss.** The
+logical type holds its CRS in a 128-byte array, and the footer parser cut a
+longer one to its first 127 bytes. Inline PROJJSON is nearly always longer:
+DuckDB writes it in full, and parquet-testing's
+`geospatial/crs-arbitrary-value.parquet` carries 2,316 bytes. The truncated
+text is a different CRS, usually not even parseable, and nothing said it had
+been cut. A CRS that does not fit is now also copied whole into the reader's
+arena as `crs_long`, and `carquet_logical_type_crs()` returns whichever holds
+the whole value; the writer writes it too, so a schema read from a file writes
+back unchanged. qio's `qio_logical_type_details()` reads the CRS through it and
+sizes its result to fit, instead of a 256-byte buffer. Writing a CRS longer
+than 127 bytes from R stays an error (the `projjson:<key>` hint). Covered by
+carquet's `test_thrift` and by `test-external.R` over the parquet-testing CRS
+files.
+
+The same code is on upstream `main`. **Not yet reported**: first run a
+regression test against pristine upstream, as
 [Upstream reporting](#upstream-reporting) requires.
 
 ## Header dependencies

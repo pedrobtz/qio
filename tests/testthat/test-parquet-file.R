@@ -920,3 +920,62 @@ test_that("collect() is registered on dplyr's generic when dplyr is present", {
   # Read arguments must survive the dispatch.
   expect_named(dplyr::collect(file, columns = "id"), "id")
 })
+
+test_that("geospatial_statistics() reports each chunk's box and types", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  df <- data.frame(id = 1:4)
+  df$geom <- list(
+    wkb_point(1, 2),
+    wkb_linestring(c(-5, 5), c(0, 10)),
+    wkb_point(100, 200, z = 7),
+    NULL
+  )
+  df$plain <- list(as.raw(1), NULL, NULL, NULL)
+  write_parquet(
+    df,
+    path,
+    row_group_size = 2,
+    schema = parquet_schema(geom = "GEOMETRY")
+  )
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf))
+  g <- geospatial_statistics(pf)
+  expect_named(
+    g,
+    c(
+      "row_group",
+      "column",
+      "path",
+      "xmin",
+      "xmax",
+      "ymin",
+      "ymax",
+      "zmin",
+      "zmax",
+      "mmin",
+      "mmax",
+      "geometry_types"
+    )
+  )
+  expect_identical(g$row_group, 1:2)
+  expect_identical(g$path, c("geom", "geom"))
+  expect_identical(
+    c(g$xmin[1], g$xmax[1], g$ymin[1], g$ymax[1]),
+    c(-5, 5, 0, 10)
+  )
+  expect_true(is.na(g$zmin[1]))
+  expect_identical(sort(g$geometry_types[[1]]), c(1L, 2L))
+  expect_identical(c(g$xmin[2], g$zmin[2], g$zmax[2]), c(100, 7, 7))
+  expect_identical(g$geometry_types[[2]], 1001L)
+})
+
+test_that("geospatial_statistics() is empty without geospatial columns", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  write_parquet(data.frame(x = 1:3), path)
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf))
+  g <- geospatial_statistics(pf)
+  expect_identical(nrow(g), 0L)
+  expect_named(g)[1]
+  expect_error(geospatial_statistics(pf, 1), class = "error")
+})

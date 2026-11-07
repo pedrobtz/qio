@@ -927,6 +927,63 @@ column_statistics.qio_parquet_file <- function(x, ...) {
   .Call(C_qio_parquet_column_statistics, x)
 }
 
+#' Inspect Parquet geospatial statistics
+#'
+#' Reports the GeospatialStatistics that writers record for `GEOMETRY` and
+#' `GEOGRAPHY` columns: each column chunk's bounding box and the geometry
+#' types it holds. One row per row group and geospatial column, whether or not
+#' the chunk carries them, so a reader can choose row groups by box before
+#' reading any data. qio's own writer records them for every geospatial
+#' column.
+#'
+#' Like [column_statistics()], the bounds are claims made by whoever wrote the
+#' file. For `GEOGRAPHY` a box can be smaller than the geometries' extent on
+#' the sphere, and an `xmin` greater than `xmax` means the box wraps the
+#' antimeridian.
+#'
+#' @param x A `qio_parquet_file` object.
+#' @param ... Reserved for future use.
+#'
+#' @return A data frame with one row per row group and geospatial column,
+#'   ordered by row group, then column, with the columns:
+#'   \describe{
+#'     \item{`row_group`}{1-based row-group ID, as [row_groups()] reports it.}
+#'     \item{`column`}{1-based physical column index, as [schema()] reports it.}
+#'     \item{`path`}{Complete dotted column path; see [schema()].}
+#'     \item{`xmin`, `xmax`, `ymin`, `ymax`}{The bounding box, or `NA` when
+#'       none was recorded.}
+#'     \item{`zmin`, `zmax`, `mmin`, `mmax`}{The Z and M ranges, or `NA` when
+#'       the geometries have no such dimension or none was recorded.}
+#'     \item{`geometry_types`}{A list column of the ISO WKB geometry type codes
+#'       present (1 for a point, 1001 for a point with Z, ...), or `NULL` when
+#'       none were recorded, which Parquet reads as unknown.}
+#'   }
+#' @seealso [column_statistics()], [parquet_schema()] for writing geospatial
+#'   columns.
+#' @export
+#' @examples
+#' path <- tempfile(fileext = ".parquet")
+#' point <- function(x, y) {
+#'   c(as.raw(1), writeBin(1L, raw(), size = 4, endian = "little"),
+#'     writeBin(c(x, y), raw(), size = 8, endian = "little"))
+#' }
+#' df <- data.frame(id = 1:2)
+#' df$geom <- list(point(1, 2), point(3, 4))
+#' write_parquet(df, path, schema = parquet_schema(geom = "GEOMETRY"))
+#' pf <- open_parquet(path)
+#' geospatial_statistics(pf)
+#' close_parquet(pf)
+geospatial_statistics <- function(x, ...) {
+  UseMethod("geospatial_statistics")
+}
+
+#' @rdname geospatial_statistics
+#' @export
+geospatial_statistics.qio_parquet_file <- function(x, ...) {
+  qio_empty_dots(...)
+  .Call(C_qio_parquet_geospatial_statistics, x)
+}
+
 #' Inspect Parquet page indexes
 #'
 #' Reports the per-page index of each column chunk: where each data page sits
