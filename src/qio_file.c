@@ -200,54 +200,65 @@ static const char *qio_edge_algorithm_name(
     }
 }
 
-static int qio_logical_type_details(const carquet_logical_type_t *type,
-                                    char *buffer, size_t size) {
-    if (!type || !buffer || size == 0) return 0;
+/* A logical type's parameters as text, in memory from R_alloc(), or NULL
+ * for a type without any. Sized to its content, because a GEOMETRY or
+ * GEOGRAPHY CRS (inline PROJJSON, WKT) has no length limit. */
+static const char *qio_logical_type_details(const carquet_logical_type_t *type) {
+    if (!type) return NULL;
 
+    char small[128];
     switch (type->id) {
     case CARQUET_LOGICAL_DECIMAL:
-        snprintf(buffer, size, "precision=%d, scale=%d",
+        snprintf(small, sizeof(small), "precision=%d, scale=%d",
                  type->params.decimal.precision, type->params.decimal.scale);
-        return 1;
+        break;
     case CARQUET_LOGICAL_INTEGER:
-        snprintf(buffer, size, "bit_width=%d, signed=%s",
+        snprintf(small, sizeof(small), "bit_width=%d, signed=%s",
                  type->params.integer.bit_width,
                  type->params.integer.is_signed ? "true" : "false");
-        return 1;
+        break;
     case CARQUET_LOGICAL_TIME:
-        snprintf(buffer, size, "unit=%s, adjusted_to_utc=%s",
+        snprintf(small, sizeof(small), "unit=%s, adjusted_to_utc=%s",
                  qio_time_unit_name(type->params.time.unit),
                  type->params.time.is_adjusted_to_utc ? "true" : "false");
-        return 1;
+        break;
     case CARQUET_LOGICAL_TIMESTAMP:
-        snprintf(buffer, size, "unit=%s, adjusted_to_utc=%s",
+        snprintf(small, sizeof(small), "unit=%s, adjusted_to_utc=%s",
                  qio_time_unit_name(type->params.timestamp.unit),
                  type->params.timestamp.is_adjusted_to_utc ? "true" : "false");
-        return 1;
+        break;
     case CARQUET_LOGICAL_VARIANT:
-        snprintf(buffer, size, "specification_version=%d",
+        snprintf(small, sizeof(small), "specification_version=%d",
                  type->params.variant.specification_version == 0
                      ? 1
                      : type->params.variant.specification_version);
-        return 1;
+        break;
     case CARQUET_LOGICAL_GEOMETRY:
-        snprintf(buffer, size, "crs=%s",
-                 type->params.geometry.crs[0]
-                     ? type->params.geometry.crs
-                     : "OGC:CRS84");
-        return 1;
-    case CARQUET_LOGICAL_GEOGRAPHY:
-        snprintf(buffer, size, "crs=%s, algorithm=%s",
-                 type->params.geography.crs[0]
-                     ? type->params.geography.crs
-                     : "OGC:CRS84",
-                 type->params.geography.has_algorithm
-                     ? qio_edge_algorithm_name(type->params.geography.algorithm)
-                     : "SPHERICAL");
-        return 1;
-    default:
-        return 0;
+    case CARQUET_LOGICAL_GEOGRAPHY: {
+        const char *crs = carquet_logical_type_crs(type);
+        if (!crs || !crs[0]) crs = "OGC:CRS84";
+        const char *algorithm =
+            type->id == CARQUET_LOGICAL_GEOMETRY ? NULL
+            : type->params.geography.has_algorithm
+                ? qio_edge_algorithm_name(type->params.geography.algorithm)
+                : "SPHERICAL";
+        size_t size = strlen(crs) + 5 +
+                      (algorithm ? strlen(algorithm) + 12 : 0) + 1;
+        char *out = (char *)R_alloc(size, sizeof(char));
+        if (algorithm) {
+            snprintf(out, size, "crs=%s, algorithm=%s", crs, algorithm);
+        } else {
+            snprintf(out, size, "crs=%s", crs);
+        }
+        return out;
     }
+    default:
+        return NULL;
+    }
+    size_t size = strlen(small) + 1;
+    char *out = (char *)R_alloc(size, sizeof(char));
+    memcpy(out, small, size);
+    return out;
 }
 
 /* Collect the leaf nodes in schema order, in one pass. Resolving each leaf
@@ -336,8 +347,8 @@ static const char *qio_logical_description(const carquet_schema_t *schema,
     if (!logical) return "none";
 
     const char *name = qio_logical_type_name(logical->id);
-    char details[256];
-    if (!qio_logical_type_details(logical, details, sizeof(details))) {
+    const char *details = qio_logical_type_details(logical);
+    if (!details) {
         return name;
     }
     size_t size = strlen(name) + strlen(details) + 4;
@@ -2544,8 +2555,8 @@ SEXP qio_parquet_schema(SEXP file) {
         if (logical) {
             SET_STRING_ELT(VECTOR_ELT(result, 4), i,
                            Rf_mkChar(qio_logical_type_name(logical->id)));
-            char details[256];
-            if (qio_logical_type_details(logical, details, sizeof(details))) {
+            const char *details = qio_logical_type_details(logical);
+            if (details) {
                 SET_STRING_ELT(VECTOR_ELT(result, 5), i,
                                Rf_mkCharCE(details, CE_UTF8));
             } else {

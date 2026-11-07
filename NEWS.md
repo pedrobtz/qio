@@ -10,6 +10,9 @@
   groups by box before reading data.
 * Fixed the vendored carquet writer recording, for every row group after the
   first, geospatial statistics that included the earlier row groups.
+* `schema()` reports a `GEOMETRY` or `GEOGRAPHY` CRS whole however long it is.
+  Files that put inline PROJJSON there, as DuckDB does, had it cut to 127
+  bytes.
 
 # qio 0.1.1
 

@@ -17,6 +17,11 @@ are used to test reading real-world, third-party-written Parquet files.
 | `nested_maps.snappy.parquet` | nested `MAP` columns (repetition) |
 | `nullable.impala.parquet` | nullable nested `LIST` columns (Impala) |
 
+| `geospatial-crs-arbitrary-value.parquet` | `GEOMETRY` with a 2,316-byte inline PROJJSON CRS (upstream `geospatial/crs-arbitrary-value.parquet`) |
+| `geospatial-crs-projjson.parquet` | `GEOMETRY` whose CRS is `projjson:<key>`, the PROJJSON in the footer (upstream `geospatial/crs-projjson.parquet`) |
+| `geospatial-crs-srid.parquet` | `GEOMETRY` with the CRS `srid:5070` (upstream `geospatial/crs-srid.parquet`) |
+| `geospatial-crs-geography.parquet` | `GEOGRAPHY` with the default CRS and algorithm (upstream `geospatial/crs-geography.parquet`) |
+
 Note: `int96_from_spark.parquet` is the upstream name for what was requested as
 `int96.parquet`.
 

@@ -87,7 +87,8 @@ provides. `GEOGRAPHY` takes `algorithm` (`SPHERICAL` by default, `VINCENTY`,
 GeospatialStatistics (bounding box and ISO WKB geometry types) from the WKB,
 and `geospatial_statistics()` reads them back from any writer's file. The
 schema details string is the one `schema()` reports when reading back:
-`crs=<crs>`, and `crs=<crs>, algorithm=<algorithm>` for `GEOGRAPHY`.
+`crs=<crs>`, and `crs=<crs>, algorithm=<algorithm>` for `GEOGRAPHY`. A file's
+CRS is reported whole whatever its length; only writing is held to 127 bytes.
 Explicit `INT64` input must be finite, whole, and within `[-2^53, 2^53]`.
 
 Double-backed 64-bit integer objects currently infer `DOUBLE`.
