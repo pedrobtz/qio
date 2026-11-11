@@ -1,6 +1,8 @@
 on:
-  push:
-    branches: [main, master]
+  # No `push:`: a pull request already checks its merge with main,
+  # and the schedule checks main (r-actions README, "Pushes to main").
+  schedule:
+    - cron: "37 12 * * 6"
   # `labeled` so that adding `full-ci` to a pull request reruns it in full.
   pull_request:
     types: [opened, synchronize, reopened, labeled]

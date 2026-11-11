@@ -1,15 +1,8 @@
 on:
-  push:
-    branches: [main, master]
-    # gctorture exists to find PROTECT bugs, and a PROTECT bug is introduced by
-    # C code, not by R code or tests. Running it only when compiled sources
-    # change keeps it off the ~95% of commits it cannot say anything new about.
-    #
-    # `src/**` covers the vendored trees as well as package-owned glue, which is
-    # intended: re-vendoring changes what the glue calls into.
-    paths:
-      - "src/**"
-      - ".github/workflows/gctorture.yml"
+  # No `push:`: a pull request already checks its merge with main,
+  # and the schedule checks main (r-actions README, "Pushes to main").
+  schedule:
+    - cron: "32 12 * * 6"
   # The same filter on pull requests, and `labeled` so that adding `full-ci`
   # reruns it at the sensitive step.
   pull_request:
