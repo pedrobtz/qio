@@ -171,3 +171,81 @@ test_that("append honors row_group_size for the new data", {
   expect_equal(row_groups(file)$rows, c(10, 10, 10, 10))
   expect_identical(read_parquet(path)$n, 1:40)
 })
+
+# A failed append must leave the file exactly as it was. Before 0.1.2 the
+# first new row group overwrote the old footer, so any failure after it left
+# the user's file unreadable (#34).
+bytes_strings <- function(...) {
+  s <- c(...)
+  Encoding(s) <- "bytes"
+  s
+}
+
+test_that("an untranslatable string fails an append before any byte is written", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  write_parquet(data.frame(id = 1:3, s = c("a", "b", "c")), path)
+  before <- readBin(path, "raw", file.size(path))
+
+  batch <- data.frame(id = 4:6, s = c("x", "y", "z"))
+  batch$s[2] <- bytes_strings("\xff")
+  expect_error(
+    write_parquet(batch, path, append = TRUE, row_group_size = 1),
+    "bytes"
+  )
+  expect_identical(readBin(path, "raw", file.size(path) + 1), before)
+  expect_identical(read_parquet(path)$id, 1:3)
+})
+
+test_that("bytes-encoded names and metadata are refused before writing", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  x <- data.frame(a = 1:2)
+  names(x) <- bytes_strings("a\xff")
+  expect_error(write_parquet(x, path), "bytes")
+  expect_false(file.exists(path))
+
+  meta <- c(k = "v")
+  names(meta) <- bytes_strings("k\xff")
+  expect_error(
+    write_parquet(data.frame(a = 1:2), path, metadata = meta),
+    "bytes"
+  )
+  expect_false(file.exists(path))
+})
+
+test_that("a native append failure after a flushed row group restores the file", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  write_parquet(
+    data.frame(id = 1:3, s = c("a", "b", "c")),
+    path,
+    metadata = c(origin = "first")
+  )
+  before <- readBin(path, "raw", file.size(path))
+
+  # Calls the native writer directly, past the R-side input check, so the
+  # failure happens inside the write after row group 1 reached the file. This
+  # is the path an interrupt or an I/O error takes.
+  batch <- data.frame(id = 4:6, s = c("x", "y", "z"))
+  prepared <- qio:::qio_resolve_write_schema(batch, NULL)
+  prepared <- qio:::qio_prepare_append(path, prepared)
+  prepared$x$s[3] <- bytes_strings("\xff")
+  expect_error(
+    .Call(
+      qio:::C_qio_write_parquet,
+      prepared$x,
+      path,
+      "snappy",
+      prepared$native,
+      1,
+      NULL,
+      NULL,
+      TRUE
+    ),
+    "bytes"
+  )
+  expect_identical(readBin(path, "raw", file.size(path) + 1), before)
+  expect_identical(read_parquet(path)$s, c("a", "b", "c"))
+
+  # The restored file still takes a later append.
+  write_parquet(data.frame(id = 4L, s = "d"), path, append = TRUE)
+  expect_identical(read_parquet(path)$id, 1:4)
+})
