@@ -1,0 +1,49 @@
+# Independent implementations as oracles. Runs tests/testthat/test-ci-*.R,
+# which .Rbuildignore keeps out of the tarball, with QIO_ORACLES=true so a
+# missing oracle package fails instead of skipping. DuckDB reads the footer
+# qio writes with its own decoder, so these check the bytes on disk rather
+# than qio reading back its own writes.
+on:
+  schedule:
+    - cron: "41 12 * * 6"
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+name: oracles
+
+permissions: read-all
+
+concurrency:
+  group: oracles-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    uses: pedrobtz/r-actions/.github/workflows/changes.yml@v1
+
+  oracles:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs-only != 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+      QIO_ORACLES: "true"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            any::devtools
+            any::duckdb
+            any::DBI
+
+      - name: Run the oracle tests
+        run: |
+          Rscript -e 'devtools::load_all(quiet = TRUE); res <- as.data.frame(testthat::test_dir("tests/testthat", filter = "^ci-", load_package = "none", stop_on_failure = TRUE)); stopifnot(sum(res$nb) > 0, sum(res$skipped) == 0)'
+        shell: bash

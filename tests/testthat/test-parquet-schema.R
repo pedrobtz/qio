@@ -433,3 +433,51 @@ test_that("geospatial columns append", {
   expect_identical(collect(pf)$geom, c(df$geom, df$geom))
   expect_identical(nrow(geospatial_statistics(pf)), 2L)
 })
+
+test_that("a GEOMETRY crs is written whole, whatever it ends in (#37)", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  df <- data.frame(id = 1L)
+  df$g <- list(wkb_point(1, 2))
+  df$h <- list(wkb_point(1, 2))
+  s <- parquet_schema(
+    g = list("GEOMETRY", crs = "urn:x, algorithm=KARNEY"),
+    h = list(
+      "GEOGRAPHY",
+      crs = "urn:y, algorithm=KARNEY",
+      algorithm = "VINCENTY"
+    )
+  )
+  write_parquet(df, path, schema = s)
+  pf <- open_parquet(path)
+  details <- schema(pf)$logical_details
+  close_parquet(pf)
+  expect_identical(details[2], "crs=urn:x, algorithm=KARNEY")
+  expect_identical(
+    details[3],
+    "crs=urn:y, algorithm=KARNEY, algorithm=VINCENTY"
+  )
+  # The schema that wrote the file appends to it.
+  write_parquet(df, path, schema = s, append = TRUE)
+  expect_identical(nrow(read_parquet(path)), 2L)
+})
+
+test_that("a non-ASCII crs is written as UTF-8 in any locale (#37)", {
+  skip_on_os("windows")
+  path <- withr::local_tempfile(fileext = ".parquet")
+  crs <- iconv("café", "UTF-8", "latin1")
+  Encoding(crs) <- "latin1"
+  df <- data.frame(id = 1L)
+  df$g <- list(wkb_point(1, 2))
+  withr::with_locale(
+    c(LC_CTYPE = "C"),
+    write_parquet(
+      df,
+      path,
+      schema = parquet_schema(g = list("GEOMETRY", crs = crs))
+    )
+  )
+  pf <- open_parquet(path)
+  details <- schema(pf)$logical_details[2]
+  close_parquet(pf)
+  expect_identical(charToRaw(details), charToRaw(enc2utf8("crs=café")))
+})
