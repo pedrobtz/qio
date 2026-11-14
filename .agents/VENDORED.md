@@ -480,11 +480,11 @@ Three issues were filed on 2026-08-06, two with a pull request; two more on
 
 | Upstream | Ledger entry | State |
 |---|---|---|
-| [#24](https://github.com/Vitruves/carquet/issues/24) → [PR #27](https://github.com/Vitruves/carquet/pull/27) | Transpose BYTE_STREAM_SPLIT once per page, plus the INT32/INT64/FLBA extension — one defect as upstream sees it | open |
-| [#25](https://github.com/Vitruves/carquet/issues/25) → [PR #28](https://github.com/Vitruves/carquet/pull/28) | Resume BOOLEAN bit packing across write batches | open |
+| [#24](https://github.com/Vitruves/carquet/issues/24) → [PR #27](https://github.com/Vitruves/carquet/pull/27) | Transpose BYTE_STREAM_SPLIT once per page, plus the INT32/INT64/FLBA extension — one defect as upstream sees it | **merged** 2026-09-29 |
+| [#25](https://github.com/Vitruves/carquet/issues/25) → [PR #28](https://github.com/Vitruves/carquet/pull/28) | Resume BOOLEAN bit packing across write batches | fixed in-tree in v0.7.1 with #28's approach; PR closed |
 | [#26](https://github.com/Vitruves/carquet/issues/26) | Refuse dictionary preservation for non-dictionary encodings | **retracted, closed** |
-| [#41](https://github.com/Vitruves/carquet/issues/41) → [PR #42](https://github.com/Vitruves/carquet/pull/42) | Reset GeospatialStatistics for each row group | open |
-| [#43](https://github.com/Vitruves/carquet/issues/43) → [PR #44](https://github.com/Vitruves/carquet/pull/44) | Keep a long GEOMETRY or GEOGRAPHY CRS whole (fixed differently upstream) | open |
+| [#41](https://github.com/Vitruves/carquet/issues/41) → [PR #42](https://github.com/Vitruves/carquet/pull/42) | Reset GeospatialStatistics for each row group | fixed in v0.8.0 with the same reset; PR closed |
+| [#43](https://github.com/Vitruves/carquet/issues/43) → [PR #44](https://github.com/Vitruves/carquet/pull/44) | Keep a long GEOMETRY or GEOGRAPHY CRS whole (fixed differently upstream) | **merged** 2026-11-12 |
 
 #26 was wrong: upstream guards `preserve_dictionary` at both sites that set it,
 so the overrun is qio's own, caused by qio's column-level setter removing that
