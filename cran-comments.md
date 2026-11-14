@@ -8,7 +8,10 @@ See NEWS.md.
 
 ## R CMD check results
 
-(To be filled in from the release checks; not yet run.)
+0 errors | 0 warnings | 0 notes
+
+Locally on macOS (R 4.6.2) with `--as-cran`. The GitHub Actions results
+are filled in from the release pull request's full CI run.
 
 ## Test environments
 
