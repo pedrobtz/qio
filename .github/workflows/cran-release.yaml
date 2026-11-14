@@ -3,6 +3,9 @@
 # whole release step. Keep CRAN-SUBMISSION in .Rbuildignore, not .gitignore.
 on:
   push:
+    # Only main: a CRAN-SUBMISSION pushed on a branch would otherwise tag
+    # and release before the merge (pedrobtz/r-actions#118).
+    branches: [main]
     paths: [CRAN-SUBMISSION]
   workflow_dispatch:
 
