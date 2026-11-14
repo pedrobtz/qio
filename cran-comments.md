@@ -8,7 +8,7 @@ See NEWS.md.
 
 ## R CMD check results
 
-0 errors | 0 warnings | 0 notes
+(To be filled in from the release checks; not yet run.)
 
 ## Test environments
 
