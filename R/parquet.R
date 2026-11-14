@@ -195,6 +195,7 @@ write_parquet <- function(
     prepared <- qio_prepare_append(file, prepared)
   }
   sorted_by <- qio_sorted_by(sorted_by, names(prepared$x))
+  qio_check_translatable(prepared, metadata)
   .Call(
     C_qio_write_parquet,
     prepared$x,
@@ -207,6 +208,44 @@ write_parquet <- function(
     append
   )
   invisible(file)
+}
+
+# Refuse a "bytes"-encoded string before the file is touched. The writer
+# translates every string to UTF-8 as it goes, and R refuses to translate
+# bytes, so such a string would otherwise fail the write after earlier row
+# groups were already on disk (#34).
+qio_check_translatable <- function(prepared, metadata) {
+  where <- c(
+    list(`column names` = names(prepared$x)),
+    prepared$x[vapply(prepared$x, is.character, logical(1))],
+    list(
+      `metadata keys` = metadata[[1L]],
+      `metadata values` = metadata[[2L]],
+      crs = prepared$native$crs
+    )
+  )
+  for (label in names(where)) {
+    values <- where[[label]]
+    if (is.null(values)) {
+      next
+    }
+    at <- .Call(C_qio_first_bytes_string, values)
+    if (at > 0) {
+      what <- if (label %in% names(prepared$x)) {
+        paste0("column `", label, "`, row ", format(at, scientific = FALSE))
+      } else {
+        label
+      }
+      stop(
+        "Cannot write ",
+        what,
+        ": it holds a string with \"bytes\" encoding, which cannot be ",
+        "stored as UTF-8 text.",
+        call. = FALSE
+      )
+    }
+  }
+  invisible()
 }
 
 # Rows per row group. Kept as a double so a count above INT_MAX is rejected by
