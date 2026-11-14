@@ -21,10 +21,12 @@ concurrency:
 jobs:
   changes:
     uses: pedrobtz/r-actions/.github/workflows/changes.yml@v1
+    with:
+      name: oracles
 
   oracles:
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.docs-only != 'true' }}
+    if: ${{ !cancelled() && needs.changes.result != 'skipped' && needs.changes.outputs.docs-only != 'true' }}
     runs-on: ubuntu-latest
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
