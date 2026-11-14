@@ -16,8 +16,12 @@ bloom_filter_may_contain(x, column, values, row_group = 1L, ...)
 \code{path} and \code{\link[=names]{names()}} returns it -- not the bare \code{name}, which is not
 unique across a nested file.}
 
-\item{values}{Values to test. Numeric for numeric columns, character for
-byte-array columns. \code{NA} returns \code{NA}.}
+\item{values}{Values to test, in the column's stored units: whole numbers
+for integer columns (a \code{DECIMAL} as its unscaled integer, a \code{TIMESTAMP} in
+its unit), \code{bit64::integer64} for an exact 64-bit value, \code{Date} for a
+\code{DATE} column, numbers for floating-point columns, and character for
+byte-array columns. A fraction, an out-of-range value, or another class is
+an error. \code{NA} returns \code{NA}.}
 
 \item{row_group}{Row group to test, 1-based. A bloom filter belongs to one
 column chunk, so it covers one row group.}

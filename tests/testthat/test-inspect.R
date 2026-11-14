@@ -510,3 +510,58 @@ test_that("an empty sort declaration is the same as none", {
   write_parquet(data, path, sorted_by = character())
   expect_identical(read_parquet(path), data)
 })
+
+test_that("bloom checks reduce values exactly or refuse them (#43)", {
+  file <- open_parquet(test_path("parquet", "bloom_sorted.parquet"))
+  withr::defer(close_parquet(file))
+  # A fraction, a value outside INT64's exact range, and a classed value are
+  # errors: a FALSE for any of them would claim the value is absent.
+  expect_error(bloom_filter_may_contain(file, "key", 1.5), "whole number")
+  expect_error(bloom_filter_may_contain(file, "key", 2^60), "whole number")
+  expect_error(bloom_filter_may_contain(file, "key", factor("3")), "factor")
+  expect_error(
+    bloom_filter_may_contain(file, "key", as.POSIXct(1, origin = "1970-01-01")),
+    "POSIXct"
+  )
+  expect_error(bloom_filter_may_contain(file, "label", factor("a")), "factor")
+  expect_identical(
+    bloom_filter_may_contain(file, "key", c(42, NA)),
+    c(TRUE, NA)
+  )
+})
+
+test_that("bloom checks hash integer64 values exactly (#43)", {
+  skip_if_not_installed("bit64")
+  file <- open_parquet(test_path("parquet", "bloom_sorted.parquet"))
+  withr::defer(close_parquet(file))
+  present <- bit64::as.integer64(c(0, 42, 999, NA))
+  expect_identical(
+    bloom_filter_may_contain(file, "key", present),
+    c(TRUE, TRUE, TRUE, NA)
+  )
+  # The class read_parquet(int64 = "integer64") returns checks the same way.
+  keys <- collect(
+    file,
+    columns = "key",
+    row_groups = 1,
+    int64 = "integer64"
+  )$key
+  expect_true(all(bloom_filter_may_contain(file, "key", keys[1:50])))
+})
+
+test_that("unsigned columns are checked by their stored bit pattern (#43)", {
+  leaf <- data.frame(
+    physical_type = "INT32",
+    logical_type = "INTEGER",
+    logical_details = "bit_width=32, signed=false"
+  )
+  expect_identical(
+    qio:::qio_bloom_values(c(7, 4294967000, NA), leaf, "u"),
+    c(7, -296, NA)
+  )
+  expect_error(qio:::qio_bloom_values(-1, leaf, "u"), "unsigned INT32")
+  expect_error(qio:::qio_bloom_values(2^32, leaf, "u"), "unsigned INT32")
+  signed <- leaf
+  signed$logical_details <- "bit_width=32, signed=true"
+  expect_error(qio:::qio_bloom_values(2^31, signed, "s"), "INT32")
+})
