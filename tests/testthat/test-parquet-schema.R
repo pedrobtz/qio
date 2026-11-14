@@ -433,3 +433,33 @@ test_that("geospatial columns append", {
   expect_identical(collect(pf)$geom, c(df$geom, df$geom))
   expect_identical(nrow(geospatial_statistics(pf)), 2L)
 })
+
+test_that("explicit INT32 refuses -2^31 rather than writing it as missing (#38)", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  # -2^31 is NA_integer_ in R, so only a double can carry it.
+  for (repetition in c("AUTO", "OPTIONAL")) {
+    spec <- parquet_schema(x = list("INT32", repetition_type = repetition))
+    expect_error(
+      write_parquet(data.frame(x = c(5, -2147483648)), path, schema = spec),
+      "`x` row 2 is -2147483648, outside the supported range [-2147483647, 2147483647]",
+      fixed = TRUE
+    )
+  }
+  expect_error(
+    write_parquet(
+      data.frame(x = 2147483648),
+      path,
+      schema = parquet_schema(x = "INT32")
+    ),
+    "row 1 is 2147483648",
+    fixed = TRUE
+  )
+  # The ends of the range R can hold are written exactly.
+  ends <- c(-2147483647, 2147483647, NA)
+  write_parquet(
+    data.frame(x = ends),
+    path,
+    schema = parquet_schema(x = "INT32")
+  )
+  expect_identical(read_parquet(path)$x, as.integer(ends))
+})
