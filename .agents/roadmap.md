@@ -1,6 +1,6 @@
 # qio status and roadmap
 
-Last reviewed: 2026-08-02
+Last reviewed: 2026-11-13
 
 This file owns implemented R API, release scope, priorities, and open product
 choices. Type behavior belongs in [`TYPES.md`](TYPES.md); carquet mechanics in
@@ -27,6 +27,7 @@ unwind-safe, workers do not call the R API, and handle guards prevent re-entry.
 | `metadata()` | Return footer metadata while preserving duplicate keys and order |
 | `column_chunks()` | Report per-chunk type, codec, sizes, encodings, and optional structures |
 | `column_statistics()` | Report per-chunk value/null counts and min/max bounds |
+| `geospatial_statistics()` | Report per-chunk bounding boxes and geometry types for `GEOMETRY` and `GEOGRAPHY` (0.1.2) |
 | `page_index()` | Report per-page bounds, null counts, offsets, and starting rows |
 | `bloom_filter_may_contain()` | Test values against a chunk's bloom filter |
 | `validate_parquet()` | Check structural validity and report what is wrong |
@@ -42,12 +43,12 @@ materializing reads share one R conversion plan. Current type support is in
 
 | API | Behavior |
 |---|---|
-| `write_parquet()` | Write data frames or equal-length atomic lists |
+| `write_parquet()` | Write data frames or equal-length atomic lists; a list of raw vectors writes as `BYTE_ARRAY` (0.1.2) |
 | `write_parquet(row_group_size =)` | Split output into row groups by row count |
 | `write_parquet(metadata =)` | Record footer key/value metadata |
 | `write_parquet(sorted_by =)` | Declare a sort order without sorting or verifying |
 | `write_parquet(append =)` | Add row groups to an existing file, after a full schema check |
-| `parquet_schema()` | Create reusable partial type overrides |
+| `parquet_schema()` | Create reusable partial type overrides, including `BINARY`, `GEOMETRY` and `GEOGRAPHY` (0.1.2) |
 | `infer_parquet_schema()` | Show the inferred schema |
 
 qio supports Snappy, Zstandard, Gzip, LZ4 Raw, and uncompressed output. Snappy
@@ -83,6 +84,27 @@ deliberate, and is recorded here so it is not rediscovered as a defect:
 - **`bloom_filter_may_contain()` is the only export without examples**, because
   qio's writer cannot emit a bloom filter and there is no `inst/extdata`. Fix
   it by shipping a small fixture, not by writing an example that cannot run.
+
+## 0.1.x releases
+
+0.1.0 is the scope below. Patch releases on the 0.1.x line carry fixes and
+small, self-contained additions that a sibling package is waiting on; anything
+that needs a new design decision stays with v0.2.0.
+
+- **0.1.1** (CRAN 2026-09-29): removes the undefined behavior CRAN's
+  sanitizer checks reported. No API change.
+- **0.1.2** (#18): the GeoParquet-ready writer and inspection that zugeo needs
+  (pedrobtz/zugeo#14): binary, `GEOMETRY` and `GEOGRAPHY` writes,
+  `geospatial_statistics()`, a vendored carquet fix for statistics recorded
+  across row groups, and `schema()` reporting a long CRS whole. Gated on the
+  `cran-special` checks from #16 and on zugeo's GeoParquet tests passing
+  against qio's development version.
+- **0.1.3**: zstd and lz4 from zukomp instead of the vendored copies (#17),
+  once zukomp 0.2.0 is on CRAN. Kept out of 0.1.2 so the release zugeo waits
+  on does not carry the riskiest native change, which swaps the codecs under
+  carquet's worker threads.
+- **v0.2.0**: the carquet re-vendor to v0.7.x (#4) with the patch benchmarks
+  (#8), plus everything deferred below.
 
 ## v0.1.0 priorities
 
@@ -318,14 +340,15 @@ For v0.1.0:
   needs tuning. Deferring leaves its open questions -- constructor and argument
   names, row-group targets in rows or bytes, fields, defaults, and dictionary
   controls -- unanswered rather than guessed.
-- Writes of types with no unambiguous R representation are v0.2.0: binary,
-  fixed binary, `UUID`, `FLOAT16`, `ENUM`, `BSON`, and decimal. Reads carry the
+- Writes of types with no unambiguous R representation are v0.2.0: fixed
+  binary, `UUID`, `FLOAT16`, `ENUM`, `BSON`, and decimal. Reads carry the
   interop value, because a user must read whatever another tool wrote but
   rarely must write these types; `write_parquet()` already rejects them with a
-  clear error. Deferring also leaves open, rather than guessing, how a raw
-  list-column infers binary, where a fixed width comes from, how `FLOAT16`
-  rounds, whether `ENUM` comes from a factor, and what `parquet_schema()` calls
-  these types.
+  clear error. Deferring also leaves open, rather than guessing, where a fixed
+  width comes from, how `FLOAT16` rounds, whether `ENUM` comes from a factor,
+  and what `parquet_schema()` calls these types. Variable-length binary left
+  this list in 0.1.2 (#22): a list of raw vectors writes as `BYTE_ARRAY`, with
+  `NULL` as a missing value, and `parquet_schema()` calls it `"BINARY"`.
 - Exact fixed-point decimal is v0.2.0. In v0.1.0 a `DECIMAL` column reads as
   `double` with its scale applied, so a price stored as unscaled `1230` with
   scale 2 reads as `12.30`, and one message per read says the values may be
@@ -339,11 +362,14 @@ For v0.1.0:
   binary leaf, so the v0.1.0 binary mapping already returns it losslessly. A
   dedicated interval class needs print, format, subset, comparison, and `NA`
   semantics with no runtime dependency; that design is v0.2.0.
-- Extension types are v0.2.0. `GEOMETRY` and `GEOGRAPHY` are single
-  `BYTE_ARRAY` leaves, so their WKB bytes already fall out of the v0.1.0 binary
-  mapping; `VARIANT` is a group and is skipped with the other nested columns.
-  v0.1.0 adds no extension-specific code and surfaces no extension metadata API
-  beyond what `schema()` already reports.
+- Extension types are v0.2.0, except the geospatial facts 0.1.2 exposes.
+  `GEOMETRY` and `GEOGRAPHY` are single `BYTE_ARRAY` leaves, so their WKB bytes
+  fall out of the binary mapping on read. Since 0.1.2 qio also writes them,
+  with `crs` and `algorithm`, records each chunk's GeospatialStatistics, and
+  reads those back with `geospatial_statistics()` (#22, for zugeo). qio still
+  stores WKB without parsing it and leaves the GeoParquet `geo` key, CRS
+  resolution and geometry interpretation to zugeo (#21). `VARIANT` is a group
+  and is skipped with the other nested columns.
 
 Also deferred: ALTREP/zero-copy R views, custom codecs, shared process-wide
 reader pools, and structured variant/geospatial interpretation. Revisit these

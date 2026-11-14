@@ -26,7 +26,8 @@ concurrency:
 # answers that arrive quickly. See .github/workflows/gctorture.yml.
 #
 # Quick on each push to a pull request, full on the push to main: `profile:
-# quick` drops the ASan containers and Valgrind, and keeps both UBSan legs.
+# quick` drops the ASan containers, Valgrind and cran-special, and keeps both
+# UBSan legs.
 # Label a pull request `full-ci` to run the full set before merging -- worth it
 # for anything that changes how memory is allocated or freed, which UBSan does
 # not see. lto and rchk take minutes either way and always run.
@@ -58,3 +59,14 @@ jobs:
 
   rchk:
     uses: pedrobtz/r-actions/.github/workflows/rchk.yml@v1
+
+  # Three of CRAN's "Additional issues", each a full R CMD check run another
+  # way: rcnst (byte-code constants modified at run time), rlibro (a write into
+  # the read-only package library) and vnu (invalid HTML in the rendered
+  # reference manual). CRAN archives on these, so they fail the job from the
+  # first run. `profile: quick` skips all three; the schedule, a dispatch or
+  # the `full-ci` label runs them.
+  cran-special:
+    uses: pedrobtz/r-actions/.github/workflows/cran-special.yml@v1
+    with:
+      profile: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-ci') && 'quick' || 'full' }}
