@@ -3,13 +3,19 @@
 GEOGRAPHY columns: each column chunk's bounding box and the geometry
 types it holds. One row per row group and geospatial column, whether or not
 the chunk carries them, so a reader can choose row groups by box before
-reading any data. qio's own writer records them for every geospatial
-column."><meta property="og:description" content="Reports the GeospatialStatistics that writers record for GEOMETRY and
+reading any data. qio's own writer records the geometry types for every
+geospatial column, and a bounding box for GEOMETRY. It records no box for
+GEOGRAPHY, whose edges are geodesics that a box of the vertices does not
+bound, and neither box nor types for a chunk holding a value it cannot read
+as WKB."><meta property="og:description" content="Reports the GeospatialStatistics that writers record for GEOMETRY and
 GEOGRAPHY columns: each column chunk's bounding box and the geometry
 types it holds. One row per row group and geospatial column, whether or not
 the chunk carries them, so a reader can choose row groups by box before
-reading any data. qio's own writer records them for every geospatial
-column."></head><body>
+reading any data. qio's own writer records the geometry types for every
+geospatial column, and a bounding box for GEOMETRY. It records no box for
+GEOGRAPHY, whose edges are geodesics that a box of the vertices does not
+bound, and neither box nor types for a chunk holding a value it cannot read
+as WKB."></head><body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
@@ -49,8 +55,11 @@ column."></head><body>
 <code>GEOGRAPHY</code> columns: each column chunk's bounding box and the geometry
 types it holds. One row per row group and geospatial column, whether or not
 the chunk carries them, so a reader can choose row groups by box before
-reading any data. qio's own writer records them for every geospatial
-column.</p>
+reading any data. qio's own writer records the geometry types for every
+geospatial column, and a bounding box for <code>GEOMETRY</code>. It records no box for
+<code>GEOGRAPHY</code>, whose edges are geodesics that a box of the vertices does not
+bound, and neither box nor types for a chunk holding a value it cannot read
+as WKB.</p>
     </div>
 
     <div class="section level2">
@@ -103,9 +112,7 @@ none were recorded, which Parquet reads as unknown.</p></dd>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p>Like <code><a href="column_statistics.html">column_statistics()</a></code>, the bounds are claims made by whoever wrote the
-file. For <code>GEOGRAPHY</code> a box can be smaller than the geometries' extent on
-the sphere, and an <code>xmin</code> greater than <code>xmax</code> means the box wraps the
-antimeridian.</p>
+file. An <code>xmin</code> greater than <code>xmax</code> means the box wraps the antimeridian.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>
