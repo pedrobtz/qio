@@ -979,3 +979,89 @@ test_that("geospatial_statistics() is empty without geospatial columns", {
   expect_named(g)[1]
   expect_error(geospatial_statistics(pf, 1), class = "error")
 })
+
+geo_stats_of <- function(values, type = "GEOMETRY") {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  df <- data.frame(id = seq_along(values))
+  df$g <- values
+  write_parquet(df, path, schema = parquet_schema(g = type))
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf))
+  geospatial_statistics(pf)
+}
+
+test_that("geometry_types lists the values' types, not their parts (#39)", {
+  square <- wkb_polygon(c(0, 1, 1, 0, 0), c(0, 0, 1, 1, 0))
+  g <- geo_stats_of(list(wkb_multi(6L, list(square, square))))
+  expect_identical(g$geometry_types[[1]], 6L)
+  g <- geo_stats_of(list(
+    wkb_multi(7L, list(wkb_point(1, 2), wkb_multi(4L, list(wkb_point(3, 4)))))
+  ))
+  expect_identical(g$geometry_types[[1]], 7L)
+  expect_identical(c(g$xmin, g$xmax, g$ymin, g$ymax), c(1, 3, 2, 4))
+})
+
+test_that("a NaN coordinate is skipped per dimension (#40)", {
+  g <- geo_stats_of(list(wkb_point(1, NaN), wkb_point(5, 6)))
+  expect_identical(c(g$xmin, g$xmax, g$ymin, g$ymax), c(1, 5, 6, 6))
+  g <- geo_stats_of(list(wkb_point(Inf, 2), wkb_point(3, 4)))
+  expect_identical(c(g$xmin, g$xmax, g$ymin, g$ymax), c(3, Inf, 2, 4))
+  # No Y at all: the types are known but there is no box.
+  g <- geo_stats_of(list(wkb_point(1, NaN)))
+  expect_true(is.na(g$xmin))
+  expect_identical(g$geometry_types[[1]], 1L)
+})
+
+test_that("a value that is not WKB leaves the chunk's statistics unknown (#41)", {
+  curve <- c(
+    as.raw(1),
+    wkb_u32(8L),
+    wkb_u32(3L),
+    writeBin(c(100, 0, 150, 50, 200, 0), raw(), size = 8, endian = "little")
+  )
+  g <- geo_stats_of(list(wkb_point(1, 2), curve, wkb_point(3, 4)))
+  expect_true(is.na(g$xmin))
+  expect_null(g$geometry_types[[1]])
+  truncated <- wkb_linestring(c(50, 60, 70), c(50, 60, 70))[1:41]
+  g <- geo_stats_of(list(wkb_point(1, 2), truncated))
+  expect_true(is.na(g$xmin))
+  expect_null(g$geometry_types[[1]])
+})
+
+test_that("GEOGRAPHY records its types but no bounding box (#42)", {
+  # The geodesic from (0 60) to (180 60) passes over the north pole, so the
+  # vertices' box (ymax 60) would exclude part of the value.
+  g <- geo_stats_of(list(wkb_linestring(c(0, 180), c(60, 60))), "GEOGRAPHY")
+  expect_true(all(is.na(c(g$xmin, g$xmax, g$ymin, g$ymax))))
+  expect_identical(g$geometry_types[[1]], 2L)
+})
+
+test_that("repeated geometries still record their statistics (#36)", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  df <- data.frame(id = 1:4)
+  df$geom <- list(
+    wkb_point(1, 2),
+    wkb_point(3, 4),
+    wkb_point(1, 2),
+    wkb_point(3, 4)
+  )
+  df$geog <- df$geom
+  write_parquet(
+    df,
+    path,
+    schema = parquet_schema(geom = "GEOMETRY", geog = "GEOGRAPHY")
+  )
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf))
+  g <- geospatial_statistics(pf)
+  geom <- g[g$path == "geom", ]
+  expect_identical(c(geom$xmin, geom$xmax, geom$ymin, geom$ymax), c(1, 3, 2, 4))
+  expect_identical(geom$geometry_types[[1]], 1L)
+  expect_identical(g$geometry_types[g$path == "geog"][[1]], 1L)
+  # The geospatial columns stay PLAIN; the dictionary path is what lost them.
+  cc <- column_chunks(pf)
+  expect_false(any(grepl(
+    "DICTIONARY",
+    unlist(cc$encodings[cc$path == "geom"])
+  )))
+})

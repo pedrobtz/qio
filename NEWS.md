@@ -1,5 +1,10 @@
 # qio (development version)
 
+* `bloom_filter_may_contain()` no longer reports `FALSE`, "definitely
+  absent", for values that are present. `bit64::integer64` values are hashed
+  exactly, and unsigned columns are checked by their stored bit pattern. A
+  fraction, an out-of-range value, or a classed value such as a factor or
+  `POSIXct` is now an error instead of a `FALSE` (#43).
 * Fixed `write_parquet(append = TRUE)` leaving the original file unreadable
   when the append failed with an error after writing its first new row group
   (#34). An error during an append now leaves the file as it was, and

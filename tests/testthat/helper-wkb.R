@@ -16,3 +16,23 @@ wkb_linestring <- function(x, y) {
     writeBin(as.vector(rbind(x, y)), raw(), size = 8, endian = "little")
   )
 }
+
+wkb_u32 <- function(x) {
+  writeBin(as.integer(x), raw(), size = 4, endian = "little")
+}
+
+# A multi-geometry or collection (type 4 to 7) of already encoded parts.
+wkb_multi <- function(type, parts) {
+  c(as.raw(1), wkb_u32(type), wkb_u32(length(parts)), unlist(parts))
+}
+
+# A single-ring polygon.
+wkb_polygon <- function(x, y) {
+  c(
+    as.raw(1),
+    wkb_u32(3L),
+    wkb_u32(1L),
+    wkb_u32(length(x)),
+    writeBin(as.vector(rbind(x, y)), raw(), size = 8, endian = "little")
+  )
+}
