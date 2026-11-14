@@ -25,4 +25,4 @@
 ^\.superpowers$
 ^\.worktrees$
 ^\.claude$
-^tests/testthat/test-ci-.*\.R$
+^tests/testthat/(test|helper)-ci-.*\.R$
