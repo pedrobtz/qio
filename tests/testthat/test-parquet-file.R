@@ -979,3 +979,33 @@ test_that("geospatial_statistics() is empty without geospatial columns", {
   expect_named(g)[1]
   expect_error(geospatial_statistics(pf, 1), class = "error")
 })
+
+test_that("repeated geometries still record their statistics (#36)", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  df <- data.frame(id = 1:4)
+  df$geom <- list(
+    wkb_point(1, 2),
+    wkb_point(3, 4),
+    wkb_point(1, 2),
+    wkb_point(3, 4)
+  )
+  df$geog <- df$geom
+  write_parquet(
+    df,
+    path,
+    schema = parquet_schema(geom = "GEOMETRY", geog = "GEOGRAPHY")
+  )
+  pf <- open_parquet(path)
+  on.exit(close_parquet(pf))
+  g <- geospatial_statistics(pf)
+  geom <- g[g$path == "geom", ]
+  expect_identical(c(geom$xmin, geom$xmax, geom$ymin, geom$ymax), c(1, 3, 2, 4))
+  expect_identical(geom$geometry_types[[1]], 1L)
+  expect_identical(g$geometry_types[g$path == "geog"][[1]], 1L)
+  # The geospatial columns stay PLAIN; the dictionary path is what lost them.
+  cc <- column_chunks(pf)
+  expect_false(any(grepl(
+    "DICTIONARY",
+    unlist(cc$encodings[cc$path == "geom"])
+  )))
+})

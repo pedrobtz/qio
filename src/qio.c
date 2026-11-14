@@ -385,6 +385,13 @@ static SEXP qio_write_body(void *data) {
         if ((carquet_physical_type_t)ptype[c] != CARQUET_PHYSICAL_BYTE_ARRAY) {
             continue;
         }
+        /* GEOMETRY and GEOGRAPHY stay PLAIN: carquet folds WKB into the
+         * chunk's GeospatialStatistics only on the PLAIN path, so a chunk
+         * that kept its dictionary (any repeated value) recorded none (#36).
+         * WKB rarely repeats enough for a dictionary to pay anyway. */
+        if (ltype[c] == 4 || ltype[c] == 5) {
+            continue;
+        }
         carquet_status_t enc = carquet_writer_set_column_encoding(
             ctx->writer, c, CARQUET_ENCODING_RLE_DICTIONARY);
         if (enc != CARQUET_OK) {

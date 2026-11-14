@@ -289,6 +289,9 @@ qio_parse_binary_spec <- function(type, args, name, repetition) {
   if (!is.character(crs) || length(crs) != 1L || is.na(crs) || !nzchar(crs)) {
     stop("`crs` for `", name, "` must be one non-empty string.", call. = FALSE)
   }
+  # Counted and stored as UTF-8, the form the file holds, so the limit is in
+  # the same unit as the native writer's.
+  crs <- enc2utf8(crs)
   if (nchar(crs, type = "bytes") > 127L) {
     stop(
       "`crs` for `",
@@ -331,14 +334,27 @@ qio_parse_binary_spec <- function(type, args, name, repetition) {
   )
 }
 
-# The CRS and edge algorithm of GEOMETRY and GEOGRAPHY details strings.
-qio_parse_geo_details <- function(details) {
-  algorithm <- ifelse(
-    grepl(", algorithm=[A-Z]+$", details),
-    sub("^.*, algorithm=([A-Z]+)$", "\\1", details),
-    NA_character_
+# The CRS and edge algorithm of GEOMETRY and GEOGRAPHY details strings. Only
+# GEOGRAPHY carries an algorithm, so only its suffix is one: a GEOMETRY CRS
+# may itself end in ", algorithm=..." and must survive whole (#37). Text is
+# made UTF-8 first, because sub() on a marked string otherwise translates it
+# to the native encoding, which under LC_ALL=C writes "<e9>" for "é".
+qio_parse_geo_details <- function(details, logical_type) {
+  details <- enc2utf8(details)
+  body <- sub("^crs=", "", details, useBytes = TRUE)
+  suffix <- ", algorithm=([A-Z]+)$"
+  geography <- logical_type == "GEOGRAPHY" &
+    grepl(suffix, body, useBytes = TRUE)
+  algorithm <- rep(NA_character_, length(details))
+  algorithm[geography] <- sub(
+    paste0("^.*", suffix),
+    "\\1",
+    body[geography],
+    useBytes = TRUE
   )
-  crs <- sub(", algorithm=[A-Z]+$", "", sub("^crs=", "", details))
+  crs <- body
+  crs[geography] <- sub(suffix, "", body[geography], useBytes = TRUE)
+  Encoding(crs) <- "UTF-8"
   list(crs = crs, algorithm = algorithm)
 }
 
@@ -567,8 +583,11 @@ qio_prepare_write_columns <- function(x, schema) {
   crs <- rep(NA_character_, nrow(schema))
   algorithm <- rep(NA_integer_, nrow(schema))
   if (any(geo)) {
-    parsed <- qio_parse_geo_details(schema$logical_details[geo])
-    crs[geo] <- enc2utf8(parsed$crs)
+    parsed <- qio_parse_geo_details(
+      schema$logical_details[geo],
+      schema$logical_type[geo]
+    )
+    crs[geo] <- parsed$crs
     algorithm[geo] <- match(parsed$algorithm, qio_edge_algorithms) - 1L
   }
   units <- rep(0L, nrow(schema))
