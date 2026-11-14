@@ -6,7 +6,14 @@
 # * https://r-pkgs.org/testing-design.html#sec-tests-files-overview
 # * https://testthat.r-lib.org/articles/special-files.html
 
-library(testthat)
-library(qio)
+# testthat and withr are suggested packages, and CRAN's NOSUGGESTS check runs
+# the tests without them.
+if (
+  requireNamespace("testthat", quietly = TRUE) &&
+    requireNamespace("withr", quietly = TRUE)
+) {
+  library(testthat)
+  library(qio)
 
-test_check("qio")
+  test_check("qio")
+}
