@@ -5,23 +5,6 @@
 # footer -- corrupting rows that were already correct. qio therefore validates
 # the full declaration itself, and these tests are mostly about refusals.
 
-writer_pair <- function() {
-  list(
-    first = data.frame(
-      a = 1:5,
-      b = c(1.5, 2.5, NA, 4.5, 5.5),
-      s = letters[1:5],
-      stringsAsFactors = FALSE
-    ),
-    second = data.frame(
-      a = 6:10,
-      b = c(6.5, 7.5, 8.5, 9.5, 10.5),
-      s = letters[6:10],
-      stringsAsFactors = FALSE
-    )
-  )
-}
-
 test_that("append adds row groups and preserves both halves", {
   path <- withr::local_tempfile(fileext = ".parquet")
   pair <- writer_pair()
@@ -171,15 +154,6 @@ test_that("append honors row_group_size for the new data", {
   expect_equal(row_groups(file)$rows, c(10, 10, 10, 10))
   expect_identical(read_parquet(path)$n, 1:40)
 })
-
-# A failed append must leave the file exactly as it was. Before 0.1.2 the
-# first new row group overwrote the old footer, so any failure after it left
-# the user's file unreadable (#34).
-bytes_strings <- function(...) {
-  s <- c(...)
-  Encoding(s) <- "bytes"
-  s
-}
 
 test_that("an untranslatable string fails an append before any byte is written", {
   path <- withr::local_tempfile(fileext = ".parquet")

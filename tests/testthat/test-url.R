@@ -3,18 +3,6 @@
 # copy and its removal -- without touching the network, so these tests run
 # everywhere including on CRAN. None of them needs a live server.
 
-local_parquet_file <- function(env = parent.frame()) {
-  path <- withr::local_tempfile(fileext = ".parquet", .local_envir = env)
-  write_parquet(data.frame(x = 1:3, y = c("a", "b", NA)), path)
-  path
-}
-
-# `file://` needs an absolute path, and on Windows the conventional form has a
-# third slash before the drive letter.
-as_file_url <- function(path) {
-  paste0("file://", if (.Platform$OS.type == "windows") "/" else "", path)
-}
-
 test_that("URL schemes are recognized and ordinary paths are not", {
   expect_true(qio_is_url("https://example.com/a.parquet"))
   expect_true(qio_is_url("http://example.com/a.parquet"))
@@ -35,7 +23,7 @@ test_that("URL schemes are recognized and ordinary paths are not", {
 })
 
 test_that("read_parquet() reads from a URL", {
-  path <- local_parquet_file()
+  path <- local_url_parquet_file()
   expect_message(
     result <- read_parquet(as_file_url(path)),
     "Downloading"
@@ -44,7 +32,7 @@ test_that("read_parquet() reads from a URL", {
 })
 
 test_that("read_parquet() from a URL leaves no temporary file behind", {
-  path <- local_parquet_file()
+  path <- local_url_parquet_file()
   before <- list.files(tempdir(), pattern = "\\.parquet$")
   suppressMessages(read_parquet(as_file_url(path)))
   after <- list.files(tempdir(), pattern = "\\.parquet$")
@@ -52,7 +40,7 @@ test_that("read_parquet() from a URL leaves no temporary file behind", {
 })
 
 test_that("column and row-group selection work through a URL", {
-  path <- local_parquet_file()
+  path <- local_url_parquet_file()
   result <- suppressMessages(
     read_parquet(as_file_url(path), columns = "x")
   )
@@ -60,7 +48,7 @@ test_that("column and row-group selection work through a URL", {
 })
 
 test_that("open_parquet() keeps the copy until close_parquet() removes it", {
-  path <- local_parquet_file()
+  path <- local_url_parquet_file()
   pf <- suppressMessages(open_parquet(as_file_url(path)))
   copy <- attr(pf, "qio_downloaded")
 
@@ -78,7 +66,7 @@ test_that("open_parquet() keeps the copy until close_parquet() removes it", {
 })
 
 test_that("a handle opened from a local path carries no temporary copy", {
-  path <- local_parquet_file()
+  path <- local_url_parquet_file()
   pf <- open_parquet(path)
   on.exit(close_parquet(pf), add = TRUE)
   # Nothing qio did not create may ever be unlinked by close_parquet().
@@ -86,20 +74,20 @@ test_that("a handle opened from a local path carries no temporary copy", {
 })
 
 test_that("closing a handle opened from a local path leaves the file alone", {
-  path <- local_parquet_file()
+  path <- local_url_parquet_file()
   pf <- open_parquet(path)
   close_parquet(pf)
   expect_true(file.exists(path))
 })
 
 test_that("read_plan() accepts a URL", {
-  path <- local_parquet_file()
+  path <- local_url_parquet_file()
   plan <- suppressMessages(read_plan(as_file_url(path)))
   expect_identical(plan$path, c("x", "y"))
 })
 
 test_that("validate_parquet() accepts a URL and cleans up after itself", {
-  path <- local_parquet_file()
+  path <- local_url_parquet_file()
   before <- list.files(tempdir(), pattern = "\\.parquet$")
   expect_true(suppressMessages(validate_parquet(as_file_url(path))))
   after <- list.files(tempdir(), pattern = "\\.parquet$")
@@ -112,7 +100,7 @@ test_that("validate_parquet() removes the copy only after closing the file", {
   # handle are opened runs while both are still open. Deleting an open file
   # succeeds on Unix and fails on Windows, so the ordering has to be checked
   # here rather than left to a Windows-only test failure.
-  path <- local_parquet_file()
+  path <- local_url_parquet_file()
   open_at_removal <- NULL
   local_mocked_bindings(
     qio_remove_temp = function(path) {

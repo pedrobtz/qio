@@ -4,6 +4,7 @@
 ^_pkgdown\.yml$
 ^docs$
 ^pkgdown$
+^\.git$
 ^\.github$
 \.o$
 \.so$
@@ -24,4 +25,4 @@
 ^\.superpowers$
 ^\.worktrees$
 ^\.claude$
-^tests/testthat/test-ci-.*\.R$
+^tests/testthat/(test|helper)-ci-.*\.R$

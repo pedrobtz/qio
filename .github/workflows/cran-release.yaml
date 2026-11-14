@@ -1,0 +1,20 @@
+# Tags each CRAN submission and opens the development-version bump.
+# Commit CRAN-SUBMISSION after `devtools::submit_cran()`; that push is the
+# whole release step. Keep CRAN-SUBMISSION in .Rbuildignore, not .gitignore.
+on:
+  push:
+    # Only main: a CRAN-SUBMISSION pushed on a branch would otherwise tag
+    # and release before the merge (pedrobtz/r-actions#118).
+    branches: [main]
+    paths: [CRAN-SUBMISSION]
+  workflow_dispatch:
+
+name: cran-release.yaml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  cran-release:
+    uses: pedrobtz/r-actions/.github/workflows/cran-release.yml@af3de72ac23bc0776ded7c934d84e03d3a406a46 # v1.41.0
