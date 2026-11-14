@@ -29,8 +29,14 @@ bloom_filter_may_contain(x, column, values, row_group = 1L, ...)
 
 - values:
 
-  Values to test. Numeric for numeric columns, character for byte-array
-  columns. `NA` returns `NA`.
+  Values to test, in the column's stored units: whole numbers for
+  integer columns (a `DECIMAL` as its unscaled integer, a `TIMESTAMP` in
+  its unit),
+  [`bit64::integer64`](https://bit64.r-lib.org/reference/bit64-package.html)
+  for an exact 64-bit value, `Date` for a `DATE` column, numbers for
+  floating-point columns, and character for byte-array columns. A
+  fraction, an out-of-range value, or another class is an error. `NA`
+  returns `NA`.
 
 - row_group:
 

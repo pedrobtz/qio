@@ -67,8 +67,12 @@ unique across a nested file.</p></dd>
 
 
 <dt id="arg-values">values<a class="anchor" aria-label="anchor" href="#arg-values"></a></dt>
-<dd><p>Values to test. Numeric for numeric columns, character for
-byte-array columns. <code>NA</code> returns <code>NA</code>.</p></dd>
+<dd><p>Values to test, in the column's stored units: whole numbers
+for integer columns (a <code>DECIMAL</code> as its unscaled integer, a <code>TIMESTAMP</code> in
+its unit), <code><a href="https://bit64.r-lib.org/reference/bit64-package.html" class="external-link">bit64::integer64</a></code> for an exact 64-bit value, <code>Date</code> for a
+<code>DATE</code> column, numbers for floating-point columns, and character for
+byte-array columns. A fraction, an out-of-range value, or another class is
+an error. <code>NA</code> returns <code>NA</code>.</p></dd>
 
 
 <dt id="arg-row-group">row_group<a class="anchor" aria-label="anchor" href="#arg-row-group"></a></dt>
