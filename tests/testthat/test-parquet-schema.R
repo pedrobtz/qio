@@ -480,6 +480,7 @@ test_that("a non-ASCII crs is written as UTF-8 in any locale (#37)", {
   details <- schema(pf)$logical_details[2]
   close_parquet(pf)
   expect_identical(charToRaw(details), charToRaw(enc2utf8("crs=café")))
+})
 
 test_that("explicit INT32 refuses -2^31 rather than writing it as missing (#38)", {
   path <- withr::local_tempfile(fileext = ".parquet")
