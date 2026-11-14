@@ -670,10 +670,12 @@ qio_prepare_write_column <- function(x, spec) {
     if (any(is.nan(value))) {
       stop("INT32 column `", name, "` cannot contain NaN.", call. = FALSE)
     }
+    # -2^31 fits INT32 but is R's NA_integer_, so as.integer() would turn it
+    # into a missing value (#38). The range R can hold is the range written.
     qio_validate_integral(
       value,
       name,
-      -.Machine$integer.max - 1,
+      -.Machine$integer.max,
       .Machine$integer.max
     )
     return(as.integer(value))
@@ -735,11 +737,21 @@ qio_validate_integral <- function(x, name, min, max) {
       call. = FALSE
     )
   }
-  if (any(x[present] < min | x[present] > max)) {
+  outside <- which(present & (x < min | x > max))
+  if (length(outside)) {
+    at <- outside[1L]
     stop(
       "Column `",
       name,
-      "` contains values outside the supported range.",
+      "` row ",
+      format(at, scientific = FALSE),
+      " is ",
+      format(x[at], digits = 17, scientific = FALSE),
+      ", outside the supported range [",
+      format(min, digits = 17, scientific = FALSE),
+      ", ",
+      format(max, digits = 17, scientific = FALSE),
+      "].",
       call. = FALSE
     )
   }

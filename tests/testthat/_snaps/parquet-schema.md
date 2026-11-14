@@ -4,7 +4,7 @@
       write_parquet(data.frame(x = 2^53 + 2), path, schema = parquet_schema(x = "INT64"))
     Condition
       Error:
-      ! Column `x` contains values outside the supported range.
+      ! Column `x` row 1 is 9007199254740994, outside the supported range [-9007199254740992, 9007199254740992].
 
 # parquet_schema() rejects malformed declarations
 

@@ -1,103 +1,53 @@
-# Workflow derived from https://github.com/r-lib/actions/tree/v2/examples
-# Need help debugging build failures? Start at https://github.com/r-lib/actions#where-to-find-help
 on:
   # No `push:`: a pull request already checks its merge with main,
   # and the schedule checks main (r-actions README, "Pushes to main").
+  # `labeled`/`unlabeled` so that adding or removing a CI label (`full-ci`,
+  # `ci:minimal`, `skip-ci:<workflow>`) reruns it.
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  # The full set runs weekly and on demand:
+  # `gh workflow run R-CMD-check.yaml --ref main`.
+  schedule:
+    - cron: "17 12 * * 6"
+  workflow_dispatch:
 
-name: R-CMD-check.yaml
+name: R-CMD-check
 
 permissions: read-all
 
+# A push to a pull request supersedes the run for the one before it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+# `--as-cran` on GitHub's runners and in the CRAN-like containers (clang23,
+# ubuntu-clang, ubuntu-gcc16), where CRAN's `-pedantic` and newer-compiler
+# findings show up first. The containers are R-devel on Linux, so the
+# ubuntu-latest R-devel row the hand-rolled matrix carried is gone.
+#
+# Quick on pull requests (one Linux R-release leg and clang23), full on the
+# schedule, on a dispatch and on a pull request labelled `full-ci`.
 jobs:
   R-CMD-check:
-    runs-on: ${{ matrix.config.os }}
-
-    name: ${{ matrix.config.os }} (${{ matrix.config.r }})${{ matrix.config.depends-only && ' noSuggests' || '' }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - {os: macos-latest,   r: 'release'}
-          - {os: windows-latest, r: 'release'}
-          # Windows R-devel is here rather than left to a win-builder
-          # submission before a release. qio has Windows-only code paths --
-          # the code-page path handling with its mmap fallback, and the
-          # per-thread zstd context that only ever broke there -- so a
-          # toolchain or R change that affects them should surface on the
-          # commit that causes it, not once at tagging time.
-          - {os: windows-latest, r: 'devel'}
-          - {os: ubuntu-latest,   r: 'devel', http-user-agent: 'release'}
-          - {os: ubuntu-latest,   r: 'release'}
-          - {os: ubuntu-latest,   r: 'oldrel-1'}
-          # Suggests hidden from the check, which is what CRAN's noSuggests
-          # flavor does. Every other row installs bit64, hms, dplyr and withr,
-          # so none of them can prove qio's claim of no required dependencies
-          # -- and the first run of this configuration found a real ERROR: an
-          # `int64 = "integer64"` read in a verbose-output test with no
-          # `skip_if_not_installed("bit64")`. The packages are still installed
-          # here; `_R_CHECK_DEPENDS_ONLY_` hides them at check time.
-          - {os: ubuntu-latest,   r: 'release', depends-only: 'true'}
-
-    env:
-      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
-      R_KEEP_PKG_SOURCE: yes
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: r-lib/actions/setup-pandoc@v2
-
-      - uses: r-lib/actions/setup-r@v2
-        with:
-          r-version: ${{ matrix.config.r }}
-          http-user-agent: ${{ matrix.config.http-user-agent }}
-
-      - uses: r-lib/actions/setup-r-dependencies@v2
-        with:
-          extra-packages: any::rcmdcheck
-          needs: check
-
-      - uses: r-lib/actions/check-r-package@v2
-        with:
-          upload-snapshots: true
-          build_args: 'c("--no-manual")'
-        env:
-          # Explicit 'false' rather than an empty value: R parses this as a
-          # logical and an empty string is not one.
-          _R_CHECK_DEPENDS_ONLY_: ${{ matrix.config.depends-only || 'false' }}
-
-      # The action streams the whole check to the log and uploads the directory
-      # only when it fails, so the outcome is not visible without opening one or
-      # the other -- and a green run says nothing about NOTEs. This writes the
-      # counts, the Status line, and the full text of anything not OK into the
-      # job summary, per matrix entry. `if: always()` so a failing check is
-      # reported rather than skipped.
-      # The action uploads the check directory only when the check fails, and
-      # that directory includes the installed package. This uploads just the
-      # logs, always, so the summary can link to them on a green run too --
-      # which is the run where a NOTE would otherwise go unread.
-      - name: Upload check logs
-        id: check-logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          # The suffix keeps this distinct from the plain ubuntu release row;
-          # upload-artifact rejects two artifacts with one name in a run.
-          name: check-logs-${{ matrix.config.os }}-${{ matrix.config.r }}${{ matrix.config.depends-only && '-nosuggests' || '' }}
-          path: |
-            check/**/00check.log
-            check/**/00install.out
-            check/**/tests/**/*.Rout*
-          if-no-files-found: warn
-          retention-days: 1
-
-      - name: Summarize check results
-        if: always()
-        run: Rscript tools/summarize-check.R check
-        shell: bash
-        env:
-          QIO_CHECK_LABEL: ${{ matrix.config.os }} (${{ matrix.config.r }})${{ matrix.config.depends-only && ' noSuggests' || '' }}
-          QIO_CHECK_ARTIFACT_URL: ${{ steps.check-logs.outputs.artifact-url }}
-          QIO_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    uses: pedrobtz/r-actions/.github/workflows/r-cmd-check.yml@v1
+    with:
+      profile: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-ci') && 'quick' || 'full' }}
+      # The default runners plus Windows R-devel. Windows R-devel is here
+      # rather than left to a win-builder submission before a release. qio has
+      # Windows-only code paths -- the code-page path handling with its mmap
+      # fallback, and the per-thread zstd context that only ever broke there
+      # -- so a toolchain or R change that affects them should surface on the
+      # commit that causes it, not once at tagging time.
+      runners: >-
+        [{"os": "macos-latest", "r": "release"},
+         {"os": "windows-latest", "r": "release"},
+         {"os": "windows-latest", "r": "devel"},
+         {"os": "ubuntu-latest", "r": "release"},
+         {"os": "ubuntu-latest", "r": "oldrel-1"}]
+      # CRAN's NOSUGGESTS flavor, in the R-hub image with only hard
+      # dependencies installed. Every other leg installs bit64, hms, dplyr and
+      # withr, so none of them can prove qio's claim of no required
+      # dependencies -- and the first noSuggests run found a real ERROR: an
+      # `int64 = "integer64"` read in a verbose-output test with no
+      # `skip_if_not_installed("bit64")`.
+      nosuggests: true

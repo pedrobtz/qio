@@ -17,6 +17,8 @@ permissions:
 
 jobs:
   coverage:
-    uses: pedrobtz/r-actions/.github/workflows/coverage.yml@v1
+    # Pinned to a commit, not `@v1`, because this is the one call that holds a
+    # write token: a moved tag cannot change what runs with it.
+    uses: pedrobtz/r-actions/.github/workflows/coverage.yml@59c917ddee2cd0191f8f015016c4c76c4f2a8c87 # v1.18.0
     permissions:
       contents: write

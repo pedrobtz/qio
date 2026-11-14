@@ -36,7 +36,14 @@
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 
 #include <carquet/carquet.h>
 
@@ -76,6 +83,15 @@ typedef struct {
      * cleanup below removes a failed write, which for an append would destroy
      * exactly what it was meant to add to, so it must never fire here. */
     int append;
+    /* What an append changes, saved before the first byte is written: the
+     * original file's length and its tail (footer, footer length, magic).
+     * carquet writes the new row groups over the old footer, so a failure
+     * after the first flush would otherwise leave the file unreadable. The
+     * cleanup puts the tail back and truncates to the original length. The
+     * tail is malloc()ed, not R_alloc()ed, because the cleanup frees it. */
+    unsigned char *append_tail;
+    size_t append_tail_len;
+    int64_t append_size;
     SEXP x;
     SEXP path_sexp;
     SEXP nms;
@@ -101,6 +117,95 @@ typedef struct {
     const int *geo_algorithm;
 } qio_write_context_t;
 
+/* 64-bit positioning: `long` is 32 bits on Windows, and a file being appended
+ * to can be larger than 2 GiB. */
+static int qio_fseek64(FILE *file, int64_t offset) {
+#ifdef _WIN32
+    return _fseeki64(file, (__int64)offset, SEEK_SET);
+#else
+    return fseeko(file, (off_t)offset, SEEK_SET);
+#endif
+}
+
+static int64_t qio_file_size(FILE *file) {
+#ifdef _WIN32
+    if (_fseeki64(file, 0, SEEK_END) != 0) return -1;
+    return (int64_t)_ftelli64(file);
+#else
+    if (fseeko(file, 0, SEEK_END) != 0) return -1;
+    return (int64_t)ftello(file);
+#endif
+}
+
+static int qio_truncate(FILE *file, int64_t size) {
+#ifdef _WIN32
+    return _chsize_s(_fileno(file), (__int64)size) == 0 ? 0 : -1;
+#else
+    return ftruncate(fileno(file), (off_t)size);
+#endif
+}
+
+/* Save what an append is about to overwrite: the original length and the
+ * tail from the start of the footer to the end of the file. Returns NULL with
+ * a message in `why` when the file cannot be read as Parquet; no R calls, so
+ * the caller decides how to raise it. */
+static unsigned char *qio_append_snapshot(const qio_path_t *path,
+                                          int64_t *size_out, size_t *len_out,
+                                          const char **why) {
+    FILE *file = qio_path_fopen(path, "rb");
+    if (!file) {
+        *why = "cannot open it for reading";
+        return NULL;
+    }
+    unsigned char trailer[8];
+    int64_t size = qio_file_size(file);
+    if (size < 12 || qio_fseek64(file, size - 8) != 0 ||
+        fread(trailer, 1, 8, file) != 8 || memcmp(trailer + 4, "PAR1", 4) != 0) {
+        fclose(file);
+        *why = "it does not end in a Parquet footer";
+        return NULL;
+    }
+    uint32_t footer = (uint32_t)trailer[0] | ((uint32_t)trailer[1] << 8) |
+                      ((uint32_t)trailer[2] << 16) | ((uint32_t)trailer[3] << 24);
+    if ((int64_t)footer > size - 12) {
+        fclose(file);
+        *why = "its footer length is larger than the file";
+        return NULL;
+    }
+    size_t len = (size_t)footer + 8;
+    unsigned char *tail = (unsigned char *)malloc(len);
+    if (!tail) {
+        fclose(file);
+        *why = "out of memory saving its footer";
+        return NULL;
+    }
+    if (qio_fseek64(file, size - (int64_t)len) != 0 ||
+        fread(tail, 1, len, file) != len) {
+        free(tail);
+        fclose(file);
+        *why = "cannot read its footer";
+        return NULL;
+    }
+    fclose(file);
+    *size_out = size;
+    *len_out = len;
+    return tail;
+}
+
+/* Put a failed append's file back as qio_append_snapshot() found it. Runs in
+ * the unwind cleanup, so it calls nothing in R and cannot report a failure;
+ * the error that started the unwind is still the one the user sees. */
+static void qio_append_restore(const qio_path_t *path, int64_t size,
+                               const unsigned char *tail, size_t len) {
+    FILE *file = qio_path_fopen(path, "r+b");
+    if (!file) return;
+    if (qio_fseek64(file, size - (int64_t)len) == 0 &&
+        fwrite(tail, 1, len, file) == len && fflush(file) == 0) {
+        qio_truncate(file, size);
+    }
+    fclose(file);
+}
+
 static void qio_write_cleanup(void *data, Rboolean jump) {
     (void)jump;
     qio_write_context_t *ctx = (qio_write_context_t *)data;
@@ -122,12 +227,20 @@ static void qio_write_cleanup(void *data, Rboolean jump) {
         fclose(ctx->file);
         ctx->file = NULL;
     }
-    /* Only a file this call created may be removed. An append failure leaves
-     * the original alone: carquet's abort closes it without truncating, and
-     * the footer it did not rewrite still describes the original row groups. */
+    /* Only a file this call created may be removed. A failed append instead
+     * gets the original back: carquet's abort has closed its stream without
+     * truncating, and the new row groups may already have overwritten the
+     * old footer. This runs on an R error and on an interrupt alike; it
+     * cannot help a process that is killed outright. */
     if (!ctx->finished && !ctx->append) {
         qio_path_remove(&ctx->path);
     }
+    if (!ctx->finished && ctx->append && ctx->append_tail) {
+        qio_append_restore(&ctx->path, ctx->append_size, ctx->append_tail,
+                           ctx->append_tail_len);
+    }
+    free(ctx->append_tail);
+    ctx->append_tail = NULL;
 }
 
 static SEXP qio_write_body(void *data) {
@@ -745,11 +858,38 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
     ctx.geo_algorithm = INTEGER(algorithm_sexp);
 
     SEXP continuation = PROTECT(R_MakeUnwindCont());
+
+    /* Last, after the one allocation above, so that nothing between here and
+     * the protected window can raise an error and leak the saved tail. */
+    if (ctx.append) {
+        const char *why = NULL;
+        ctx.append_tail = qio_append_snapshot(&path, &ctx.append_size,
+                                              &ctx.append_tail_len, &why);
+        if (!ctx.append_tail) {
+            Rf_error("qio: cannot append to '%s': %s", path.display, why);
+        }
+    }
+
     SEXP result = R_UnwindProtect(qio_write_body, &ctx,
                                   qio_write_cleanup, &ctx,
                                   continuation);
     UNPROTECT(2);
     return result;
+}
+
+/* The 1-based position of the first "bytes"-encoded string in `x`, or 0.
+ * Rf_translateCharUTF8() refuses such a string, and inside the writer that
+ * refusal arrives after bytes are on disk; write_parquet() asks first. */
+SEXP qio_first_bytes_string(SEXP x) {
+    if (TYPEOF(x) != STRSXP)
+        Rf_error("qio: expected a character vector");
+    R_xlen_t n = XLENGTH(x);
+    for (R_xlen_t i = 0; i < n; i++) {
+        SEXP e = STRING_ELT(x, i);
+        if (e != NA_STRING && Rf_getCharCE(e) == CE_BYTES)
+            return Rf_ScalarReal((double)(i + 1));
+    }
+    return Rf_ScalarReal(0);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -758,6 +898,7 @@ SEXP qio_write_parquet(SEXP x, SEXP path_sexp, SEXP codec_sexp, SEXP spec_sexp,
 
 static const R_CallMethodDef CallEntries[] = {
     {"qio_write_parquet", (DL_FUNC)&qio_write_parquet, 8},
+    {"qio_first_bytes_string", (DL_FUNC)&qio_first_bytes_string, 1},
     {"qio_parquet_open", (DL_FUNC)&qio_parquet_open, 4},
     {"qio_parquet_close", (DL_FUNC)&qio_parquet_close, 1},
     {"qio_parquet_is_open", (DL_FUNC)&qio_parquet_is_open, 1},
