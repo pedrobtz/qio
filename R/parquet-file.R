@@ -933,13 +933,14 @@ column_statistics.qio_parquet_file <- function(x, ...) {
 #' `GEOGRAPHY` columns: each column chunk's bounding box and the geometry
 #' types it holds. One row per row group and geospatial column, whether or not
 #' the chunk carries them, so a reader can choose row groups by box before
-#' reading any data. qio's own writer records them for every geospatial
-#' column.
+#' reading any data. qio's own writer records the geometry types for every
+#' geospatial column, and a bounding box for `GEOMETRY`. It records no box for
+#' `GEOGRAPHY`, whose edges are geodesics that a box of the vertices does not
+#' bound, and neither box nor types for a chunk holding a value it cannot read
+#' as WKB.
 #'
 #' Like [column_statistics()], the bounds are claims made by whoever wrote the
-#' file. For `GEOGRAPHY` a box can be smaller than the geometries' extent on
-#' the sphere, and an `xmin` greater than `xmax` means the box wraps the
-#' antimeridian.
+#' file. An `xmin` greater than `xmax` means the box wraps the antimeridian.
 #'
 #' @param x A `qio_parquet_file` object.
 #' @param ... Reserved for future use.
@@ -1062,8 +1063,12 @@ page_index.qio_parquet_file <- function(x, ...) {
 #' @param column A single complete column path, as [schema()] reports it in
 #'   `path` and [names()] returns it -- not the bare `name`, which is not
 #'   unique across a nested file.
-#' @param values Values to test. Numeric for numeric columns, character for
-#'   byte-array columns. `NA` returns `NA`.
+#' @param values Values to test, in the column's stored units: whole numbers
+#'   for integer columns (a `DECIMAL` as its unscaled integer, a `TIMESTAMP` in
+#'   its unit), `bit64::integer64` for an exact 64-bit value, `Date` for a
+#'   `DATE` column, numbers for floating-point columns, and character for
+#'   byte-array columns. A fraction, an out-of-range value, or another class is
+#'   an error. `NA` returns `NA`.
 #' @param row_group Row group to test, 1-based. A bloom filter belongs to one
 #'   column chunk, so it covers one row group.
 #' @param ... Reserved for future use.
@@ -1110,7 +1115,116 @@ bloom_filter_may_contain.qio_parquet_file <- function(
     stop("Unknown column: ", column, call. = FALSE)
   }
   row_group <- qio_whole_number(row_group, "row_group", minimum = 1L)
+  leaf <- schema(x)[index, ]
+  values <- qio_bloom_values(values, leaf, column)
   .Call(C_qio_parquet_bloom_check, x, index, values, row_group)
+}
+
+# Reduce `values` to the column's physical type exactly, or raise an error. A
+# FALSE from a bloom filter reads as "definitely absent", so a value that only
+# approximates the stored one (a fraction on an integer column, seconds against
+# a microsecond TIMESTAMP, an out-of-range integer) must never reach the hash
+# (#43). Integer columns get doubles of whole values, with unsigned values moved
+# to the signed bit pattern the file stores; integer64 stays integer64, which
+# the native side reinterprets exactly.
+qio_bloom_values <- function(values, leaf, column) {
+  physical <- leaf$physical_type
+  if (!physical %in% c("INT32", "INT64")) {
+    if (is.object(values) && !is.character(values)) {
+      stop(
+        "`values` for `",
+        column,
+        "` must be plain ",
+        if (physical %in% c("BYTE_ARRAY", "FIXED_LEN_BYTE_ARRAY")) {
+          "character"
+        } else {
+          "numeric"
+        },
+        " values, not ",
+        class(values)[1L],
+        ".",
+        call. = FALSE
+      )
+    }
+    return(values)
+  }
+  if (inherits(values, "integer64")) {
+    if (physical != "INT64") {
+      stop(
+        "`values` for INT32 column `",
+        column,
+        "` must be numeric, not integer64.",
+        call. = FALSE
+      )
+    }
+    return(values)
+  }
+  is_date <- inherits(values, "Date") && identical(leaf$logical_type, "DATE")
+  if (!is.numeric(values) && !is_date) {
+    stop(
+      "`values` for ",
+      physical,
+      " column `",
+      column,
+      "` must be numeric, not ",
+      class(values)[1L],
+      ".",
+      call. = FALSE
+    )
+  }
+  if (is.object(values) && !is_date) {
+    stop(
+      "`values` for ",
+      physical,
+      " column `",
+      column,
+      "` must be plain numbers in the column's stored units, not ",
+      class(values)[1L],
+      ". Use unclass() on a value already in those units.",
+      call. = FALSE
+    )
+  }
+  values <- as.double(unclass(values))
+  unsigned <- identical(leaf$logical_type, "INTEGER") &&
+    grepl("signed=false", leaf$logical_details, fixed = TRUE)
+  bits <- if (physical == "INT32") 32 else 64
+  lo <- if (unsigned) 0 else -2^(bits - 1)
+  hi <- if (unsigned) 2^bits - 1 else 2^(bits - 1) - 1
+  # Beyond 2^53 a double no longer names one integer.
+  if (bits == 64) {
+    lo <- max(lo, -2^53)
+    hi <- min(hi, 2^53)
+  }
+  present <- !is.na(values)
+  bad <- which(
+    present &
+      (!is.finite(values) | values != trunc(values) | values < lo | values > hi)
+  )
+  if (length(bad)) {
+    at <- bad[1L]
+    stop(
+      "`values` element ",
+      at,
+      " is ",
+      format(values[at], digits = 17),
+      ", which is not a whole number in [",
+      format(lo, digits = 17, scientific = FALSE),
+      ", ",
+      format(hi, digits = 17, scientific = FALSE),
+      "] that ",
+      if (unsigned) "unsigned " else "",
+      physical,
+      " column `",
+      column,
+      "` can hold exactly.",
+      call. = FALSE
+    )
+  }
+  if (unsigned) {
+    wrap <- present & values >= 2^(bits - 1)
+    values[wrap] <- values[wrap] - 2^bits
+  }
+  values
 }
 
 # Which read path the last operation took for each text column chunk, and a

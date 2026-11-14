@@ -35,14 +35,15 @@ Reports the GeospatialStatistics that writers record for \code{GEOMETRY} and
 \code{GEOGRAPHY} columns: each column chunk's bounding box and the geometry
 types it holds. One row per row group and geospatial column, whether or not
 the chunk carries them, so a reader can choose row groups by box before
-reading any data. qio's own writer records them for every geospatial
-column.
+reading any data. qio's own writer records the geometry types for every
+geospatial column, and a bounding box for \code{GEOMETRY}. It records no box for
+\code{GEOGRAPHY}, whose edges are geodesics that a box of the vertices does not
+bound, and neither box nor types for a chunk holding a value it cannot read
+as WKB.
 }
 \details{
 Like \code{\link[=column_statistics]{column_statistics()}}, the bounds are claims made by whoever wrote the
-file. For \code{GEOGRAPHY} a box can be smaller than the geometries' extent on
-the sphere, and an \code{xmin} greater than \code{xmax} means the box wraps the
-antimeridian.
+file. An \code{xmin} greater than \code{xmax} means the box wraps the antimeridian.
 }
 \examples{
 path <- tempfile(fileext = ".parquet")

@@ -3134,6 +3134,7 @@ SEXP qio_parquet_bloom_check(SEXP file, SEXP column_sexp, SEXP values,
 
     SEXP result = PROTECT(Rf_allocVector(LGLSXP, n));
     int *out = LOGICAL(result);
+    int is_integer64 = TYPEOF(values) == REALSXP && Rf_inherits(values, "integer64");
     for (R_xlen_t i = 0; i < n; i++) {
         switch (type) {
         case CARQUET_PHYSICAL_INT32: {
@@ -3148,6 +3149,18 @@ SEXP qio_parquet_bloom_check(SEXP file, SEXP column_sexp, SEXP values,
             break;
         }
         case CARQUET_PHYSICAL_INT64: {
+            /* bit64::integer64 keeps the exact int64 in each double's bits,
+             * with INT64_MIN as NA; reading it as a double would hash a
+             * denormal and miss every present value (#43). */
+            if (is_integer64) {
+                int64_t bits;
+                double stored = REAL(values)[i];
+                memcpy(&bits, &stored, sizeof(bits));
+                out[i] = bits == INT64_MIN
+                             ? NA_LOGICAL
+                             : carquet_bloom_filter_check_i64(filter, bits);
+                break;
+            }
             double value = TYPEOF(values) == INTSXP
                                ? (INTEGER(values)[i] == NA_INTEGER
                                       ? NA_REAL

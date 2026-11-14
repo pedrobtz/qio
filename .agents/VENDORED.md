@@ -7,7 +7,7 @@ then re-vendor from it.
 | Library | Version | Commit | Retrieved | License |
 |---|---|---|---|---|
 | [carquet](https://github.com/Vitruves/carquet) | v0.6.0 | `06efab6dce5475a7faa86f0938d42e9078b6d440` | 2026-06-29 | MIT (`src/carquet/LICENSE`) |
-| [carquet fork](https://github.com/pedrobtz/carquet) | `qio` branch | `7ba0b94e7bfe6aa0732de099979d48a0ae48fbdc` | 2026-11-07 | MIT (`src/carquet/LICENSE`) |
+| [carquet fork](https://github.com/pedrobtz/carquet) | `qio` branch | `129b09c042ce849c05332b56336c3b0077328e41` | 2026-11-14 | MIT (`src/carquet/LICENSE`) |
 | [zstd](https://github.com/facebook/zstd) | v1.5.7 | `f8745da6ff1ad1e7bab384bd1f9d742439278e99` | 2026-06-29 | BSD-3-Clause (`src/zstd/LICENSE`) |
 | [lz4](https://github.com/lz4/lz4) | v1.10.0 | `ebb370ca83af193212df4dcbadcc5d87bc0de2f0` | 2026-06-29 | BSD-2-Clause (`src/lz4/LICENSE`) |
 
@@ -425,6 +425,54 @@ mirrors its layout). The PR keeps the whole CRS in the internal schema element
 and adds `carquet_schema_node_geospatial_crs()`. When upstream merges it,
 re-vendoring drops this patch for that one, and `qio_logical_type_details()`
 moves to the new accessor.
+
+### Write no bounding box for GEOGRAPHY (`4637d40`)
+
+`writer/page_writer.c`, `core/geo_wkb.c`, `thrift/parquet_types.h`. **Wrong
+metadata, data correct.** GEOGRAPHY values were folded into a box from their
+vertices' min/max, as for GEOMETRY. A GEOGRAPHY edge is a geodesic, which can
+pass over a pole or cross the antimeridian, so the vertex box can exclude part
+of a value: `LINESTRING (0 60, 180 60)` recorded `ymax = 60` although its edge
+reaches 90. Readers prune row groups by the box, so a box that is too small
+skips matching rows. carquet now records the types only, as Arrow C++ does
+(parquet-testing's `geospatial/crs-geography.parquet` carries no box). The
+accumulator gains a writer-side `omit_bbox` flag. qio #42; carquet test
+`geography_omits_bbox`; qio's `test-ci-geospatial-oracle.R` checks it through
+DuckDB.
+
+### Record only top-level geometry types (`4ea755d`)
+
+`core/geo_wkb.c`. **Wrong metadata, data correct.** A type was recorded at
+every level of a WKB value, so a column of MultiPolygons was recorded as
+`{6, 3}` and a collection as its members' types. The specification lists the
+types of the column's instances. qio #39; carquet test
+`geometry_types_top_level`.
+
+### Skip NaN per dimension in the geospatial bounding box (`1910de9`)
+
+`core/geo_wkb.c`, `thrift/parquet_types.h`. **Wrong metadata, data correct.**
+A point with a non-finite X or Y was left out of the box entirely. The
+specification skips null and NaN per dimension and produces a box once X and Y
+both have values; infinities are values and are now kept. The accumulator
+tracks `has_x` and `has_y` separately. qio #40; carquet test
+`geo_nan_per_dimension`.
+
+### Leave geospatial statistics unknown when a value is not WKB (`129b09c`)
+
+`core/geo_wkb.c`, `thrift/parquet_types.h`. **Wrong metadata, data correct.**
+A value the walker could not parse still contributed its type code (an ISO
+CircularString added 8, which DuckDB then refuses to read) and the coordinates
+read before the failure. Each value is now walked into a scratch accumulator
+and merged only on success; once one fails, the chunk's box and types are
+unknown (a sticky `invalid` flag), which the specification expresses as
+neither. An ISO type code with a dimension digit above 3 is not WKB. qio #41;
+carquet test `geo_unparseable_value`.
+
+**Not yet reported upstream.** The four are independent commits, each with its
+carquet test, so each can become its own pull request. Under ASan and UBSan,
+`test_writer_extensions` passes; four other suites report undefined behavior
+in `encoding/delta.c` and the x86 SIMD kernels, files these patches do not
+touch (2026-11-14, macOS arm64).
 
 ## Header dependencies
 
