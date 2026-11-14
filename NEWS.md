@@ -5,6 +5,9 @@
   (#34). An error during an append now leaves the file as it was, and
   `"bytes"`-encoded strings in columns, names, metadata or `crs` are refused
   before any file is touched.
+* An explicit `INT32` column no longer writes -2147483648 as a missing value.
+  That value is R's integer `NA`, so it is now refused like any other
+  out-of-range value, and the error names the row and the value (#38).
 * `write_parquet()` writes a list of raw vectors as a binary (`BYTE_ARRAY`)
   column, with `NULL` for a missing value, and `parquet_schema()` declares it
   as `"BINARY"`, `"GEOMETRY"` or `"GEOGRAPHY"`. The geospatial types hold
