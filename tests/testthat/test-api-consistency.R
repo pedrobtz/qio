@@ -13,20 +13,6 @@
 # conscious edit here. The vocabulary assertions are the actual rule, and would
 # catch a new function introduced with a fresh spelling.
 
-nested_file <- function() {
-  file <- open_parquet(test_path("parquet", "nested_maps.snappy.parquet"))
-  withr::defer(close_parquet(file), envir = parent.frame())
-  file
-}
-
-indexed_file <- function() {
-  # Written by Arrow, so it carries a page index and bloom filters; qio's
-  # writer emits neither.
-  file <- open_parquet(test_path("parquet", "bloom_sorted.parquet"))
-  withr::defer(close_parquet(file), envir = parent.frame())
-  file
-}
-
 test_that("public result frames have exactly the documented columns", {
   file <- indexed_file()
 

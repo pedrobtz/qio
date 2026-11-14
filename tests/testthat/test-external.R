@@ -6,8 +6,6 @@
 # *current* behavior: a clean, informative error rather than a crash. When a
 # feature lands, promote the corresponding test to a positive read assertion.
 
-ext <- function(name) test_path("parquet", name)
-
 test_that("external fixtures are present and look like Parquet", {
   files <- c(
     "alltypes_plain.parquet",
@@ -112,26 +110,6 @@ test_that("RLE as a BOOLEAN data encoding reads", {
 # fixture is built the same way but shaped to reach long RLE runs, bit-packed
 # runs, nulls, and several pages per column. Written by pyarrow; see
 # parquet/SOURCE.md and tools/generate-rle-boolean-fixture.py.
-
-# The generator's patterns, restated so the expectation is computed here rather
-# than copied from the implementation being tested.
-rle_expected <- function(n = 30000L) {
-  runs <- logical(0)
-  value <- TRUE
-  run <- 1L
-  while (length(runs) < n) {
-    runs <- c(runs, rep(value, run))
-    value <- !value
-    run <- if (run < 512L) run * 2L else 1L
-  }
-  i <- seq_len(n) - 1L
-  list(
-    runs = runs[seq_len(n)],
-    packed = (i * 7L + 3L) %% 5L == 0L,
-    nullable = ifelse(i %% 7L == 3L, NA, i %% 3L == 0L),
-    allsame = rep(TRUE, n)
-  )
-}
 
 test_that("RLE BOOLEAN decodes runs, bit-packed groups, and nulls", {
   result <- read_parquet(ext("rle_boolean.parquet"))
@@ -304,8 +282,6 @@ test_that("all three read APIs agree on the colliding file", {
 # int64_boundaries.parquet covers the exact-double bounds, bit64's reserved NA
 # sentinel, INT64_MAX, and the unsigned half above INT64_MAX. Contract:
 # .agents/TYPES.md, "64-bit integers".
-
-int64_fixture <- function() ext("int64_boundaries.parquet")
 
 test_that("double mode keeps the exact range and reports the rest", {
   # Both columns lose values, so both warn. expect_warning() would consume one
@@ -708,8 +684,6 @@ test_that("decimal values agree across all three read APIs", {
 # temporal_types.parquet carries boundary values for every integer width and
 # every timestamp and time unit. Contracts: .agents/TYPES.md.
 
-temporal_fixture <- function() ext("temporal_types.parquet")
-
 test_that("integer-width annotations map to the right R type", {
   plan <- read_plan(temporal_fixture())
   widths <- plan[plan$name %in% c("u8", "u16", "u32", "i8", "i16", "i32"), ]
@@ -914,8 +888,6 @@ test_that("a cached string is a real copy, not a borrowed pointer", {
 # RDS rather than CSV deliberately. CSV cannot carry an INT64 past 2^53,
 # sub-second timestamp precision, raw bytes, or NA distinguished from the
 # string "NA" -- the set of things these fixtures exist to pin.
-
-reference <- function(name) readRDS(ext(name))
 
 test_that("temporal types match their independently generated reference", {
   expect_identical(
