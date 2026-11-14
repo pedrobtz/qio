@@ -10,8 +10,8 @@ See NEWS.md.
 
 0 errors | 0 warnings | 0 notes
 
-Locally on macOS (R 4.6.2) with `--as-cran`. The GitHub Actions results
-are filled in from the release pull request's full CI run.
+On every environment below: R CMD check `--as-cran` locally on macOS
+(R 4.6.2), and on GitHub Actions for the release commit.
 
 ## Test environments
 
