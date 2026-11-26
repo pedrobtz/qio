@@ -455,9 +455,11 @@ struct with two leaves. Written by the Apache Arrow R package, whose bindings
 cannot construct a `MAP` array -- `MAP` is covered by
 `nested_maps.snappy.parquet` from the Apache corpus instead.
 
-The reference holds the six flat columns only. **The absence of the nested ones
-is the assertion**, alongside the requirement that skipping them does not
-disturb the order, position or values of the flat columns around them.
+The reference holds the six flat columns only; it was recorded when qio
+skipped the nested ones. Since 0.2.0 qio reads them, and the test restates
+their values from the generator's data, alongside the requirement that
+reading them does not disturb the order, position or values of the flat
+columns around them.
 
 ### `timestamp_dst.parquet`
 
@@ -522,3 +524,46 @@ and a timestamp, each with one null, across three row groups. The corpus
 covered each of those types somewhere but nothing held the everyday
 combination, which is the shape real files have. The first real dataset pointed
 at qio was exactly `INT64` plus `TIMESTAMP` plus `DOUBLE` plus `STRING`.
+
+## Nested fixtures (0.2.0, #73)
+
+Written by `tools/generate-nested-fixtures.py` with `pyarrow` 25.0.0 (format
+version 2.6, its defaults unless stated), under the Apache License 2.0. Their
+expected values are written out by hand in `helper-nested.R` and
+`test-parquet-nested.R` from the generator's data, never from a qio read, and
+`test-ci-nested-oracle.R` compares every column qio reads with Apache Arrow's
+R package reading the same file.
+
+| File | What it holds |
+|---|---|
+| `nested_shapes.parquet` | 8 rows: optional and required structs, a struct nested in a struct, optional and required `LIST`s, a `MAP`, a `MAP` and a `LIST` inside a struct, lists of `TIMESTAMP`, `DATE` and binary; a null at every level, empties beside nulls, a 100-element list |
+| `nested_shapes-plain.parquet` | the same table, no dictionary, no compression |
+| `nested_shapes-pages-v1.parquet` | the same, 64-byte `DATA_PAGE_V1` pages, `write_batch_size = 2`, a 64-byte dictionary limit: lists span pages, dictionaries fall back to `PLAIN`, and Arrow writes empty data pages (`num_values = 0`) between pages, which carquet rejected (fork patch `9f31d2e`) |
+| `nested_shapes-pages-v2.parquet` | the same with `DATA_PAGE_V2` |
+| `nested_shapes-row-groups.parquet` | the same in three row groups |
+| `nested_shapes-delta.parquet` | the same with `DELTA_BINARY_PACKED`, `DELTA_LENGTH_BYTE_ARRAY`, `DELTA_BYTE_ARRAY` and `BYTE_STREAM_SPLIT` leaves |
+| `nested_unsupported.parquet` | a list of structs and a list of lists beside a flat column and a struct |
+| `nested_edge.parquet` | an `INT64` past 2^53 in a struct and an `INT32` -2^31 in a list, which must warn naming the nested leaf |
+| `nested_empty.parquet` | `nested_shapes` with zero rows |
+| `nested_long.parquet` | lists ending one entry before, at, and one after qio's 65,536-entry read chunk |
+| `duplicate_paths.parquet` | two columns named `x` (`DATE`, `INT32`) and three named `y` (`TIMESTAMP`, `DOUBLE`, `STRING`), for #44 |
+
+### Delta checkpoints (`delta/`)
+
+Delta Lake checkpoint and sidecar files, copied byte for byte from the
+fixtures of [zulake](https://github.com/pedrobtz/zulake)
+(`tests/testthat/fixtures/tables/`, 2026-11-26), where their provenance is
+recorded. Each is a table of optional structs, one action per row, with maps,
+lists of strings and nested structs inside.
+
+| File | Source table and file | Writer | Licence |
+|---|---|---|---|
+| `deltalake-checkpoint.parquet` | `zl-checkpoint`, `00000000000000000010.checkpoint.parquet` | `deltalake` 1.7.0 (parquet-rs 59.3.3) | MIT (zulake) |
+| `databricks-sidecar.parquet` | `checkpoint-v2-table`, the sidecar of version 6 | Databricks Runtime 17.0 (parquet-mr 1.14.0) | Apache-2.0 (delta-rs) |
+| `spark-v2-checkpoint.parquet` | `v2-classic-checkpoint-json`, `00000000000000000001.checkpoint.parquet` | Spark 3.5.3, Delta 3.4.0 | Apache-2.0 (delta-rs) |
+| `delta-rs-checkpoint.parquet` | `table_failed_last_checkpoint_update`, `00000000000000000003.checkpoint.parquet` | delta-rs 0.17.1 | Apache-2.0 (delta-rs) |
+| `spark-checkpoint.parquet` | `simple_table_with_checkpoint`, `00000000000000000010.checkpoint.parquet` | Spark (Delta 0.x) | Apache-2.0 (delta-rs) |
+
+The delta-rs files come from `crates/test/tests/data/` of
+[delta-io/delta-rs](https://github.com/delta-io/delta-rs) at commit
+`40439ad6d37a9e99add5bd80796aa6179ebe339f`.
