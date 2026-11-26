@@ -75,6 +75,13 @@ Calls \code{FUN(batch, index, ...)} for every batch. Each batch is an independen
 data frame and can be retained by the callback when desired. Callback return
 values are discarded.
 }
+\section{Decimal columns}{
+
+Decimal columns are read as \code{double}, and one
+\code{qio_message_decimal_double} message per call (not per batch) lists them;
+see the "Decimal columns" section of \code{\link[=collect]{collect()}}.
+}
+
 \examples{
 path <- tempfile(fileext = ".parquet")
 write_parquet(mtcars, path)

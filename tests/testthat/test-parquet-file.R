@@ -993,3 +993,38 @@ test_that("repeated geometries still record their statistics (#36)", {
     unlist(cc$encodings[cc$path == "geom"])
   )))
 })
+
+test_that("a variable-length DECIMAL is listed in the decimal condition", {
+  # No fixture stores a DECIMAL as BYTE_ARRAY (pyarrow and arrow write
+  # FIXED_LEN_BYTE_ARRAY), so the schema is built by hand.
+  sch <- data.frame(
+    column = 1:3,
+    name = c("id", "amount", "rate"),
+    path = c("id", "amount", "rate"),
+    physical_type = c("INT32", "BYTE_ARRAY", "FIXED_LEN_BYTE_ARRAY"),
+    logical_type = c(NA, "DECIMAL", "DECIMAL"),
+    logical_details = c(NA, "precision=38, scale=10", "precision=4"),
+    repetition = "OPTIONAL",
+    type_length = c(NA, NA, 2L),
+    max_definition_level = 1L,
+    max_repetition_level = 0L,
+    stringsAsFactors = FALSE
+  )
+  plan <- read_plan(sch)
+  m <- tryCatch(
+    qio_message_decimal(sch, plan, NULL),
+    qio_message_decimal_double = identity
+  )
+  expect_s3_class(m, "qio_message_decimal_double")
+  # A missing scale is 0, as the Parquet default says.
+  expect_identical(
+    m$columns,
+    data.frame(
+      path = c("amount", "rate"),
+      physical_type = c("BYTE_ARRAY", "FIXED_LEN_BYTE_ARRAY"),
+      precision = c(38L, 4L),
+      scale = c(10L, 0L)
+    )
+  )
+  expect_null(qio_message_decimal(sch, plan, 1L))
+})

@@ -226,6 +226,27 @@ metadata.qio_parquet_file <- function(x, ...) {
 #' If every selected column is nested, the result is a zero-column data frame
 #' with the selected number of rows.
 #'
+#' @section Decimal columns:
+#' A `DECIMAL` column is read as `double` with its scale applied, so its values
+#' may be inexact. The unscaled integer survives the conversion only while it
+#' is within `[-2^53, 2^53]`, which every `DECIMAL(p, s)` with `p <= 15`
+#' satisfies; the result is then the `double` nearest the decimal. A read that selects any decimal column signals one
+#' message, of class `qio_message_decimal_double` (inheriting from `message`
+#' and `condition`), however many columns, row groups or batches it covers.
+#' Its `columns` field is a data frame with one row per selected decimal
+#' column: `path` (the complete column path), `physical_type`, and integer
+#' `precision` and `scale`. A caller that has checked those columns can
+#' silence exactly this message:
+#'
+#' ```r
+#' withCallingHandlers(
+#'   collect(pf),
+#'   qio_message_decimal_double = function(m) {
+#'     if (all(m$columns$precision <= 15L)) invokeRestart("muffleMessage")
+#'   }
+#' )
+#' ```
+#'
 #' @param x A `qio_parquet_file` object.
 #' @param ... Reserved for future use.
 #' @param columns Character vector of complete column paths, or `NULL` for all
@@ -297,14 +318,15 @@ collect.qio_parquet_file <- function(
   qio_empty_dots(...)
   verbose <- qio_flag(verbose, "verbose")
   options <- qio_read_options(int64 = int64, time = time, tz = tz)
+  file_schema <- schema(x)
   plan <- read_plan(
-    x,
+    file_schema,
     int64 = options$int64,
     time = options$time,
     tz = options$tz
   )
   columns <- qio_select_columns(plan, qio_columns(columns))
-  qio_message_decimal(plan, columns)
+  qio_message_decimal(file_schema, plan, columns)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
   if (verbose) {
@@ -338,6 +360,11 @@ collect.qio_parquet_file <- function(
 #'
 #' @return `x`, invisibly.
 #'
+#' @section Decimal columns:
+#' Decimal columns are read as `double`, and one
+#' `qio_message_decimal_double` message per call (not per batch) lists them;
+#' see the "Decimal columns" section of [collect()].
+#'
 #' @seealso [collect()] for the same selection returned as one data frame, and
 #'   [open_parquet()] for the handle.
 #' @export
@@ -364,14 +391,15 @@ walk_batches <- function(
   }
   verbose <- qio_flag(verbose, "verbose")
   options <- qio_read_options(int64 = int64, time = time, tz = tz)
+  file_schema <- schema(x)
   plan <- read_plan(
-    x,
+    file_schema,
     int64 = options$int64,
     time = options$time,
     tz = options$tz
   )
   columns <- qio_select_columns(plan, qio_columns(columns))
-  qio_message_decimal(plan, columns)
+  qio_message_decimal(file_schema, plan, columns)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
   if (verbose) {
@@ -660,22 +688,57 @@ qio_column_kinds <- function(plan, columns) {
   kind
 }
 
-# One message per read when decimal columns are present. v0.1.0 reads them as
-# double with the scale applied; exact fixed-point character is v0.2.0, so the
-# values may be inexact and the user is told once. See .agents/TYPES.md.
-qio_message_decimal <- function(plan, columns) {
+# One message per read when decimal columns are present. qio 0.1.x reads them
+# as double with the scale applied; exact fixed-point character is v0.2.0, so
+# the values may be inexact and the user is told once. The message is a
+# `qio_message_decimal_double` condition whose `columns` data frame lists the
+# selected decimal leaves, so a caller that has vetted them can muffle exactly
+# those. `schema` and `plan` have one row per leaf, in the same order, and
+# `columns` is the selection qio_select_columns() returned. See
+# .agents/TYPES.md, "Decimal".
+qio_message_decimal <- function(schema, plan, columns) {
   selected <- if (is.null(columns)) seq_len(nrow(plan)) else columns
-  n <- sum(startsWith(plan$converter[selected], "decimal_"), na.rm = TRUE)
-  if (n > 0L) {
-    message(
-      "Reading ",
-      n,
-      " Parquet DECIMAL column",
-      if (n == 1L) "" else "s",
-      " as double; values may be inexact. Exact decimals are deferred to ",
-      "qio 0.2.0."
-    )
+  decimal <- selected[which(startsWith(plan$converter[selected], "decimal_"))]
+  n <- length(decimal)
+  if (n == 0L) {
+    return(invisible(NULL))
   }
+  details <- qio_parse_decimal_details(schema$logical_details[decimal])
+  affected <- data.frame(
+    path = plan$path[decimal],
+    physical_type = plan$physical_type[decimal],
+    precision = details$precision,
+    scale = details$scale,
+    stringsAsFactors = FALSE
+  )
+
+  shown <- utils::head(affected, 5L)
+  listed <- paste0(
+    "`",
+    shown$path,
+    "` DECIMAL(",
+    shown$precision,
+    ", ",
+    shown$scale,
+    ")",
+    collapse = ", "
+  )
+  if (n > nrow(shown)) {
+    listed <- paste0(listed, ", and ", n - nrow(shown), " more")
+  }
+  text <- paste0(
+    "Reading ",
+    n,
+    " Parquet DECIMAL column",
+    if (n == 1L) "" else "s",
+    " as double; values may be inexact: ",
+    listed,
+    ". Exact decimals are deferred to qio 0.2.0.\n"
+  )
+  message(structure(
+    class = c("qio_message_decimal_double", "message", "condition"),
+    list(message = text, call = NULL, columns = affected)
+  ))
   invisible(NULL)
 }
 

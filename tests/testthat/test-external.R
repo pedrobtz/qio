@@ -663,6 +663,119 @@ test_that("the decimal message is emitted once per read", {
   expect_match(messages, "2 Parquet DECIMAL columns")
 })
 
+# Every condition of `class` an expression signals, muffled so it neither
+# prints nor stops the expression; other messages pass through untouched.
+decimal_conditions <- function(expr) {
+  seen <- list()
+  value <- withCallingHandlers(
+    expr,
+    qio_message_decimal_double = function(m) {
+      seen[[length(seen) + 1L]] <<- m
+      invokeRestart("muffleMessage")
+    }
+  )
+  list(value = value, conditions = seen)
+}
+
+test_that("the decimal message is a classed condition naming its columns", {
+  got <- decimal_conditions(read_parquet(ext("decimal_types.parquet")))
+  expect_length(got$conditions, 1L)
+  m <- got$conditions[[1]]
+  expect_identical(
+    class(m),
+    c("qio_message_decimal_double", "message", "condition")
+  )
+  # Precision and scale as the file's schema() declares them.
+  expect_identical(
+    m$columns,
+    data.frame(
+      path = c("small", "wide"),
+      physical_type = "FIXED_LEN_BYTE_ARRAY",
+      precision = c(7L, 15L),
+      scale = c(2L, 2L)
+    )
+  )
+  text <- conditionMessage(m)
+  expect_match(text, "2 Parquet DECIMAL columns as double")
+  expect_match(text, "values may be inexact")
+  expect_match(text, "`small` DECIMAL(7, 2)", fixed = TRUE)
+  expect_match(text, "`wide` DECIMAL(15, 2)", fixed = TRUE)
+})
+
+test_that("integer-backed decimals are listed with their storage", {
+  got <- decimal_conditions(read_parquet(ext("converter_gaps.parquet")))
+  expect_length(got$conditions, 1L)
+  expect_identical(
+    got$conditions[[1]]$columns,
+    data.frame(
+      path = c("dec32", "dec64"),
+      physical_type = c("INT32", "INT64"),
+      precision = c(7L, 17L),
+      scale = c(2L, 2L)
+    )
+  )
+})
+
+test_that("the decimal condition lists only the selected columns", {
+  path <- ext("decimal_types.parquet")
+  got <- decimal_conditions(read_parquet(path, columns = "wide"))
+  expect_identical(got$conditions[[1]]$columns$path, "wide")
+  expect_match(
+    conditionMessage(got$conditions[[1]]),
+    "1 Parquet DECIMAL column "
+  )
+})
+
+test_that("muffling the decimal class silences it and nothing else", {
+  path <- ext("decimal_types.parquet")
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
+
+  # verbose = TRUE adds a plain message, which must still reach the caller.
+  others <- character()
+  got <- withCallingHandlers(
+    decimal_conditions(collect(file, verbose = TRUE)),
+    message = function(m) {
+      others <<- c(others, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+  expect_length(got$conditions, 1L)
+  expect_true(length(others) > 0L)
+  expect_false(any(grepl("DECIMAL column", others)))
+  expect_equal(got$value$wide, c(123456789.12, -1, 0, NA))
+
+  expect_no_message(
+    decimal_conditions(read_parquet(path))
+  )
+})
+
+test_that("each read API signals the decimal condition once", {
+  path <- ext("decimal_types.parquet")
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
+  expect_length(decimal_conditions(collect(file))$conditions, 1L)
+  # Four rows in batches of two: once per read, not once per batch.
+  walked <- decimal_conditions(
+    walk_batches(file, function(batch, index) NULL, batch_size = 2L)
+  )
+  expect_length(walked$conditions, 1L)
+  expect_identical(walked$conditions[[1]]$columns$path, c("small", "wide"))
+})
+
+test_that("a read with no decimal columns signals no decimal condition", {
+  path <- withr::local_tempfile(fileext = ".parquet")
+  write_parquet(data.frame(x = c(1.5, 2), y = c("a", "b")), path)
+  expect_length(decimal_conditions(read_parquet(path))$conditions, 0L)
+  # Selecting away the decimals of a file that has them signals none either.
+  expect_length(
+    decimal_conditions(
+      read_parquet(ext("decimal_types.parquet"), columns = character())
+    )$conditions,
+    0L
+  )
+})
+
 test_that("decimal values agree across all three read APIs", {
   path <- ext("decimal_types.parquet")
   file <- open_parquet(path)
