@@ -341,7 +341,7 @@ collect.qio_parquet_file <- function(
     qio_int64_code(options),
     qio_column_kinds(plan, columns)
   )
-  qio_apply_plan(result, plan)
+  qio_apply_plan(result, plan, columns)
 }
 
 #' Walk over batches from a Parquet file
@@ -406,7 +406,7 @@ walk_batches <- function(
     qio_message_plan(x, plan, columns, row_groups, batch_size)
   }
   callback <- function(batch, index) {
-    FUN(qio_apply_plan(batch, plan), index, ...)
+    FUN(qio_apply_plan(batch, plan, columns), index, ...)
   }
   .Call(
     C_qio_parquet_walk,

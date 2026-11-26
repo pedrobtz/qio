@@ -1,5 +1,8 @@
 # qio (development version)
 
+* Columns that share a path, as Arrow writes two columns of one name, each get
+  their own conversion; the second used to get the first one's, turning an
+  `INT32` into a `Date` (#44).
 * The message `read_parquet()`, `collect()` and `walk_batches()` emit when they
   read `DECIMAL` columns as `double` is now a condition of class
   `qio_message_decimal_double` (a `message`). It names the columns with their

@@ -263,6 +263,32 @@ test_that("selecting a nested path by its complete path is skipped cleanly", {
   expect_identical(nrow(result), 3L)
 })
 
+test_that("columns that share a path each get their own conversion", {
+  # Arrow writes duplicate top-level names; written by
+  # tools/generate-nested-fixtures.py. Conversions used to be matched by path,
+  # so every `x` got the first one's (#44).
+  path <- ext("duplicate_paths.parquet")
+  days <- function(x) structure(as.double(x), class = "Date")
+  utc <- function(x) {
+    structure(x / 1e6, class = c("POSIXct", "POSIXt"), tzone = "UTC")
+  }
+  result <- read_parquet(path)
+  expect_identical(names(result), c("x", "x", "y", "y", "y"))
+  expect_identical(result[[1]], days(c(18262, NA)))
+  expect_identical(result[[2]], c(1L, NA))
+  expect_identical(result[[3]], utc(c(1577836800000000, NA)))
+  expect_identical(result[[4]], c(1.5, NA))
+  expect_identical(result[[5]], c("a", NA))
+
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
+  expect_identical(collect(file), result)
+  batches <- list()
+  walk_batches(file, function(batch, index) batches[[index]] <<- batch)
+  expect_identical(batches[[1]], result)
+  expect_error(collect(file, columns = "x"), "Ambiguous Parquet column")
+})
+
 test_that("all three read APIs agree on the colliding file", {
   path <- ext("name_collision.parquet")
   file <- open_parquet(path)

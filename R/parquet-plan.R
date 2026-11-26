@@ -592,18 +592,23 @@ qio_build_plan <- function(schema, options = qio_read_options()) {
   plan
 }
 
-# Apply a plan's logical conversions to a collected data frame. Columns are
-# matched to plan rows by their dotted path, which `collect()` uses for names,
-# so projected and reordered reads are handled correctly. Physical converters
-# are the identity; only logical converters transform the vector.
-qio_apply_plan <- function(df, plan) {
-  paths <- names(df)
-  idx <- match(paths, plan$path)
-  for (i in seq_along(paths)) {
-    if (is.na(idx[i])) {
-      next
-    }
-    df[[i]] <- qio_apply_converter(df[[i]], plan$converter[idx[i]])
+# Apply a plan's logical conversions to a collected data frame whose columns
+# are the leaves `columns` (1-based plan rows, NULL for all), in that order.
+# Matched by leaf index, never by path: two leaves can share a path, and
+# matching by name gave both the first one's conversion (#44). Physical
+# converters are the identity; only logical converters transform the vector.
+qio_apply_plan <- function(df, plan, columns = NULL) {
+  if (is.null(columns)) {
+    columns <- seq_len(nrow(plan))
+  }
+  if (length(columns) != length(df)) {
+    stop(
+      "qio: internal error: the plan and the result disagree on columns.",
+      call. = FALSE
+    )
+  }
+  for (i in seq_along(columns)) {
+    df[[i]] <- qio_apply_converter(df[[i]], plan$converter[[columns[[i]]]])
   }
   df
 }
