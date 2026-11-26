@@ -2,7 +2,9 @@
 # which .Rbuildignore keeps out of the tarball, with QIO_ORACLES=true so a
 # missing oracle package fails instead of skipping. DuckDB reads the footer
 # qio writes with its own decoder, so these check the bytes on disk rather
-# than qio reading back its own writes.
+# than qio reading back its own writes; Apache Arrow reads the nested
+# fixtures, so qio's structs, maps and lists are checked against another
+# reader's (test-ci-nested-oracle.R).
 on:
   schedule:
     - cron: "41 12 * * 6"
@@ -43,6 +45,7 @@ jobs:
           extra-packages: |
             any::devtools
             any::duckdb
+            any::arrow
             any::DBI
 
       - name: Run the oracle tests
