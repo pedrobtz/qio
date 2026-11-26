@@ -13,7 +13,7 @@ schema, so it is cheap to compute and inspect before reading any data."></head><
 
     <a class="navbar-brand me-2" href="../index.html">qio</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -132,6 +132,13 @@ collected.</p></dd>
 <dt><code>nested</code></dt>
 <dd><p>Whether the leaf belongs to a nested or repeated field.</p></dd>
 
+<dt><code>shape</code></dt>
+<dd><p>Where the leaf sits: <code>"flat"</code> for a top-level column,
+<code>"struct"</code> for a field of a struct, <code>"list"</code> for the element of a
+<code>LIST</code> and <code>"map"</code> for the key or value of a <code>MAP</code> (each possibly
+inside structs), or <code>NA</code> for a shape qio does not read, which <code>note</code>
+names. See the "Nested columns" section of <code><a href="collect.html">collect()</a></code>.</p></dd>
+
 <dt><code>collectible</code></dt>
 <dd><p>Whether <code><a href="collect.html">collect()</a></code> can currently materialize the
 column.</p></dd>
@@ -184,9 +191,9 @@ one.</p>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   column name path physical_type logical_type    r_type converter nullable</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 1      1    x    x         INT32         &lt;NA&gt;   integer     int32    FALSE</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 2      2    y    y    BYTE_ARRAY       STRING character      text     TRUE</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>   nested collectible note</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1  FALSE        TRUE &lt;NA&gt;</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2  FALSE        TRUE &lt;NA&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   nested shape collectible note</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1  FALSE  flat        TRUE &lt;NA&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2  FALSE  flat        TRUE &lt;NA&gt;</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># The plan answers for the read you are about to do, not a default one.</span></span></span>
 <span class="r-in"><span><span class="fu">read_plan</span><span class="op">(</span><span class="va">path</span>, int64 <span class="op">=</span> <span class="st">"integer64"</span><span class="op">)</span></span></span>
@@ -194,9 +201,9 @@ one.</p>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   column name path physical_type logical_type    r_type converter nullable</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 1      1    x    x         INT32         &lt;NA&gt;   integer     int32    FALSE</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 2      2    y    y    BYTE_ARRAY       STRING character      text     TRUE</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>   nested collectible note</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1  FALSE        TRUE &lt;NA&gt;</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 2  FALSE        TRUE &lt;NA&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>   nested shape collectible note</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1  FALSE  flat        TRUE &lt;NA&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 2  FALSE  flat        TRUE &lt;NA&gt;</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="co"># An open handle and a schema() data frame give the same plan.</span></span></span>
 <span class="r-in"><span><span class="va">pf</span> <span class="op">&lt;-</span> <span class="fu"><a href="open_parquet.html">open_parquet</a></span><span class="op">(</span><span class="va">path</span><span class="op">)</span></span></span>

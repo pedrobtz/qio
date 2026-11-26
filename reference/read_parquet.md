@@ -88,8 +88,13 @@ timestamps can drop sub-second precision far from the epoch. Use
 [`read_plan()`](https://pedrobtz.github.io/qio/reference/read_plan.md)
 to preview the R type of each column before reading.
 
-Nested and repeated columns are skipped with one message. Nested reading
-is deferred to qio 0.2.0.
+A struct is read as a data-frame column, a `LIST` as a list-column of
+vectors, and a `MAP` as a list-column of key/value data frames, keeping
+a null struct, a null list, an empty list and a null element apart; see
+the "Nested columns" section of
+[`collect()`](https://pedrobtz.github.io/qio/reference/collect.md).
+Shapes qio does not read, such as a list of structs, are left out with
+one message.
 
 `DECIMAL` columns are read as `double` with their scale applied, and one
 message of class `qio_message_decimal_double` names them and says the

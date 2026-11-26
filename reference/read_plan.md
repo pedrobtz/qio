@@ -101,6 +101,15 @@ the columns:
 
   Whether the leaf belongs to a nested or repeated field.
 
+- `shape`:
+
+  Where the leaf sits: `"flat"` for a top-level column, `"struct"` for a
+  field of a struct, `"list"` for the element of a `LIST` and `"map"`
+  for the key or value of a `MAP` (each possibly inside structs), or
+  `NA` for a shape qio does not read, which `note` names. See the
+  "Nested columns" section of
+  [`collect()`](https://pedrobtz.github.io/qio/reference/collect.md).
+
 - `collectible`:
 
   Whether
@@ -178,9 +187,9 @@ read_plan(path)
 #>   column name path physical_type logical_type    r_type converter nullable
 #> 1      1    x    x         INT32         <NA>   integer     int32    FALSE
 #> 2      2    y    y    BYTE_ARRAY       STRING character      text     TRUE
-#>   nested collectible note
-#> 1  FALSE        TRUE <NA>
-#> 2  FALSE        TRUE <NA>
+#>   nested shape collectible note
+#> 1  FALSE  flat        TRUE <NA>
+#> 2  FALSE  flat        TRUE <NA>
 
 # The plan answers for the read you are about to do, not a default one.
 read_plan(path, int64 = "integer64")
@@ -188,9 +197,9 @@ read_plan(path, int64 = "integer64")
 #>   column name path physical_type logical_type    r_type converter nullable
 #> 1      1    x    x         INT32         <NA>   integer     int32    FALSE
 #> 2      2    y    y    BYTE_ARRAY       STRING character      text     TRUE
-#>   nested collectible note
-#> 1  FALSE        TRUE <NA>
-#> 2  FALSE        TRUE <NA>
+#>   nested shape collectible note
+#> 1  FALSE  flat        TRUE <NA>
+#> 2  FALSE  flat        TRUE <NA>
 
 # An open handle and a schema() data frame give the same plan.
 pf <- open_parquet(path)

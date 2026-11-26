@@ -46,8 +46,10 @@ walk_batches(
   [`schema()`](https://pedrobtz.github.io/qio/reference/schema.md) and
   [`names()`](https://rdrr.io/r/base/names.html) report them,
   dot-separated for nested leaves, and never by leaf name alone: two
-  leaves may share a name under different parents. An unknown path is an
-  error, and so is a path matching more than one leaf.
+  leaves may share a name under different parents. A path may also name
+  a group, which selects every leaf under it; see "Nested columns". An
+  unknown path is an error, and so is a path matching more than one leaf
+  or group.
 
 - row_groups:
 
@@ -104,6 +106,14 @@ walk_batches(
 ## Value
 
 `x`, invisibly.
+
+## Nested columns
+
+`walk_batches()` reads flat columns only. Nested columns it would
+select, through `columns` or by default, are left out with one message
+of class `qio_message_nested_skipped`;
+[`collect()`](https://pedrobtz.github.io/qio/reference/collect.md) reads
+them.
 
 ## Decimal columns
 

@@ -11,7 +11,7 @@ values are discarded."></head><body>
 
     <a class="navbar-brand me-2" href="../index.html">qio</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -83,8 +83,9 @@ receives extra arguments. Every argument after it is still name-only.</p></dd>
 <dd><p>Character vector of complete column paths, or <code>NULL</code> for all
 columns. Paths are matched exactly as <code><a href="schema.html">schema()</a></code> and <code><a href="https://rdrr.io/r/base/names.html" class="external-link">names()</a></code> report
 them, dot-separated for nested leaves, and never by leaf name alone: two
-leaves may share a name under different parents. An unknown path is an
-error, and so is a path matching more than one leaf.</p></dd>
+leaves may share a name under different parents. A path may also name a
+group, which selects every leaf under it; see "Nested columns". An unknown
+path is an error, and so is a path matching more than one leaf or group.</p></dd>
 
 
 <dt id="arg-row-groups">row_groups<a class="anchor" aria-label="anchor" href="#arg-row-groups"></a></dt>
@@ -136,6 +137,14 @@ to stderr and <code><a href="https://rdrr.io/r/base/message.html" class="externa
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
     <p><code>x</code>, invisibly.</p>
+    </div>
+    <div class="section level2">
+    <h2 id="nested-columns">Nested columns<a class="anchor" aria-label="anchor" href="#nested-columns"></a></h2>
+
+
+<p><code>walk_batches()</code> reads flat columns only. Nested columns it would select,
+through <code>columns</code> or by default, are left out with one message of class
+<code>qio_message_nested_skipped</code>; <code><a href="collect.html">collect()</a></code> reads them.</p>
     </div>
     <div class="section level2">
     <h2 id="decimal-columns">Decimal columns<a class="anchor" aria-label="anchor" href="#decimal-columns"></a></h2>

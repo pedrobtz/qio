@@ -126,8 +126,10 @@ optional *logical type*. qio reads them like this by default:
 
 Bytes are text only when the file says so, which is why an unannotated
 `BYTE_ARRAY` stays raw. `INT64` is exact through 2^53 and `NA` beyond
-it; pass `int64 = "integer64"` for the full range. Nulls become `NA`.
-Nested and repeated columns are skipped for now.
+it; pass `int64 = "integer64"` for the full range. Nulls become `NA`. A
+struct reads as a data-frame column, a `LIST` as a list-column of
+vectors and a `MAP` as a list-column of key/value data frames; lists of
+structs and other deeper shapes are skipped with a message.
 
 Writing infers the reverse, and
 [`parquet_schema()`](https://pedrobtz.github.io/qio/reference/parquet_schema.md)

@@ -244,7 +244,9 @@ also takes `row_group_size`, `metadata`, `sorted_by`, and `append`.
 
 ## What qio does not do
 
-Nested and repeated columns are skipped with a message, decimals read as
-`double` rather than exact fixed-point, and several types can be read
-but not written. None of that is accidental; `?qio-limitations` records
-each one and why, so you can tell a deliberate boundary from a bug.
+Lists of structs and other deeply nested columns are skipped with a
+message (structs, maps and lists of plain values are read), decimals
+read as `double` rather than exact fixed-point, and several types can be
+read but not written. None of that is accidental; `?qio-limitations`
+records each one and why, so you can tell a deliberate boundary from a
+bug.

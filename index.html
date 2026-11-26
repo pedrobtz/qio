@@ -21,7 +21,7 @@
 
     <a class="navbar-brand me-2" href="index.html">qio</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -202,7 +202,7 @@
 </tr>
 </tbody>
 </table>
-<p>Bytes are text only when the file says so, which is why an unannotated <code>BYTE_ARRAY</code> stays raw. <code>INT64</code> is exact through 2^53 and <code>NA</code> beyond it; pass <code>int64 = "integer64"</code> for the full range. Nulls become <code>NA</code>. Nested and repeated columns are skipped for now.</p>
+<p>Bytes are text only when the file says so, which is why an unannotated <code>BYTE_ARRAY</code> stays raw. <code>INT64</code> is exact through 2^53 and <code>NA</code> beyond it; pass <code>int64 = "integer64"</code> for the full range. Nulls become <code>NA</code>. A struct reads as a data-frame column, a <code>LIST</code> as a list-column of vectors and a <code>MAP</code> as a list-column of key/value data frames; lists of structs and other deeper shapes are skipped with a message.</p>
 <p>Writing infers the reverse, and <code><a href="reference/parquet_schema.html">parquet_schema()</a></code> overrides it per column:</p>
 <table class="table">
 <thead><tr>

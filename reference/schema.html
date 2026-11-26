@@ -7,7 +7,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">qio</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -92,7 +92,11 @@ or a decimal precision and scale; <code>NA</code> when there are none.</p></dd>
 <dd><p>Above 0 when the leaf is repeated.</p></dd>
 
 
-</dl></div>
+</dl><p>For a nested file the data frame also carries the file's group structure
+in an attribute, which <code><a href="read_plan.html">read_plan()</a></code> uses to place each leaf in its
+struct, <code>LIST</code> or <code>MAP</code>; a schema data frame without it reads its nested
+leaves as not collectible.</p>
+    </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p><strong><code>name</code> and <code>path</code> are not interchangeable.</strong> <code>name</code> is the bare leaf name

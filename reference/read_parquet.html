@@ -7,7 +7,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">qio</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -114,8 +114,11 @@ Julian-day and nanosecond-of-day parts as an instant). Parquet nulls become
 which for microsecond and nanosecond timestamps can drop sub-second precision
 far from the epoch. Use <code><a href="read_plan.html">read_plan()</a></code> to preview the R type of each column
 before reading.</p>
-<p>Nested and repeated columns are skipped with one message. Nested reading is
-deferred to qio 0.2.0.</p>
+<p>A struct is read as a data-frame column, a <code>LIST</code> as a list-column of
+vectors, and a <code>MAP</code> as a list-column of key/value data frames, keeping a
+null struct, a null list, an empty list and a null element apart; see the
+"Nested columns" section of <code><a href="collect.html">collect()</a></code>. Shapes qio does not read, such as a
+list of structs, are left out with one message.</p>
 <p><code>DECIMAL</code> columns are read as <code>double</code> with their scale applied, and one
 message of class <code>qio_message_decimal_double</code> names them and says the values
 may be inexact; its <code>columns</code> field lets a caller muffle it for columns it

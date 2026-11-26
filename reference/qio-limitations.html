@@ -11,7 +11,7 @@ so an absent function reads as a decision rather than an oversight."></head><bod
 
     <a class="navbar-brand me-2" href="../index.html">qio</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -50,12 +50,14 @@ so an absent function reads as a decision rather than an oversight.</p>
 
 
 
-<dl><dt>Nested and repeated columns</dt>
-<dd><p><code>LIST</code>, <code>MAP</code>, and struct columns are
-skipped on read, with one message per operation. carquet returns the
-definition and repetition levels needed to rebuild them, but assembling
-R objects from those levels, and deciding how a null list differs from an
-empty one, is qio's work and is deferred to 0.2.0.</p></dd>
+<dl><dt>Deeply nested columns</dt>
+<dd><p>Since 0.2.0 structs, and <code>LIST</code> and <code>MAP</code>
+columns of plain values, are read (see the "Nested columns" section of
+<code><a href="collect.html">collect()</a></code>). Anything with a repetition level above 1 – a list of
+structs, a list of lists, a map with struct values – and legacy list
+encodings, bare repeated fields and <code>VARIANT</code> are skipped with one
+message, never flattened. <code><a href="walk_batches.html">walk_batches()</a></code> reads flat columns only, and
+<code><a href="write_parquet.html">write_parquet()</a></code> writes flat columns only.</p></dd>
 
 <dt>Predicate pushdown and page filters</dt>
 <dd><p>carquet can skip pages using

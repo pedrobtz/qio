@@ -2,6 +2,32 @@
 
 ## qio (development version)
 
+- [`read_parquet()`](https://pedrobtz.github.io/qio/reference/read_parquet.md)
+  and [`collect()`](https://pedrobtz.github.io/qio/reference/collect.md)
+  read nested columns
+  ([\#73](https://github.com/pedrobtz/qio/issues/73)). A struct is a
+  data-frame column, a `LIST` a list-column of vectors and a `MAP` a
+  list-column of key/value data frames, keeping a null struct, a null
+  list, an empty list and a null element apart; the new
+  [`is_null_struct()`](https://pedrobtz.github.io/qio/reference/is_null_struct.md)
+  returns an optional struct’s null rows. `columns` takes group paths
+  (`"add"`) as well as leaf paths (`"add.path"`, which returns `add`
+  with only that field). Lists of structs and other shapes with a
+  repetition level above 1 are left out with one message of class
+  `qio_message_nested_skipped`, and are an error when named in
+  `columns`.
+  [`walk_batches()`](https://pedrobtz.github.io/qio/reference/walk_batches.md)
+  still reads flat columns only.
+  [`read_plan()`](https://pedrobtz.github.io/qio/reference/read_plan.md)
+  has a new `shape` column.
+- **Compatibility:** files whose nested columns used to be dropped with
+  a message now return them, so their results gain columns.
+- Columns that share a path, as Arrow writes two columns of one name,
+  each get their own conversion; the second used to get the first one’s,
+  turning an `INT32` into a `Date`
+  ([\#44](https://github.com/pedrobtz/qio/issues/44)).
+- A data page with no values, which Arrow writes between two pages of a
+  repeated column, no longer stops a read (vendored carquet fix).
 - The message
   [`read_parquet()`](https://pedrobtz.github.io/qio/reference/read_parquet.md),
   [`collect()`](https://pedrobtz.github.io/qio/reference/collect.md) and

@@ -9,7 +9,7 @@ their physical file order, even if their selector is not sorted."></head><body>
 
     <a class="navbar-brand me-2" href="../index.html">qio</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -75,8 +75,9 @@ their physical file order, even if their selector is not sorted.</p>
 <dd><p>Character vector of complete column paths, or <code>NULL</code> for all
 columns. Paths are matched exactly as <code><a href="schema.html">schema()</a></code> and <code><a href="https://rdrr.io/r/base/names.html" class="external-link">names()</a></code> report
 them, dot-separated for nested leaves, and never by leaf name alone: two
-leaves may share a name under different parents. An unknown path is an
-error, and so is a path matching more than one leaf.</p></dd>
+leaves may share a name under different parents. A path may also name a
+group, which selects every leaf under it; see "Nested columns". An unknown
+path is an error, and so is a path matching more than one leaf or group.</p></dd>
 
 
 <dt id="arg-row-groups">row_groups<a class="anchor" aria-label="anchor" href="#arg-row-groups"></a></dt>
@@ -129,7 +130,8 @@ to stderr and <code><a href="https://rdrr.io/r/base/message.html" class="externa
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>A data frame.</p>
+    <p>A data frame. Nested columns are data-frame and list columns; see
+the "Nested columns" section.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
@@ -139,11 +141,42 @@ reader allocates while decoding string and binary columns, which would
 otherwise scale with the largest selected row group rather than with
 anything the caller controls. Smaller batches lower peak memory and cost a
 little throughput on dictionary-encoded text.</p>
-<p>Nested and repeated columns are not materialized in qio 0.1.0. When a
-selection includes them, they are omitted and one message reports how many
-physical leaf columns were skipped. Nested reading is deferred to qio 0.2.0.
-If every selected column is nested, the result is a zero-column data frame
-with the selected number of rows.</p>
+<p>Nested columns are read since qio 0.2.0; see the "Nested columns" section.</p>
+    </div>
+    <div class="section level2">
+    <h2 id="nested-columns">Nested columns<a class="anchor" aria-label="anchor" href="#nested-columns"></a></h2>
+
+
+<p>A top-level Parquet group becomes one column of the result, named by its
+field name:</p><ul><li><p>A <strong>struct</strong> is a data-frame column with one column per field (structs
+nest to any depth). A null struct and a struct whose fields are all null
+both have <code>NA</code> in every field, so an optional struct carries which rows
+are null; <code><a href="is_null_struct.html">is_null_struct()</a></code> returns them.</p></li>
+<li><p>A <strong><code>LIST</code></strong> is a list-column with one vector per row: <code>NULL</code> for a null
+list, a zero-length vector for an empty one, and <code>NA</code> for a null element.
+A list of binary values is a list of lists of raw vectors.</p></li>
+<li><p>A <strong><code>MAP</code></strong> is a list-column with one data frame per row, its columns
+always named <code>key</code> and <code>value</code>: <code>NULL</code> for a null map, a zero-row data
+frame for an empty one. Keys need not be strings or unique, so a map is
+not a named vector.</p></li>
+</ul><p>Under a null struct every field is <code>NA</code> and every list or map <code>NULL</code>.
+Elements, keys, values and fields get the same R types as flat columns, and
+<code>int64</code>, <code>time</code> and <code>tz</code> apply to them.</p>
+<p><code>columns</code> takes the complete path of a leaf or of a group. A leaf path, such
+as <code>"add.path"</code>, returns its top-level struct with only the selected fields,
+in schema order, and keeps the struct's null rows; a group path selects
+every leaf under it. A <code>LIST</code> or <code>MAP</code> is selected whole by its own path:
+a path inside one (<code>"add.tags.key_value.key"</code>) is an error naming the path
+to use. Top-level columns come in the order they are first named.</p>
+<p>qio reads lists and maps whose elements, keys and values are not themselves
+lists, maps or structs (a repetition level of at most 1). Anything deeper –
+a list of structs, a list of lists, a map with struct values, legacy
+two-level lists, bare repeated fields and <code>VARIANT</code> – is never flattened:
+read with every column, or through an ancestor, it is left out with one
+message of class <code>qio_message_nested_skipped</code>, whose <code>columns</code> field is a
+data frame of the leaves left out with their <code>group</code> and <code>reason</code>; named in
+<code>columns</code>, it is an error. <code><a href="read_plan.html">read_plan()</a></code> marks such leaves not collectible
+and says why. <code><a href="walk_batches.html">walk_batches()</a></code> reads flat columns only.</p>
     </div>
     <div class="section level2">
     <h2 id="decimal-columns">Decimal columns<a class="anchor" aria-label="anchor" href="#decimal-columns"></a></h2>

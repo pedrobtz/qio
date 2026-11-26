@@ -19,7 +19,7 @@
 
     <a class="navbar-brand me-2" href="../index.html">qio</a>
 
-    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2</small>
+    <small class="nav-text text-muted me-auto" data-bs-toggle="tooltip" data-bs-placement="bottom" title="">0.1.2.9000</small>
 
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar" aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
@@ -245,9 +245,10 @@ several Parquet types, <code><a href="../reference/parquet_schema.html">parquet_
 <div class="section level2">
 <h2 id="what-qio-does-not-do">What qio does not do<a class="anchor" aria-label="anchor" href="#what-qio-does-not-do"></a>
 </h2>
-<p>Nested and repeated columns are skipped with a message, decimals read
-as <code>double</code> rather than exact fixed-point, and several types
-can be read but not written. None of that is accidental;
+<p>Lists of structs and other deeply nested columns are skipped with a
+message (structs, maps and lists of plain values are read), decimals
+read as <code>double</code> rather than exact fixed-point, and several
+types can be read but not written. None of that is accidental;
 <code>?qio-limitations</code> records each one and why, so you can tell
 a deliberate boundary from a bug.</p>
 </div>

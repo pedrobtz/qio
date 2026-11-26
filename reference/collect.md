@@ -39,8 +39,10 @@ collect(
   [`schema()`](https://pedrobtz.github.io/qio/reference/schema.md) and
   [`names()`](https://rdrr.io/r/base/names.html) report them,
   dot-separated for nested leaves, and never by leaf name alone: two
-  leaves may share a name under different parents. An unknown path is an
-  error, and so is a path matching more than one leaf.
+  leaves may share a name under different parents. A path may also name
+  a group, which selects every leaf under it; see "Nested columns". An
+  unknown path is an error, and so is a path matching more than one leaf
+  or group.
 
 - row_groups:
 
@@ -99,7 +101,8 @@ collect(
 
 ## Value
 
-A data frame.
+A data frame. Nested columns are data-frame and list columns; see the
+"Nested columns" section.
 
 ## Details
 
@@ -112,11 +115,54 @@ largest selected row group rather than with anything the caller
 controls. Smaller batches lower peak memory and cost a little throughput
 on dictionary-encoded text.
 
-Nested and repeated columns are not materialized in qio 0.1.0. When a
-selection includes them, they are omitted and one message reports how
-many physical leaf columns were skipped. Nested reading is deferred to
-qio 0.2.0. If every selected column is nested, the result is a
-zero-column data frame with the selected number of rows.
+Nested columns are read since qio 0.2.0; see the "Nested columns"
+section.
+
+## Nested columns
+
+A top-level Parquet group becomes one column of the result, named by its
+field name:
+
+- A **struct** is a data-frame column with one column per field (structs
+  nest to any depth). A null struct and a struct whose fields are all
+  null both have `NA` in every field, so an optional struct carries
+  which rows are null;
+  [`is_null_struct()`](https://pedrobtz.github.io/qio/reference/is_null_struct.md)
+  returns them.
+
+- A **`LIST`** is a list-column with one vector per row: `NULL` for a
+  null list, a zero-length vector for an empty one, and `NA` for a null
+  element. A list of binary values is a list of lists of raw vectors.
+
+- A **`MAP`** is a list-column with one data frame per row, its columns
+  always named `key` and `value`: `NULL` for a null map, a zero-row data
+  frame for an empty one. Keys need not be strings or unique, so a map
+  is not a named vector.
+
+Under a null struct every field is `NA` and every list or map `NULL`.
+Elements, keys, values and fields get the same R types as flat columns,
+and `int64`, `time` and `tz` apply to them.
+
+`columns` takes the complete path of a leaf or of a group. A leaf path,
+such as `"add.path"`, returns its top-level struct with only the
+selected fields, in schema order, and keeps the struct's null rows; a
+group path selects every leaf under it. A `LIST` or `MAP` is selected
+whole by its own path: a path inside one (`"add.tags.key_value.key"`) is
+an error naming the path to use. Top-level columns come in the order
+they are first named.
+
+qio reads lists and maps whose elements, keys and values are not
+themselves lists, maps or structs (a repetition level of at most 1).
+Anything deeper – a list of structs, a list of lists, a map with struct
+values, legacy two-level lists, bare repeated fields and `VARIANT` – is
+never flattened: read with every column, or through an ancestor, it is
+left out with one message of class `qio_message_nested_skipped`, whose
+`columns` field is a data frame of the leaves left out with their
+`group` and `reason`; named in `columns`, it is an error.
+[`read_plan()`](https://pedrobtz.github.io/qio/reference/read_plan.md)
+marks such leaves not collectible and says why.
+[`walk_batches()`](https://pedrobtz.github.io/qio/reference/walk_batches.md)
+reads flat columns only.
 
 ## Decimal columns
 

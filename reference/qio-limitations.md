@@ -7,13 +7,19 @@ an oversight.
 
 ## Not exposed in 0.1.0
 
-- Nested and repeated columns:
+- Deeply nested columns:
 
-  `LIST`, `MAP`, and struct columns are skipped on read, with one
-  message per operation. carquet returns the definition and repetition
-  levels needed to rebuild them, but assembling R objects from those
-  levels, and deciding how a null list differs from an empty one, is
-  qio's work and is deferred to 0.2.0.
+  Since 0.2.0 structs, and `LIST` and `MAP` columns of plain values, are
+  read (see the "Nested columns" section of
+  [`collect()`](https://pedrobtz.github.io/qio/reference/collect.md)).
+  Anything with a repetition level above 1 – a list of structs, a list
+  of lists, a map with struct values – and legacy list encodings, bare
+  repeated fields and `VARIANT` are skipped with one message, never
+  flattened.
+  [`walk_batches()`](https://pedrobtz.github.io/qio/reference/walk_batches.md)
+  reads flat columns only, and
+  [`write_parquet()`](https://pedrobtz.github.io/qio/reference/write_parquet.md)
+  writes flat columns only.
 
 - Predicate pushdown and page filters:
 

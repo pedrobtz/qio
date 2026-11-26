@@ -25,6 +25,8 @@
   Collect data from a Parquet file
 - [`walk_batches()`](https://pedrobtz.github.io/qio/reference/walk_batches.md)
   : Walk over batches from a Parquet file
+- [`is_null_struct()`](https://pedrobtz.github.io/qio/reference/is_null_struct.md)
+  : Find the null rows of a struct column
 
 ## Inspect files
 

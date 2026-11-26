@@ -66,6 +66,12 @@ A data frame with one row per physical leaf column and the columns:
 
   Above 0 when the leaf is repeated.
 
+For a nested file the data frame also carries the file's group structure
+in an attribute, which
+[`read_plan()`](https://pedrobtz.github.io/qio/reference/read_plan.md)
+uses to place each leaf in its struct, `LIST` or `MAP`; a schema data
+frame without it reads its nested leaves as not collectible.
+
 ## Details
 
 **`name` and `path` are not interchangeable.** `name` is the bare leaf
