@@ -87,6 +87,28 @@ physical leaf columns were skipped. Nested reading is deferred to qio 0.2.0.
 If every selected column is nested, the result is a zero-column data frame
 with the selected number of rows.
 }
+\section{Decimal columns}{
+
+A \code{DECIMAL} column is read as \code{double} with its scale applied, so its values
+may be inexact. The unscaled integer survives the conversion only while it
+is within \verb{[-2^53, 2^53]}, which every \code{DECIMAL(p, s)} with \code{p <= 15}
+satisfies; the result is then the \code{double} nearest the decimal. A read that selects any decimal column signals one
+message, of class \code{qio_message_decimal_double} (inheriting from \code{message}
+and \code{condition}), however many columns, row groups or batches it covers.
+Its \code{columns} field is a data frame with one row per selected decimal
+column: \code{path} (the complete column path), \code{physical_type}, and integer
+\code{precision} and \code{scale}. A caller that has checked those columns can
+silence exactly this message:
+
+\if{html}{\out{<div class="sourceCode r">}}\preformatted{withCallingHandlers(
+  collect(pf),
+  qio_message_decimal_double = function(m) \{
+    if (all(m$columns$precision <= 15L)) invokeRestart("muffleMessage")
+  \}
+)
+}\if{html}{\out{</div>}}
+}
+
 \examples{
 path <- tempfile(fileext = ".parquet")
 write_parquet(mtcars, path)

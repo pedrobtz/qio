@@ -291,10 +291,22 @@ v0.1.0 reads decimals as `double`; exact fixed-point character is v0.2.0.
   `FIXED_LEN_BYTE_ARRAY`) and apply the declared scale, so unscaled `1230` with
   scale 2 reads as `12.30`. Byte-array storage is a big-endian two's-complement
   integer.
-- Emit one message per read naming how many decimal columns were read as
-  `double` and that the values may be inexact. A `double` holds a decimal
-  exactly only when the unscaled integer is within `[-2^53, 2^53]`; larger
-  precisions lose low-order digits.
+- Emit one message per read (per `read_parquet()`, `collect()` or
+  `walk_batches()` call, never per column or batch) saying how many decimal
+  columns were read as `double`, naming them with their precision and scale
+  (the first five, then a count), and that the values may be inexact. A
+  `double` holds a decimal exactly only when the unscaled integer is within
+  `[-2^53, 2^53]`; larger precisions lose low-order digits.
+- The message is a condition of class
+  `c("qio_message_decimal_double", "message", "condition")`, built with base
+  `structure()` like any other R condition. Its `columns` field is a data
+  frame with one row per selected decimal leaf, in selection order: `path`
+  (character, the complete column path), `physical_type` (character), and
+  `precision` and `scale` (integer; a missing scale is 0). A caller that has
+  vetted the columns, for example ones with `precision <= 15`, muffles it with
+  `withCallingHandlers(qio_message_decimal_double = ...)` and
+  `invokeRestart("muffleMessage")`. Columns the selection excludes, and nested
+  leaves (skipped before the message), are not listed. (#74)
 - Keep precision, scale, and storage visible in `schema()` and `read_plan()`.
 - Returning the unscaled integer, or the raw bytes, is not an option: both are
   silently the wrong quantity rather than an approximation of the right one.

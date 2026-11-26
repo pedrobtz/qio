@@ -352,7 +352,8 @@ For v0.1.0:
 - Exact fixed-point decimal is v0.2.0. In v0.1.0 a `DECIMAL` column reads as
   `double` with its scale applied, so a price stored as unscaled `1230` with
   scale 2 reads as `12.30`, and one message per read says the values may be
-  inexact. Returning the unscaled integer or the raw bytes, as v0.0.x did, is
+  inexact. Since #74 that message is a `qio_message_decimal_double` condition
+  whose `columns` field names each decimal column with its precision and scale. Returning the unscaled integer or the raw bytes, as v0.0.x did, is
   worse than an approximate number: it is silently the wrong quantity.
 - Writing a non-UTC `TIMESTAMP` is v0.2.0, along with the operation-level
   message that a zone is being discarded. `POSIXct` writes as a UTC-adjusted

@@ -63,6 +63,11 @@ before reading.
 Nested and repeated columns are skipped with one message. Nested reading is
 deferred to qio 0.2.0.
 
+\code{DECIMAL} columns are read as \code{double} with their scale applied, and one
+message of class \code{qio_message_decimal_double} names them and says the values
+may be inexact; its \code{columns} field lets a caller muffle it for columns it
+has checked. See the "Decimal columns" section of \code{\link[=collect]{collect()}}.
+
 The file is memory-mapped for the duration of the read (falling back to
 buffered reads if mapping fails) so columns decode in parallel; the mapping
 is released before the function returns.
