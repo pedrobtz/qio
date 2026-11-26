@@ -269,7 +269,7 @@ static carquet_status_t validate_page_payload_size(
 
     if (header->type == CARQUET_PAGE_DATA_V2) {
         const parquet_data_page_header_v2_t* v2h = &header->data_page_header_v2;
-        if (v2h->num_values <= 0 ||
+        if (v2h->num_values < 0 ||
             v2h->repetition_levels_byte_length < 0 ||
             v2h->definition_levels_byte_length < 0) {
             CARQUET_SET_ERROR(error, CARQUET_ERROR_INVALID_PAGE, "Invalid V2 page header");
@@ -286,7 +286,9 @@ static carquet_status_t validate_page_payload_size(
             return CARQUET_ERROR_DECODE;
         }
     } else if (header->type == CARQUET_PAGE_DATA) {
-        if (header->data_page_header.num_values <= 0) {
+        /* Zero is legal: Arrow writes an empty data page between two pages of
+         * a repeated column. load_next_page_*() skip such a page. */
+        if (header->data_page_header.num_values < 0) {
             CARQUET_SET_ERROR(error, CARQUET_ERROR_INVALID_PAGE, "Invalid data page value count");
             return CARQUET_ERROR_INVALID_PAGE;
         }
@@ -2149,6 +2151,22 @@ static carquet_status_t load_dictionary_page_fread(
  * ============================================================================
  */
 
+/* An empty data page (num_values == 0) holds no levels and no values, so it
+ * is not decoded: it is marked loaded with nothing in it, and
+ * carquet_column_ensure_page_loaded() moves on to the next one. */
+static carquet_status_t load_empty_page(
+    carquet_column_reader_t* reader,
+    size_t header_size,
+    int32_t compressed_page_size) {
+
+    reader->page_loaded = true;
+    reader->page_num_values = 0;
+    reader->page_values_read = 0;
+    reader->page_header_size = (int32_t)header_size;
+    reader->page_compressed_size = compressed_page_size;
+    return CARQUET_OK;
+}
+
 static carquet_status_t load_next_page_mmap(
     carquet_column_reader_t* reader,
     carquet_error_t* error) {
@@ -2225,6 +2243,10 @@ static carquet_status_t load_next_page_mmap(
     bool is_v2 = (page_header.type == CARQUET_PAGE_DATA_V2);
     int32_t num_values = is_v2 ? page_header.data_page_header_v2.num_values
                                : page_header.data_page_header.num_values;
+    if (num_values == 0) {
+        return load_empty_page(reader, header_size,
+                               page_header.compressed_page_size);
+    }
     carquet_encoding_t page_encoding = is_v2 ? page_header.data_page_header_v2.encoding
                                              : page_header.data_page_header.encoding;
     /* In dictionary-preserving mode, decoded_values contains uint32_t indices
@@ -2472,6 +2494,10 @@ static carquet_status_t load_next_page_fread(
     bool is_v2 = (page_header.type == CARQUET_PAGE_DATA_V2);
     int32_t num_values = is_v2 ? page_header.data_page_header_v2.num_values
                                : page_header.data_page_header.num_values;
+    if (num_values == 0) {
+        return load_empty_page(reader, header_size,
+                               page_header.compressed_page_size);
+    }
     carquet_encoding_t page_encoding = is_v2 ? page_header.data_page_header_v2.encoding
                                              : page_header.data_page_header.encoding;
     size_t value_size = reader->preserve_dictionary
@@ -2628,6 +2654,19 @@ carquet_status_t carquet_column_ensure_page_loaded(
              * read cursor restarts too. This is the single choke point for
              * fresh loads (read and skip both route through here). */
             reader->page_dense_values_read = 0;
+        }
+        /* Move past empty data pages while the chunk still has values. Each
+         * one advances current_page, so this ends at the chunk's last page
+         * or at a header that fails to parse. */
+        while (status == CARQUET_OK && reader->page_num_values == 0 &&
+               reader->values_remaining > 0) {
+            reader->current_page +=
+                reader->page_header_size + reader->page_compressed_size;
+            reader->page_loaded = false;
+            status = load_next_page(reader, error);
+            if (status == CARQUET_OK) {
+                reader->page_dense_values_read = 0;
+            }
         }
         return status;
     }

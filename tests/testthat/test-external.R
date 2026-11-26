@@ -150,21 +150,33 @@ test_that("every read path agrees on RLE BOOLEAN", {
   expect_identical(do.call(rbind, batches), eager)
 })
 
-# --- Nested map/list columns: skipped until 0.2.0 ---------------------------
-test_that("nested columns are skipped with one message per operation", {
+# --- Nested map/list columns ------------------------------------------------
+# Since 0.2.0 qio reads structs, MAP and LIST of repetition level 1 (#73) and
+# skips the rest with one classed message; test-parquet-nested.R has the
+# contract, these the third-party files.
+test_that("nested columns qio cannot read are skipped with one message", {
   path <- ext("nullable.impala.parquet")
 
   expect_snapshot(result <- read_parquet(path))
-  expect_identical(names(result), "id")
+  expect_identical(
+    names(result),
+    c("id", "int_array", "int_map", "nested_struct")
+  )
   expect_equal(nrow(result), 7L)
+  expect_identical(result$int_array[[1]], 1:3)
+  expect_identical(result$int_array[4:7], rep(list(NULL), 4L))
 
   file <- open_parquet(path)
   withr::defer(close_parquet(file))
 
-  expect_snapshot(
-    empty <- collect(file, columns = "int_array.list.element")
+  expect_error(
+    collect(file, columns = "int_array.list.element"),
+    "select `int_array` whole"
   )
-  expect_equal(dim(empty), c(7L, 0L))
+  expect_identical(
+    collect(file, columns = "int_array")$int_array,
+    result$int_array
+  )
 
   dimensions <- list()
   expect_snapshot(
@@ -234,14 +246,15 @@ test_that("selection resolves by complete path, not by leaf name", {
   expect_identical(flat$b, c(1L, 2L, 3L))
 })
 
-test_that("a nested leaf sharing a flat leaf's name is skipped, not selected", {
+test_that("a nested leaf sharing a flat leaf's name stays in its struct", {
   path <- ext("name_collision.parquet")
   file <- open_parquet(path)
   withr::defer(close_parquet(file))
 
-  expect_message(result <- collect(file), "Skipping 1 nested Parquet column")
-  expect_identical(names(result), c("b", "label"))
+  expect_no_message(result <- collect(file))
+  expect_identical(names(result), c("s", "b", "label"))
   expect_identical(result$b, c(1L, 2L, 3L))
+  expect_identical(result$s$b, c(10L, 20L, 30L))
 })
 
 test_that("read_plan marks the colliding leaves by path", {
@@ -250,17 +263,45 @@ test_that("read_plan marks the colliding leaves by path", {
   expect_identical(plan$path, c("s.b", "b", "label"))
   expect_identical(plan$name, c("b", "b", "label"))
   expect_identical(plan$nested, c(TRUE, FALSE, FALSE))
-  expect_identical(plan$collectible, c(FALSE, TRUE, TRUE))
+  expect_identical(plan$shape, c("struct", "flat", "flat"))
+  expect_identical(plan$collectible, c(TRUE, TRUE, TRUE))
 })
 
-test_that("selecting a nested path by its complete path is skipped cleanly", {
+test_that("selecting a nested leaf by its complete path reads its struct", {
   path <- ext("name_collision.parquet")
   file <- open_parquet(path)
   withr::defer(close_parquet(file))
 
-  expect_message(result <- collect(file, columns = "s.b"), "Skipping 1 nested")
-  expect_identical(ncol(result), 0L)
+  result <- collect(file, columns = "s.b")
+  expect_identical(names(result), "s")
+  expect_identical(result$s$b, c(10L, 20L, 30L))
   expect_identical(nrow(result), 3L)
+})
+
+test_that("columns that share a path each get their own conversion", {
+  # Arrow writes duplicate top-level names; written by
+  # tools/generate-nested-fixtures.py. Conversions used to be matched by path,
+  # so every `x` got the first one's (#44).
+  path <- ext("duplicate_paths.parquet")
+  days <- function(x) structure(as.double(x), class = "Date")
+  utc <- function(x) {
+    structure(x / 1e6, class = c("POSIXct", "POSIXt"), tzone = "UTC")
+  }
+  result <- read_parquet(path)
+  expect_identical(names(result), c("x", "x", "y", "y", "y"))
+  expect_identical(result[[1]], days(c(18262, NA)))
+  expect_identical(result[[2]], c(1L, NA))
+  expect_identical(result[[3]], utc(c(1577836800000000, NA)))
+  expect_identical(result[[4]], c(1.5, NA))
+  expect_identical(result[[5]], c("a", NA))
+
+  file <- open_parquet(path)
+  withr::defer(close_parquet(file))
+  expect_identical(collect(file), result)
+  batches <- list()
+  walk_batches(file, function(batch, index) batches[[index]] <<- batch)
+  expect_identical(batches[[1]], result)
+  expect_error(collect(file, columns = "x"), "Ambiguous Parquet column")
 })
 
 test_that("all three read APIs agree on the colliding file", {
@@ -275,7 +316,8 @@ test_that("all three read APIs agree on the colliding file", {
     walk_batches(file, function(batch, index) batches[[index]] <<- batch)
   )
   expect_identical(collected, eager)
-  expect_identical(do.call(rbind, batches), eager)
+  # walk_batches() reads flat columns only.
+  expect_identical(do.call(rbind, batches), eager[c("b", "label")])
 })
 
 # --- 64-bit integers (phase 3.1) -------------------------------------------
@@ -662,20 +704,6 @@ test_that("the decimal message is emitted once per read", {
   expect_length(messages, 1L)
   expect_match(messages, "2 Parquet DECIMAL columns")
 })
-
-# Every condition of `class` an expression signals, muffled so it neither
-# prints nor stops the expression; other messages pass through untouched.
-decimal_conditions <- function(expr) {
-  seen <- list()
-  value <- withCallingHandlers(
-    expr,
-    qio_message_decimal_double = function(m) {
-      seen[[length(seen) + 1L]] <<- m
-      invokeRestart("muffleMessage")
-    }
-  )
-  list(value = value, conditions = seen)
-}
 
 test_that("the decimal message is a classed condition naming its columns", {
   got <- decimal_conditions(read_parquet(ext("decimal_types.parquet")))
@@ -1130,13 +1158,25 @@ test_that("common types survive batching and row-group selection", {
 })
 
 test_that("a mixed flat and nested file matches its reference", {
-  # Nested leaves are skipped in v0.1.0, so the reference records their
-  # absence. The flat columns are interleaved with them in the schema, which
-  # is the point: skipping must not disturb the order, position or values of
-  # what surrounds them.
-  result <- suppressMessages(read_parquet(ext("nested_mixed.parquet")))
-  expect_identical(result, reference("nested_mixed-expected.rds"))
-  expect_false(any(c("numbers", "person", "name", "score") %in% names(result)))
+  # The reference was recorded when nested leaves were skipped, so it holds
+  # the flat columns; the nested ones are restated from the generator's data.
+  # The flat columns are interleaved with them in the schema, which is the
+  # point: reading the nested ones must not disturb the order, position or
+  # values of what surrounds them.
+  result <- read_parquet(ext("nested_mixed.parquet"))
+  reference <- reference("nested_mixed-expected.rds")
+  expect_identical(
+    names(result),
+    c("id", "numbers", "label", "person", "amount", "flag", "day", "instant")
+  )
+  expect_identical(result[names(reference)], reference)
+  expect_identical(
+    result$numbers,
+    list(1:3, integer(0), NULL, 7L, c(8L, 9L))
+  )
+  expect_identical(result$person$name, c("ana", NA, "bo", "cy", "di"))
+  expect_identical(result$person$score, c(1.5, 2.5, NA, 4.5, 5.5))
+  expect_identical(is_null_struct(result$person), rep(FALSE, 5L))
 })
 
 test_that("DST boundaries match their reference in two zones", {

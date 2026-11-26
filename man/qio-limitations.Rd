@@ -12,11 +12,13 @@ so an absent function reads as a decision rather than an oversight.
 
 
 \describe{
-\item{Nested and repeated columns}{\code{LIST}, \code{MAP}, and struct columns are
-skipped on read, with one message per operation. carquet returns the
-definition and repetition levels needed to rebuild them, but assembling
-R objects from those levels, and deciding how a null list differs from an
-empty one, is qio's work and is deferred to 0.2.0.}
+\item{Deeply nested columns}{Since 0.2.0 structs, and \code{LIST} and \code{MAP}
+columns of plain values, are read (see the "Nested columns" section of
+\code{\link[=collect]{collect()}}). Anything with a repetition level above 1 -- a list of
+structs, a list of lists, a map with struct values -- and legacy list
+encodings, bare repeated fields and \code{VARIANT} are skipped with one
+message, never flattened. \code{\link[=walk_batches]{walk_batches()}} reads flat columns only, and
+\code{\link[=write_parquet]{write_parquet()}} writes flat columns only.}
 \item{Predicate pushdown and page filters}{carquet can skip pages using
 statistics. qio reads whole columns. Filtering happens in R, after the
 read, where the answer does not depend on a writer's honesty about its

@@ -915,6 +915,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"qio_parquet_bloom_check", (DL_FUNC)&qio_parquet_bloom_check, 4},
     {"qio_parquet_collect", (DL_FUNC)&qio_parquet_collect, 6},
     {"qio_parquet_walk", (DL_FUNC)&qio_parquet_walk, 7},
+    {"qio_parquet_schema_nodes", (DL_FUNC)&qio_parquet_schema_nodes, 1},
+    {"qio_parquet_read_leaf", (DL_FUNC)&qio_parquet_read_leaf, 5},
     {"qio_read_path_counters", (DL_FUNC)&qio_read_path_counters, 0},
     {NULL, NULL, 0}
 };

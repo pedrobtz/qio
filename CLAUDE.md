@@ -55,9 +55,10 @@ binary, `GEOMETRY` and `GEOGRAPHY` columns with geospatial statistics, and
 
 ## Versions and dependents
 
-The current version's parent issue is #18 (`v0.1.2`). Sibling packages that
+The current version's parent issue is #72 (`v0.2.0`). Sibling packages that
 depend on this one before CRAN does: zugeo (`Suggests: qio (>= 0.1.1.9000)`,
-with `Remotes: pedrobtz/qio`).
+with `Remotes: pedrobtz/qio`), and zulake, which needs nested reading (#73)
+for Delta checkpoints.
 
 ## Commands
 
@@ -96,9 +97,12 @@ The layers are R API -> package-owned C glue -> vendored C libraries.
 - `R/parquet.R`: eager I/O and user-facing helpers.
 - `R/parquet-file.R`: open handles, inspection, selection and collection.
 - `R/parquet-plan.R`: shared read mapping and logical conversion.
+- `R/parquet-nested.R`: the schema tree, nested selection, and assembly of
+  structs, maps and lists from one leaf's values and levels at a time.
 - `R/parquet-schema.R`: writer schema inference and overrides.
 - `src/qio.c`: writer bridge and native registration.
-- `src/qio_file.c`: handles, metadata, collection and batches.
+- `src/qio_file.c`: handles, metadata, collection and batches, and the
+  schema-tree and leaf-with-levels reads nested assembly uses.
 - `src/qio_path.c`: path handling.
 - `src/{carquet,zstd,lz4}/`: vendored libraries.
 

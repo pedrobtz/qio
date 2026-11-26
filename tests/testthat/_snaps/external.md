@@ -1,16 +1,9 @@
-# nested columns are skipped with one message per operation
+# nested columns qio cannot read are skipped with one message
 
     Code
       result <- read_parquet(path)
     Message
-      Skipping 12 nested Parquet columns; nested reading is deferred to qio 0.2.0.
-
----
-
-    Code
-      empty <- collect(file, columns = "int_array.list.element")
-    Message
-      Skipping 1 nested Parquet column; nested reading is deferred to qio 0.2.0.
+      Skipping 7 nested Parquet columns that qio cannot read: `int_array_Array` (nested list), `int_Map_Array` (list of maps), `nested_struct.C.d` (nested list), `nested_struct.g` (map with group keys or values).
 
 ---
 
@@ -18,5 +11,5 @@
       walk_batches(file, function(batch, index) dimensions[[index]] <<- dim(batch),
       batch_size = 3L)
     Message
-      Skipping 12 nested Parquet columns; nested reading is deferred to qio 0.2.0.
+      Skipping 12 nested Parquet columns: walk_batches() reads flat columns only; use collect().
 

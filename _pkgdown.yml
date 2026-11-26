@@ -17,6 +17,7 @@ reference:
       - close_parquet
       - collect
       - walk_batches
+      - is_null_struct
   - title: Inspect files
     contents:
       - schema

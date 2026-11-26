@@ -48,9 +48,11 @@ never returned as negative values, at any width.
 | `BYTE_ARRAY` | character or list of raw | Character only with a `STRING`, `ENUM`, or `JSON` annotation; validated as UTF-8 |
 | `FIXED_LEN_BYTE_ARRAY` | list of raw, character, or numeric | Raw by default; `UUID` becomes canonical text and `FLOAT16` widens to double |
 
-Only flat, non-repeated leaves are materialized. Selected nested leaves are
-omitted with one operation-level message. If all selected leaves are nested,
-the result has zero columns and preserves its row count.
+`read_parquet()` and `collect()` materialize flat leaves and, since 0.2.0,
+structs, `MAP` and `LIST` of repetition level 1; see
+[Nested values](#nested-values). Deeper shapes are omitted with one
+operation-level message. `walk_batches()` materializes flat leaves only. If
+nothing is selected, the result has zero columns and preserves its row count.
 
 `DATE` and UTC-adjusted `TIMESTAMP` conversions are applied by the shared R read
 plan. Other logical annotations are visible through `schema()` but currently
@@ -159,19 +161,81 @@ class, which [Compatibility](#compatibility) governs.
 
 ### Nested values
 
-| Parquet structure | Target R result |
+| Parquet structure | R result |
 |---|---|
-| `LIST` | list-column of vectors or nested objects |
-| `MAP` | list-column of key/value data frames |
-| group/struct | nested data-frame or named-list column |
+| group/struct | nested data-frame column; an optional one is `c("qio_struct", "data.frame")` with a null mask |
+| `LIST` of a plain element | list-column of vectors |
+| `MAP` of a plain key and value | list-column of key/value data frames |
+| list of structs, list of lists or maps, map with group keys or values, legacy two-level list, bare repeated field, `VARIANT` | not read: skipped when implied, an error when named |
 
-Maps are not named lists: keys need not be strings or unique. Nested
-reconstruction must distinguish null and empty lists, null elements, and
-missing structs; coordinate all leaves; preserve logical rows across batches;
-and define parent-path projection.
+Maps are not named lists: keys need not be strings or unique. Reconstruction
+distinguishes null and empty lists, null elements, and null structs;
+coordinates all leaves of a top-level column; and reads from the levels
+carquet returns, never from `carquet_count_rows()` or
+`carquet_list_offsets()` (see [`carquet.md`](carquet.md#nested-streams)).
 
-See [`carquet.md`](carquet.md#nested-streams) for the underlying leaf model and
-`research_arrow_nested/` for non-normative background.
+Decisions for 0.2.0 (#73), taken 2026-11-26 on the advice of a design review
+agent, each with its reason:
+
+1. **A null struct is a data frame with a null mask.** An optional struct is
+   a `c("qio_struct", "data.frame")` column whose logical attribute `null` has
+   one value per row; a required struct is a plain data frame.
+   `[.qio_struct` re-subsets the mask, so outer `d[i, ]`, `head()`,
+   `subset()` and column selection keep it; `rbind()` does not, so the
+   exported accessor `is_null_struct()` returns all `FALSE` for any other data
+   frame and errors when the mask no longer matches `nrow()`, never guessing.
+   At a null row every field is `NA`, every child list and map `NULL`, and a
+   child struct an all-`NA` row whose own mask is `TRUE` if it is optional.
+   Reason: `chk$add$path` stays a vector, and Spark-written Delta checkpoints
+   declare every field optional, so the fields alone cannot show nullness.
+   Rejected: all-`NA` fields (loses the distinction), a bare attribute (lost
+   on outer subsetting), and optional structs as list-columns of one-row data
+   frames (slow, and breaks `chk$add$path`).
+2. **Projection prunes, never flattens.** A leaf path such as `"add.path"`
+   returns the top-level `add` holding a one-field struct, mask intact; a group
+   path selects every leaf under it; `c("add", "add.path")` is the union. A
+   `LIST` or `MAP` is selected whole by its group path; a path inside one is an
+   error naming the group path to use. Top-level columns come in order of
+   first mention, fields in schema order. A selector matching both a flat leaf
+   literally named `a.b` and a group or leaf path `a.b` is ambiguous, as
+   before. Reason: the shape of a column must not depend on how it was
+   selected, and a partial map or list has no meaning.
+3. **Unsupported shapes: skipped when implied, an error when named.** Reading
+   all columns, or selecting an ancestor, leaves them out with one message of
+   class `qio_message_nested_skipped`, whose `columns` field is a data frame
+   of the leaves left out (`path`, `group`, `reason`); the text names the first
+   five groups, then a count. A selector at or inside one is an error with the
+   path and shape (Rule 5). `read_plan()` gives them `collectible = FALSE`,
+   `shape = NA` and a note naming the group and the shape. Reason: a Delta
+   checkpoint's `add.stats_parsed` can hold any user shape, and the checkpoint
+   must still read.
+4. **`walk_batches()` stays flat**, with the same message class and the text
+   "Skipping <n> nested Parquet column(s): walk_batches() reads flat columns
+   only; use collect()." Reason: a batch boundary inside a list would need
+   row-aware batching that #73 does not ask for.
+5. **Elements, keys, values and fields use the flat converters** and the
+   `int64`, `time` and `tz` options; a null element is `NA`, a list of binary
+   is a list of lists of raw with `NULL` for a null value, a map's columns are
+   always `key` and `value` (writers differ on the schema's names), an empty
+   list is a zero-length typed vector, an empty map a zero-row typed data
+   frame, and a null list or map `NULL`. Coercion warnings name the complete
+   leaf path (`add.size`), once per leaf.
+6. **Recognition is structural.** A `LIST` is an annotated group with one
+   repeated child group holding one leaf (not a repeated group named `array`
+   or `<list>_tuple`, which the backward-compatibility rules make the
+   element); a `MAP` an annotated group with one repeated child group holding
+   two leaves. The names `list`, `element`, `key_value`, `key` and `value` are
+   never required, so Impala's legacy `map` group reads too.
+7. **`read_plan()` stays one row per leaf** and gains `shape` (`flat`,
+   `struct`, `list`, `map`, or `NA`). `schema()` attaches the schema tree to a
+   nested file's data frame as the attribute `qio_nodes`, which
+   `read_plan()` needs; a schema data frame without it keeps nested leaves
+   not collectible.
+8. **Assembly is in R, decoding in C.** `qio_parquet_read_leaf()` returns one
+   leaf's present values with its definition and repetition levels, decoded
+   by the flat scatter; R assembles rows from repetition-level-0 boundaries.
+   Reason: Rule 2, and no new native allocation pattern beyond one vector per
+   leaf. Revisit with a benchmark if large checkpoints make it slow.
 
 ## Conversion contracts
 
@@ -306,7 +370,7 @@ v0.1.0 reads decimals as `double`; exact fixed-point character is v0.2.0.
   vetted the columns, for example ones with `precision <= 15`, muffles it with
   `withCallingHandlers(qio_message_decimal_double = ...)` and
   `invokeRestart("muffleMessage")`. Columns the selection excludes, and nested
-  leaves (skipped before the message), are not listed. (#74)
+  leaves the read skips, are not listed; nested leaves it reads are. (#74)
 - Keep precision, scale, and storage visible in `schema()` and `read_plan()`.
 - Returning the unscaled integer, or the raw bytes, is not an option: both are
   silently the wrong quantity rather than an approximation of the right one.
@@ -321,23 +385,17 @@ For v0.2.0:
 
 ### Nested release boundary
 
-v0.1.0 reads and writes flat schemas only.
+v0.1.x read and wrote flat schemas only, omitting nested leaves with one
+message ("deferred to qio 0.2.0"). Since 0.2.0 reads follow
+[Nested values](#nested-values); writes stay flat.
 
-- Reads omit selected nested physical leaves and emit one operation-level
-  message: `Skipping <n> nested Parquet column(s); nested reading is deferred
-  to qio 0.2.0.` The count is physical leaves; use grammatical singular/plural.
-- If all selected leaves are nested, preserve rows in zero-column results and
-  batches.
-- `read_plan()` marks these leaves `nested = TRUE`, `collectible = FALSE`, with
-  the v0.2.0 reason.
+- If nothing is selected, preserve rows in zero-column results and batches.
 - Reject nested input and nested writer schemas before creating or truncating
   output.
 - A list-column containing one raw scalar per row may still represent flat
   `BYTE_ARRAY`; it is not a Parquet nested type.
-
-After v0.1.0, define complete-path projection and R null semantics before
-exposing canonical list, map, and struct reconstruction. Reject unsupported
-legacy or recursive shapes instead of flattening their meaning.
+- Columns that share a path (Arrow writes duplicate top-level names) are
+  converted by leaf index, never by name (#44).
 
 ## Implementation sequence
 
@@ -352,8 +410,9 @@ legacy or recursive shapes instead of flattening their meaning.
 5. **Remaining temporal/integer types:** finish timezone, `TIME`, and
    integer-width annotations. `INTERVAL` needs no work here: step 3 already
    returns its 12 bytes exactly.
-6. **Nested values:** lists first, then null variants, structs, maps,
-   parent-path projection, and finally writes.
+6. **Nested values:** reads of structs, maps and lists of repetition level 1,
+   with null variants and parent-path projection, are done (0.2.0, #73);
+   deeper shapes, `walk_batches()` and writes remain.
 7. **Extensions:** structured variant and geospatial interpretation, and a
    dedicated interval class.
 

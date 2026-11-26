@@ -1,6 +1,6 @@
 # qio status and roadmap
 
-Last reviewed: 2026-11-13
+Last reviewed: 2026-11-26
 
 This file owns implemented R API, release scope, priorities, and open product
 choices. Type behavior belongs in [`TYPES.md`](TYPES.md); carquet mechanics in
@@ -20,8 +20,8 @@ unwind-safe, workers do not call the R API, and handle guards prevent re-entry.
 |---|---|
 | `read_parquet()` | Open with mmap requested, collect, close; selects columns and row groups |
 | `open_parquet()` / `close_parquet()` | Persistent handle with mmap, checksum, and thread controls |
-| `collect()` | Select flat columns and row groups into one data frame |
-| `walk_batches()` | Invoke an R callback for each decoded batch |
+| `collect()` | Select columns and row groups into one data frame; structs, maps and lists of repetition level 1 since 0.2.0 (#73) |
+| `walk_batches()` | Invoke an R callback for each decoded batch of flat columns |
 | `schema()` | Report leaf paths, physical/logical types, repetition, and levels |
 | `row_groups()` | Report row counts and compressed/uncompressed sizes |
 | `metadata()` | Return footer metadata while preserving duplicate keys and order |
@@ -31,7 +31,8 @@ unwind-safe, workers do not call the R API, and handle guards prevent re-entry.
 | `page_index()` | Report per-page bounds, null counts, offsets, and starting rows |
 | `bloom_filter_may_contain()` | Test values against a chunk's bloom filter |
 | `validate_parquet()` | Check structural validity and report what is wrong |
-| `read_plan()` | Show each leaf's resolved R type and collectibility |
+| `read_plan()` | Show each leaf's resolved R type, shape and collectibility |
+| `is_null_struct()` | Report the null rows of a struct column (0.2.0) |
 | `parquet_type_mapping()` | Report physical fallback mappings |
 
 `dim()`, `names()`, and `print()` methods exist for open handles. All
@@ -99,12 +100,15 @@ that needs a new design decision stays with v0.2.0.
   across row groups, and `schema()` reporting a long CRS whole. Gated on the
   `cran-special` checks from #16 and on zugeo's GeoParquet tests passing
   against qio's development version.
-- **0.1.3**: zstd and lz4 from zukomp instead of the vendored copies (#17),
-  once zukomp 0.2.0 is on CRAN. Kept out of 0.1.2 so the release zugeo waits
-  on does not carry the riskiest native change, which swaps the codecs under
-  carquet's worker threads.
-- **v0.2.0**: the carquet re-vendor to v0.7.x (#4) with the patch benchmarks
-  (#8), plus everything deferred below.
+- **0.1.3** became **0.2.0** (#72, retitled 2026-11-26): it carries new
+  behaviour, so it is a minor release. Nested reading of structs, maps and
+  lists of repetition level 1 (#73), which zulake needs for Delta checkpoints,
+  with complete-path projection and the fix for columns sharing a path (#44);
+  the C API for sibling packages (#71); and zstd and lz4 from zukomp (#17)
+  once zukomp 0.2.0 is on CRAN.
+- **Later**: the carquet re-vendor to v0.7.x (#4) with the patch benchmarks
+  (#8), deeper nested shapes, nested `walk_batches()` and writes, plus
+  everything else deferred below.
 
 ## v0.1.0 priorities
 
@@ -332,8 +336,9 @@ For v0.1.0:
   Explicit column and row-group selection remains supported. A future design
   must define construction, nulls, unsupported operations, and fallback when
   pruning metadata is absent.
-- Reads and writes are flat-only as specified in
-  [`TYPES.md`](TYPES.md#nested-release-boundary); nested reading targets v0.2.0.
+- Writes and `walk_batches()` are flat-only, and reads stop at repetition
+  level 1, as specified in [`TYPES.md`](TYPES.md#nested-values); deeper
+  shapes are skipped with a message.
 
 - The reusable writer configuration object is v0.2.0. `write_parquet()` keeps
   `compression`, and `parquet_schema()` keeps types; nothing else in v0.1.0

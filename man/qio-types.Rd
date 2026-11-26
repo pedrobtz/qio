@@ -52,7 +52,10 @@ writable.\tabular{lllll}{
    \code{FIXED_LEN_BYTE_ARRAY} \tab \code{DECIMAL(p, s)} \tab \code{double} \tab As \code{BYTE_ARRAY} \code{DECIMAL}. \tab no \cr
    \code{FIXED_LEN_BYTE_ARRAY} \tab none, \code{INTERVAL}, other \tab \code{list} of \code{raw} \tab Fixed-width raw vectors, each validated against the declared length. \code{INTERVAL} has no R class in 0.1.0. \tab no \cr
    any \tab \code{NULL} \tab \code{logical} \tab All \code{NA}, whatever the physical type: the annotation means the column carries no values. The row count is preserved. \tab no \cr
-   any \tab \code{LIST}, \code{MAP}, struct \tab not read \tab Skipped with one message per operation. Nested reading is deferred to 0.2.0. \tab no \cr
+   group \tab struct \tab \code{data.frame} column \tab One column per field; an optional struct's null rows are reported by \code{\link[=is_null_struct]{is_null_struct()}}. \tab no \cr
+   group \tab \code{LIST} \tab \code{list} of vectors \tab \code{NULL} for a null list, a zero-length vector for an empty one, \code{NA} for a null element. Elements of plain types only. \tab no \cr
+   group \tab \code{MAP} \tab \code{list} of \code{data.frame} \tab Columns \code{key} and \code{value}; \code{NULL} for a null map, zero rows for an empty one. Keys and values of plain types only. \tab no \cr
+   group \tab deeper shapes \tab not read \tab Lists of structs, lists of lists, maps of structs, legacy lists and \code{VARIANT} are skipped with one message. \tab no \cr
 }
 }
 

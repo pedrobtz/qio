@@ -3241,6 +3241,408 @@ SEXP qio_parquet_metadata(SEXP file) {
     return result;
 }
 
+/* ============================================================================
+ * Nested columns: the schema tree and one leaf's values and levels
+ * ============================================================================
+ *
+ * qio assembles structs, lists and maps in R from what these two return; see
+ * .agents/TYPES.md, "Nested values". Neither builds anything nested itself:
+ * qio_parquet_schema_nodes() says how the leaves hang together, and
+ * qio_parquet_read_leaf() returns one leaf's dense values with its definition
+ * and repetition levels, decoded with the same scatter as a flat column.
+ */
+
+/* Every schema element below the root, in schema (depth-first) order, with its
+ * parent. carquet's public API gives no parent or child count for a group, so
+ * the tree is rebuilt from the leaves' paths: carquet_schema_column_path()
+ * returns pointers to the elements' own name strings, so a pointer comparison
+ * identifies the very element, even when two siblings share a name (#44).
+ *
+ * Groups seen since the previous leaf are the leaf's ancestors below the depth
+ * it shares with the previous leaf's chain. A group no leaf descends from (an
+ * empty group) is left with parent NA; nothing can be read from it. */
+SEXP qio_parquet_schema_nodes(SEXP file) {
+    qio_parquet_handle_t *handle = qio_get_handle(file, 0);
+    const carquet_schema_t *schema = carquet_reader_schema(handle->reader);
+    int32_t elements = carquet_schema_num_elements(schema);
+    int32_t leaves = carquet_reader_num_columns(handle->reader);
+    int32_t rows = elements > 0 ? elements - 1 : 0;
+
+    const char *column_names[] = {"element", "name", "parent",
+                                  "repetition_type", "logical_type", "leaf"};
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 6));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, 6));
+    for (int i = 0; i < 6; i++) SET_STRING_ELT(names, i, Rf_mkChar(column_names[i]));
+    SET_VECTOR_ELT(result, 0, Rf_allocVector(INTSXP, rows));
+    SET_VECTOR_ELT(result, 1, Rf_allocVector(STRSXP, rows));
+    SET_VECTOR_ELT(result, 2, Rf_allocVector(INTSXP, rows));
+    SET_VECTOR_ELT(result, 3, Rf_allocVector(STRSXP, rows));
+    SET_VECTOR_ELT(result, 4, Rf_allocVector(STRSXP, rows));
+    SET_VECTOR_ELT(result, 5, Rf_allocVector(INTSXP, rows));
+    int *element = INTEGER(VECTOR_ELT(result, 0));
+    int *parent = INTEGER(VECTOR_ELT(result, 2));
+    int *leaf = INTEGER(VECTOR_ELT(result, 5));
+
+    size_t slots = (size_t)(elements > 0 ? elements : 1);
+    /* chain[d]: element index of the ancestor at depth d (1-based) of the
+     * previous leaf; pending: groups seen since that leaf, in order. */
+    int32_t *chain = (int32_t *)R_alloc(slots + 1, sizeof(int32_t));
+    int32_t *pending = (int32_t *)R_alloc(slots, sizeof(int32_t));
+    int32_t chain_depth = 0, num_pending = 0, seen_leaves = 0;
+    const char **parts =
+        (const char **)R_alloc(slots, sizeof(const char *));
+
+    for (int32_t i = 1; i < elements; i++) {
+        int32_t row = i - 1;
+        const carquet_schema_node_t *node = carquet_schema_get_element(schema, i);
+        if (!node) Rf_error("qio: cannot read schema element %d", i);
+        element[row] = i;
+        SET_STRING_ELT(VECTOR_ELT(result, 1), row,
+                       Rf_mkCharCE(carquet_schema_node_name(node), CE_UTF8));
+        SET_STRING_ELT(VECTOR_ELT(result, 3), row,
+                       Rf_mkChar(qio_repetition_name(
+                           carquet_schema_node_repetition(node))));
+        const carquet_logical_type_t *logical =
+            carquet_schema_node_logical_type(node);
+        SET_STRING_ELT(VECTOR_ELT(result, 4), row,
+                       logical ? Rf_mkChar(qio_logical_type_name(logical->id))
+                               : NA_STRING);
+        parent[row] = NA_INTEGER;
+        leaf[row] = NA_INTEGER;
+
+        if (!carquet_schema_node_is_leaf(node)) {
+            pending[num_pending++] = i;
+            continue;
+        }
+        if (seen_leaves >= leaves) {
+            Rf_error("qio: parquet schema has more leaves than columns");
+        }
+        int32_t depth = carquet_schema_column_path(schema, seen_leaves, parts,
+                                                   elements);
+        if (depth < 1 || parts[depth - 1] != carquet_schema_node_name(node)) {
+            Rf_error("qio: cannot place leaf %d in the schema tree",
+                     seen_leaves + 1);
+        }
+        /* Keep the previous chain as far as it is still this leaf's. */
+        int32_t keep = 0;
+        while (keep < depth - 1 && keep < chain_depth &&
+               carquet_schema_node_name(carquet_schema_get_element(
+                   schema, chain[keep + 1])) == parts[keep]) {
+            keep++;
+        }
+        if (keep + num_pending != depth - 1) {
+            Rf_error("qio: cannot place leaf %d in the schema tree",
+                     seen_leaves + 1);
+        }
+        for (int32_t d = keep + 1, p = 0; d <= depth - 1; d++, p++) {
+            int32_t group = pending[p];
+            if (carquet_schema_node_name(
+                    carquet_schema_get_element(schema, group)) != parts[d - 1]) {
+                Rf_error("qio: cannot place leaf %d in the schema tree",
+                         seen_leaves + 1);
+            }
+            chain[d] = group;
+            parent[group - 1] = d == 1 ? 0 : chain[d - 1];
+        }
+        chain_depth = depth - 1;
+        num_pending = 0;
+        parent[row] = depth == 1 ? 0 : chain[depth - 1];
+        leaf[row] = ++seen_leaves;
+    }
+    if (seen_leaves != leaves) {
+        Rf_error("qio: parquet schema does not describe all %d columns", leaves);
+    }
+
+    qio_set_data_frame_attributes(result, names, rows);
+    UNPROTECT(2);
+    return result;
+}
+
+/* Levels and values read per carquet call. Bounded so scratch is a property of
+ * qio, not of the file. */
+#define QIO_LEAF_CHUNK 65536
+
+typedef struct {
+    qio_parquet_handle_t *handle;
+    carquet_column_reader_t *column; /* in-flight column reader */
+    int32_t file_column;
+    const uint8_t *row_group_mask;
+    int32_t num_row_groups;
+    int kind;
+    int int64_mode;
+    int is_unsigned64;
+    int32_t type_length;
+    uint8_t int32_sentinel;
+    uint8_t int64_coerced;
+} qio_leaf_context_t;
+
+static SEXP qio_read_leaf_body(void *data) {
+    qio_leaf_context_t *context = (qio_leaf_context_t *)data;
+    carquet_reader_t *reader = context->handle->reader;
+    const carquet_schema_t *schema = carquet_reader_schema(reader);
+    int32_t file_col = context->file_column;
+    carquet_physical_type_t type = carquet_schema_column_type(schema, file_col);
+    int16_t max_def = carquet_schema_max_def_level(schema, file_col);
+    int16_t max_rep = carquet_schema_max_rep_level(schema, file_col);
+    const char *path = qio_column_path_cstr(schema, file_col);
+
+    /* Level entries in the selected chunks, from the footer. Checked against
+     * what decoding yields, so a lying footer is an error, not a short read. */
+    int64_t total = 0;
+    for (int32_t g = 0; g < context->num_row_groups; g++) {
+        if (!context->row_group_mask[g]) continue;
+        carquet_column_chunk_metadata_t meta;
+        if (carquet_reader_column_chunk_metadata(reader, g, file_col, &meta) !=
+                CARQUET_OK ||
+            meta.num_values < 0 || total > R_XLEN_T_MAX - meta.num_values) {
+            Rf_error("qio: cannot read the value count of column '%s' in row "
+                     "group %d",
+                     path, g + 1);
+        }
+        total += meta.num_values;
+    }
+
+    SEXP values = PROTECT(
+        qio_allocate_column(type, (R_xlen_t)total, context->kind));
+    SEXP def = PROTECT(max_def > 0 ? Rf_allocVector(INTSXP, (R_xlen_t)total)
+                                   : R_NilValue);
+    SEXP rep = PROTECT(max_rep > 0 ? Rf_allocVector(INTSXP, (R_xlen_t)total)
+                                   : R_NilValue);
+
+    size_t value_width = sizeof(carquet_byte_array_t);
+    if (context->type_length > 0 &&
+        (size_t)context->type_length > value_width) {
+        value_width = (size_t)context->type_length;
+    }
+    if (value_width < sizeof(int64_t) * 2) value_width = sizeof(int64_t) * 2;
+    void *value_buf = R_alloc(QIO_LEAF_CHUNK, (int)value_width);
+    int16_t *def_buf =
+        (int16_t *)R_alloc(QIO_LEAF_CHUNK, sizeof(int16_t));
+    int16_t *rep_buf =
+        (int16_t *)R_alloc(QIO_LEAF_CHUNK, sizeof(int16_t));
+
+    R_xlen_t at = 0;    /* level entries placed */
+    R_xlen_t dense = 0; /* values placed */
+    for (int32_t g = 0; g < context->num_row_groups; g++) {
+        if (!context->row_group_mask[g]) continue;
+        carquet_column_chunk_metadata_t meta;
+        if (carquet_reader_column_chunk_metadata(reader, g, file_col, &meta) !=
+            CARQUET_OK) {
+            Rf_error("qio: cannot inspect column '%s' in row group %d", path,
+                     g + 1);
+        }
+        carquet_error_t err = CARQUET_ERROR_INIT;
+        carquet_column_reader_t *col =
+            carquet_reader_get_column(reader, g, file_col, &err);
+        if (!col) {
+            char message[512];
+            carquet_error_format(&err, message, sizeof(message));
+            Rf_error("qio: cannot open column '%s' of row group %d: %s", path,
+                     g + 1, message);
+        }
+        context->column = col;
+
+        int first = 1;
+        for (int64_t read = 0; read < meta.num_values;) {
+            int64_t want = meta.num_values - read;
+            if (want > QIO_LEAF_CHUNK) want = QIO_LEAF_CHUNK;
+            int64_t n = carquet_column_read_batch(
+                col, value_buf, want, max_def > 0 ? def_buf : NULL,
+                max_rep > 0 ? rep_buf : NULL);
+            if (n < 0) {
+                Rf_error("qio: cannot decode column '%s' of row group %d; its "
+                         "encodings are %s and one of them is not supported",
+                         path, g + 1, qio_column_encodings(reader, g, file_col));
+            }
+            if (n == 0 || n > want) {
+                Rf_error("qio: column '%s' of row group %d yielded %lld of "
+                         "%lld values",
+                         path, g + 1, (long long)(read + (n > 0 ? n : 0)),
+                         (long long)meta.num_values);
+            }
+            int64_t present = n;
+            if (max_def > 0) {
+                int *out = INTEGER(def) + at;
+                present = 0;
+                for (int64_t i = 0; i < n; i++) {
+                    if (def_buf[i] < 0 || def_buf[i] > max_def) {
+                        Rf_error("qio: column '%s' of row group %d has a "
+                                 "definition level of %d, above its maximum "
+                                 "of %d",
+                                 path, g + 1, (int)def_buf[i], (int)max_def);
+                    }
+                    out[i] = def_buf[i];
+                    if (def_buf[i] == max_def) present++;
+                }
+            }
+            if (max_rep > 0) {
+                int *out = INTEGER(rep) + at;
+                for (int64_t i = 0; i < n; i++) {
+                    if (rep_buf[i] < 0 || rep_buf[i] > max_rep) {
+                        Rf_error("qio: column '%s' of row group %d has a "
+                                 "repetition level of %d, above its maximum "
+                                 "of %d",
+                                 path, g + 1, (int)rep_buf[i], (int)max_rep);
+                    }
+                    out[i] = rep_buf[i];
+                }
+                /* A row group starts a row. */
+                if (first && rep_buf[0] != 0) {
+                    Rf_error("qio: column '%s' of row group %d does not start "
+                             "at a row",
+                             path, g + 1);
+                }
+            }
+            first = 0;
+            /* Dense values, scattered before the next read: BYTE_ARRAY values
+             * point into the reader's page buffers. NULL levels make the
+             * scatter treat every value as present. */
+            qio_scatter_dense_column(
+                values, dense, type, value_buf, NULL, max_def, present, path,
+                &context->int32_sentinel,
+                context->kind == QIO_KIND_INT64 ? context->int64_mode : -1,
+                context->is_unsigned64, &context->int64_coerced,
+                context->kind, context->type_length);
+            dense += (R_xlen_t)present;
+            at += (R_xlen_t)n;
+            read += n;
+            R_CheckUserInterrupt();
+        }
+        carquet_column_reader_free(col);
+        context->column = NULL;
+    }
+
+    if (dense < (R_xlen_t)total) {
+        values = Rf_xlengthgets(values, dense);
+    }
+    PROTECT(values);
+    SEXP result = PROTECT(Rf_allocVector(VECSXP, 3));
+    SET_VECTOR_ELT(result, 0, values);
+    SET_VECTOR_ELT(result, 1, def);
+    SET_VECTOR_ELT(result, 2, rep);
+    SEXP result_names = PROTECT(Rf_allocVector(STRSXP, 3));
+    SET_STRING_ELT(result_names, 0, Rf_mkChar("values"));
+    SET_STRING_ELT(result_names, 1, Rf_mkChar("def"));
+    SET_STRING_ELT(result_names, 2, Rf_mkChar("rep"));
+    Rf_setAttrib(result, R_NamesSymbol, result_names);
+    UNPROTECT(6);
+    return result;
+}
+
+static void qio_read_leaf_cleanup(void *data, Rboolean jump) {
+    (void)jump;
+    qio_leaf_context_t *context = (qio_leaf_context_t *)data;
+    if (context->column) {
+        carquet_column_reader_free(context->column);
+        context->column = NULL;
+    }
+    context->handle->busy = 0;
+}
+
+/* One leaf of the selected row groups: list(values, def, rep), where `values`
+ * holds only the present values (definition level at its maximum), and `def`
+ * and `rep` are NULL when the leaf has no such levels. Coercion flags come
+ * back as attributes so R can warn with the leaf's complete path. */
+SEXP qio_parquet_read_leaf(SEXP file, SEXP column, SEXP row_groups,
+                           SEXP kind, SEXP int64_mode) {
+    qio_parquet_handle_t *handle = qio_get_handle(file, 0);
+    if (handle->busy) {
+        Rf_error("qio: parquet file already has an active read");
+    }
+    const carquet_schema_t *schema = carquet_reader_schema(handle->reader);
+    int32_t file_columns = carquet_reader_num_columns(handle->reader);
+    if (TYPEOF(column) != INTSXP || XLENGTH(column) != 1 ||
+        INTEGER(column)[0] == NA_INTEGER || INTEGER(column)[0] < 1 ||
+        INTEGER(column)[0] > file_columns) {
+        Rf_error("qio: `column` must be one leaf index in [1, %d]",
+                 file_columns);
+    }
+    if (TYPEOF(kind) != INTSXP || XLENGTH(kind) != 1 ||
+        INTEGER(kind)[0] < QIO_KIND_DEFAULT ||
+        INTEGER(kind)[0] > QIO_KIND_UUID) {
+        Rf_error("qio: invalid column kind");
+    }
+    if (row_groups != R_NilValue && TYPEOF(row_groups) != INTSXP) {
+        Rf_error("qio: `row_groups` must be an integer vector or NULL");
+    }
+
+    qio_leaf_context_t context;
+    memset(&context, 0, sizeof(context));
+    context.handle = handle;
+    context.file_column = INTEGER(column)[0] - 1;
+    context.kind = INTEGER(kind)[0];
+    context.int64_mode = qio_int64_mode(int64_mode);
+
+    const carquet_schema_node_t *node =
+        qio_leaf_node_at(schema, context.file_column);
+    const carquet_logical_type_t *logical =
+        node ? carquet_schema_node_logical_type(node) : NULL;
+    if (logical && logical->id == CARQUET_LOGICAL_INTEGER &&
+        logical->params.integer.bit_width == 64 &&
+        !logical->params.integer.is_signed) {
+        context.is_unsigned64 = 1;
+    }
+    context.type_length = node ? carquet_schema_node_type_length(node) : 0;
+    carquet_physical_type_t type =
+        carquet_schema_column_type(schema, context.file_column);
+    const char *path = qio_column_path_cstr(schema, context.file_column);
+    switch (type) {
+    case CARQUET_PHYSICAL_BOOLEAN:
+    case CARQUET_PHYSICAL_INT32:
+    case CARQUET_PHYSICAL_INT64:
+    case CARQUET_PHYSICAL_INT96:
+    case CARQUET_PHYSICAL_FLOAT:
+    case CARQUET_PHYSICAL_DOUBLE:
+    case CARQUET_PHYSICAL_BYTE_ARRAY:
+        break;
+    case CARQUET_PHYSICAL_FIXED_LEN_BYTE_ARRAY:
+        if (context.kind != QIO_KIND_BINARY && context.kind != QIO_KIND_UUID) {
+            Rf_error("qio: column '%s' is FIXED_LEN_BYTE_ARRAY but the read "
+                     "plan did not ask for raw bytes",
+                     path);
+        }
+        if (context.type_length <= 0) {
+            Rf_error("qio: column '%s' declares an invalid "
+                     "FIXED_LEN_BYTE_ARRAY width of %d",
+                     path, context.type_length);
+        }
+        break;
+    default:
+        Rf_error("qio: column '%s' has unsupported physical type %s", path,
+                 carquet_physical_type_name(type));
+    }
+
+    context.num_row_groups = carquet_reader_num_row_groups(handle->reader);
+    uint8_t *mask = (uint8_t *)R_alloc(
+        (size_t)(context.num_row_groups > 0 ? context.num_row_groups : 1), 1);
+    memset(mask, row_groups == R_NilValue ? 1 : 0,
+           (size_t)(context.num_row_groups > 0 ? context.num_row_groups : 1));
+    if (row_groups != R_NilValue) {
+        for (R_xlen_t i = 0; i < XLENGTH(row_groups); i++) {
+            int value = INTEGER(row_groups)[i];
+            if (value == NA_INTEGER || value < 1 ||
+                value > context.num_row_groups) {
+                Rf_error("qio: row group %d is out of range [1, %d]", value,
+                         context.num_row_groups);
+            }
+            mask[value - 1] = 1;
+        }
+    }
+    context.row_group_mask = mask;
+
+    handle->busy = 1;
+    SEXP continuation = PROTECT(R_MakeUnwindCont());
+    SEXP result = PROTECT(R_UnwindProtect(qio_read_leaf_body, &context,
+                                          qio_read_leaf_cleanup, &context,
+                                          continuation));
+    Rf_setAttrib(result, Rf_install("int32_sentinel"),
+                 Rf_ScalarLogical(context.int32_sentinel != 0));
+    Rf_setAttrib(result, Rf_install("int64_coerced"),
+                 Rf_ScalarLogical(context.int64_coerced != 0));
+    UNPROTECT(2);
+    return result;
+}
+
 SEXP qio_parquet_collect(SEXP file, SEXP columns, SEXP row_groups,
                          SEXP batch_size, SEXP int64_mode,
                          SEXP column_kinds) {

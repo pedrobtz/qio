@@ -292,69 +292,62 @@ test_that("every registry converter is handled by qio_apply_converter()", {
 
 # --- Phase 2: complete-path selection --------------------------------------
 
-test_that("qio_resolve_columns() maps paths to leaf indexes", {
+test_that("qio_select() maps paths to output items in order of mention", {
   plan <- data.frame(
     path = c("s.b", "b", "label"),
     nested = c(TRUE, FALSE, FALSE),
+    collectible = c(FALSE, TRUE, TRUE),
+    note = c("no tree", NA, NA),
     stringsAsFactors = FALSE
   )
 
-  expect_null(qio_resolve_columns(plan, NULL))
-  expect_identical(qio_resolve_columns(plan, "b"), 2L)
-  expect_identical(qio_resolve_columns(plan, c("label", "s.b")), c(3L, 1L))
+  expect_identical(
+    qio_item_leaves(qio_select(plan, c("label", "b"), NULL)),
+    c(3L, 2L)
+  )
+  # Without a schema tree a nested leaf cannot be placed; it is skipped with
+  # the classed message, whether implied or named.
+  expect_message(
+    selected <- qio_select(plan, NULL, NULL),
+    "Skipping 1 nested Parquet column",
+    class = "qio_message_nested_skipped"
+  )
+  expect_identical(qio_item_leaves(selected), c(2L, 3L))
+  expect_message(
+    empty <- qio_select(plan, "s.b", NULL),
+    "Skipping 1 nested Parquet column"
+  )
+  expect_identical(qio_item_leaves(empty), integer(0))
+  # Nothing nested selected means no message at all.
+  expect_message(qio_select(plan, c("b", "label"), NULL), NA)
 })
 
-test_that("qio_resolve_columns() rejects unknown and ambiguous paths", {
+test_that("qio_select() rejects unknown and ambiguous paths", {
   plan <- data.frame(
     path = c("a.b", "a.b", "c"),
     nested = c(TRUE, FALSE, FALSE),
+    collectible = c(FALSE, TRUE, TRUE),
+    note = NA_character_,
     stringsAsFactors = FALSE
   )
 
-  expect_error(qio_resolve_columns(plan, "nope"), "Unknown Parquet column")
+  expect_error(qio_select(plan, "nope", NULL), "Unknown Parquet column: `nope`")
   expect_error(
-    qio_resolve_columns(plan, c("nope", "nah")),
-    "Unknown Parquet columns"
+    qio_select(plan, c("nope", "nah"), NULL),
+    "Unknown Parquet columns: `nope`, `nah`"
   )
   # A flat column named "a.b" and a nested leaf b under group a render the same
   # path; qio refuses to guess which was meant.
-  expect_error(qio_resolve_columns(plan, "a.b"), "Ambiguous Parquet column")
+  expect_error(qio_select(plan, "a.b", NULL), "Ambiguous Parquet column")
 })
 
-test_that("qio_select_columns() drops nested leaves and reports the count", {
-  plan <- data.frame(
-    path = c("s.b", "b", "label"),
-    nested = c(TRUE, FALSE, FALSE),
-    stringsAsFactors = FALSE
-  )
-
-  expect_message(
-    selected <- qio_select_columns(plan, NULL),
-    "Skipping 1 nested Parquet column"
-  )
-  expect_identical(selected, c(2L, 3L))
-
-  # Nothing nested selected means no message at all.
-  expect_message(qio_select_columns(plan, c("b", "label")), NA)
-  expect_identical(qio_select_columns(plan, c("b", "label")), c(2L, 3L))
-
-  # Selecting only nested leaves yields an empty selection, not an error.
-  expect_message(
-    empty <- qio_select_columns(plan, "s.b"),
-    "Skipping 1 nested Parquet column"
-  )
-  expect_identical(empty, integer(0))
-})
-
-test_that("qio_select_columns() returns NULL when every column is selectable", {
+test_that("qio_native_columns() passes NULL when every column is selected", {
   # NULL lets the native layer take its own all-columns path instead of
   # building an index vector for a wide file.
-  plan <- data.frame(
-    path = c("a", "b"),
-    nested = c(FALSE, FALSE),
-    stringsAsFactors = FALSE
-  )
-  expect_null(qio_select_columns(plan, NULL))
+  plan <- data.frame(path = c("a", "b"), stringsAsFactors = FALSE)
+  expect_null(qio_native_columns(plan, 1:2))
+  expect_identical(qio_native_columns(plan, 2:1), 2:1)
+  expect_identical(qio_native_columns(plan, integer(0)), integer(0))
 })
 
 # --- Phase 3.2: text, binary, UUID, FLOAT16 --------------------------------

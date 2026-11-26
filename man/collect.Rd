@@ -27,8 +27,9 @@ collect(x, ...)
 \item{columns}{Character vector of complete column paths, or \code{NULL} for all
 columns. Paths are matched exactly as \code{\link[=schema]{schema()}} and \code{\link[=names]{names()}} report
 them, dot-separated for nested leaves, and never by leaf name alone: two
-leaves may share a name under different parents. An unknown path is an
-error, and so is a path matching more than one leaf.}
+leaves may share a name under different parents. A path may also name a
+group, which selects every leaf under it; see "Nested columns". An unknown
+path is an error, and so is a path matching more than one leaf or group.}
 
 \item{row_groups}{Integer vector of 1-based row-group IDs, or \code{NULL} for all
 row groups.}
@@ -67,7 +68,8 @@ it answers "what am I about to get". Written with \code{message()}, so it goes
 to stderr and \code{suppressMessages()} silences it.}
 }
 \value{
-A data frame.
+A data frame. Nested columns are data-frame and list columns; see
+the "Nested columns" section.
 }
 \description{
 Columns are returned in requested order. Row groups are always returned in
@@ -81,12 +83,48 @@ otherwise scale with the largest selected row group rather than with
 anything the caller controls. Smaller batches lower peak memory and cost a
 little throughput on dictionary-encoded text.
 
-Nested and repeated columns are not materialized in qio 0.1.0. When a
-selection includes them, they are omitted and one message reports how many
-physical leaf columns were skipped. Nested reading is deferred to qio 0.2.0.
-If every selected column is nested, the result is a zero-column data frame
-with the selected number of rows.
+Nested columns are read since qio 0.2.0; see the "Nested columns" section.
 }
+\section{Nested columns}{
+
+A top-level Parquet group becomes one column of the result, named by its
+field name:
+\itemize{
+\item A \strong{struct} is a data-frame column with one column per field (structs
+nest to any depth). A null struct and a struct whose fields are all null
+both have \code{NA} in every field, so an optional struct carries which rows
+are null; \code{\link[=is_null_struct]{is_null_struct()}} returns them.
+\item A \strong{\code{LIST}} is a list-column with one vector per row: \code{NULL} for a null
+list, a zero-length vector for an empty one, and \code{NA} for a null element.
+A list of binary values is a list of lists of raw vectors.
+\item A \strong{\code{MAP}} is a list-column with one data frame per row, its columns
+always named \code{key} and \code{value}: \code{NULL} for a null map, a zero-row data
+frame for an empty one. Keys need not be strings or unique, so a map is
+not a named vector.
+}
+
+Under a null struct every field is \code{NA} and every list or map \code{NULL}.
+Elements, keys, values and fields get the same R types as flat columns, and
+\code{int64}, \code{time} and \code{tz} apply to them.
+
+\code{columns} takes the complete path of a leaf or of a group. A leaf path, such
+as \code{"add.path"}, returns its top-level struct with only the selected fields,
+in schema order, and keeps the struct's null rows; a group path selects
+every leaf under it. A \code{LIST} or \code{MAP} is selected whole by its own path:
+a path inside one (\code{"add.tags.key_value.key"}) is an error naming the path
+to use. Top-level columns come in the order they are first named.
+
+qio reads lists and maps whose elements, keys and values are not themselves
+lists, maps or structs (a repetition level of at most 1). Anything deeper --
+a list of structs, a list of lists, a map with struct values, legacy
+two-level lists, bare repeated fields and \code{VARIANT} -- is never flattened:
+read with every column, or through an ancestor, it is left out with one
+message of class \code{qio_message_nested_skipped}, whose \code{columns} field is a
+data frame of the leaves left out with their \code{group} and \code{reason}; named in
+\code{columns}, it is an error. \code{\link[=read_plan]{read_plan()}} marks such leaves not collectible
+and says why. \code{\link[=walk_batches]{walk_batches()}} reads flat columns only.
+}
+
 \section{Decimal columns}{
 
 A \code{DECIMAL} column is read as \code{double} with its scale applied, so its values

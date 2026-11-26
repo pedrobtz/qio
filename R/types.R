@@ -48,7 +48,10 @@
 #' | `FIXED_LEN_BYTE_ARRAY` | `DECIMAL(p, s)` | `double` | As `BYTE_ARRAY` `DECIMAL`. | no |
 #' | `FIXED_LEN_BYTE_ARRAY` | none, `INTERVAL`, other | `list` of `raw` | Fixed-width raw vectors, each validated against the declared length. `INTERVAL` has no R class in 0.1.0. | no |
 #' | any | `NULL` | `logical` | All `NA`, whatever the physical type: the annotation means the column carries no values. The row count is preserved. | no |
-#' | any | `LIST`, `MAP`, struct | not read | Skipped with one message per operation. Nested reading is deferred to 0.2.0. | no |
+#' | group | struct | `data.frame` column | One column per field; an optional struct's null rows are reported by [is_null_struct()]. | no |
+#' | group | `LIST` | `list` of vectors | `NULL` for a null list, a zero-length vector for an empty one, `NA` for a null element. Elements of plain types only. | no |
+#' | group | `MAP` | `list` of `data.frame` | Columns `key` and `value`; `NULL` for a null map, zero rows for an empty one. Keys and values of plain types only. | no |
+#' | group | deeper shapes | not read | Lists of structs, lists of lists, maps of structs, legacy lists and `VARIANT` are skipped with one message. | no |
 #'
 #' @section Where precision is lost:
 #'

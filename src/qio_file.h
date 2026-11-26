@@ -22,6 +22,9 @@ SEXP qio_parquet_bloom_check(SEXP file, SEXP column, SEXP values,
 SEXP qio_parquet_collect(SEXP file, SEXP columns, SEXP row_groups,
                          SEXP batch_size, SEXP int64_mode,
                          SEXP column_kinds);
+SEXP qio_parquet_schema_nodes(SEXP file);
+SEXP qio_parquet_read_leaf(SEXP file, SEXP column, SEXP row_groups,
+                           SEXP kind, SEXP int64_mode);
 SEXP qio_parquet_walk(SEXP file, SEXP columns, SEXP row_groups,
                       SEXP batch_size, SEXP callback, SEXP int64_mode,
                       SEXP column_kinds);

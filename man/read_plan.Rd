@@ -60,6 +60,11 @@ collected.}
 \item{\code{converter}}{Stable identifier of the conversion the reader uses.}
 \item{\code{nullable}}{Whether the column can contain nulls.}
 \item{\code{nested}}{Whether the leaf belongs to a nested or repeated field.}
+\item{\code{shape}}{Where the leaf sits: \code{"flat"} for a top-level column,
+\code{"struct"} for a field of a struct, \code{"list"} for the element of a
+\code{LIST} and \code{"map"} for the key or value of a \code{MAP} (each possibly
+inside structs), or \code{NA} for a shape qio does not read, which \code{note}
+names. See the "Nested columns" section of \code{\link[=collect]{collect()}}.}
 \item{\code{collectible}}{Whether \code{\link[=collect]{collect()}} can currently materialize the
 column.}
 \item{\code{note}}{Reason a column is not collectible, or a pending logical

@@ -29,6 +29,11 @@ or a decimal precision and scale; \code{NA} when there are none.}
 \item{\code{max_definition_level}}{Above 0 when the leaf is nullable.}
 \item{\code{max_repetition_level}}{Above 0 when the leaf is repeated.}
 }
+
+For a nested file the data frame also carries the file's group structure
+in an attribute, which \code{\link[=read_plan]{read_plan()}} uses to place each leaf in its
+struct, \code{LIST} or \code{MAP}; a schema data frame without it reads its nested
+leaves as not collectible.
 }
 \description{
 Reports every physical leaf column in the file, in file order.
