@@ -125,6 +125,11 @@ close_parquet <- function(x) {
 #'     \item{`max_repetition_level`}{Above 0 when the leaf is repeated.}
 #'   }
 #'
+#'   For a nested file the data frame also carries the file's group structure
+#'   in an attribute, which [read_plan()] uses to place each leaf in its
+#'   struct, `LIST` or `MAP`; a schema data frame without it reads its nested
+#'   leaves as not collectible.
+#'
 #' @seealso [read_plan()] for the R type each column will produce,
 #'   [column_chunks()] for how each is stored, and [parquet_type_mapping()] for
 #'   the physical fallbacks.
@@ -143,7 +148,13 @@ schema <- function(x, ...) {
 #' @export
 schema.qio_parquet_file <- function(x, ...) {
   qio_empty_dots(...)
-  .Call(C_qio_parquet_schema, x)
+  out <- .Call(C_qio_parquet_schema, x)
+  # A nested file carries its schema tree, which read_plan() needs to place
+  # each leaf in its struct, MAP or LIST. A flat file has none to carry.
+  if (any(out$path != out$name | out$max_repetition_level > 0L)) {
+    attr(out, "qio_nodes") <- qio_schema_nodes(x)
+  }
+  out
 }
 
 #' Inspect Parquet row groups
@@ -220,11 +231,44 @@ metadata.qio_parquet_file <- function(x, ...) {
 #' anything the caller controls. Smaller batches lower peak memory and cost a
 #' little throughput on dictionary-encoded text.
 #'
-#' Nested and repeated columns are not materialized in qio 0.1.0. When a
-#' selection includes them, they are omitted and one message reports how many
-#' physical leaf columns were skipped. Nested reading is deferred to qio 0.2.0.
-#' If every selected column is nested, the result is a zero-column data frame
-#' with the selected number of rows.
+#' Nested columns are read since qio 0.2.0; see the "Nested columns" section.
+#'
+#' @section Nested columns:
+#' A top-level Parquet group becomes one column of the result, named by its
+#' field name:
+#'
+#' * A **struct** is a data-frame column with one column per field (structs
+#'   nest to any depth). A null struct and a struct whose fields are all null
+#'   both have `NA` in every field, so an optional struct carries which rows
+#'   are null; [is_null_struct()] returns them.
+#' * A **`LIST`** is a list-column with one vector per row: `NULL` for a null
+#'   list, a zero-length vector for an empty one, and `NA` for a null element.
+#'   A list of binary values is a list of lists of raw vectors.
+#' * A **`MAP`** is a list-column with one data frame per row, its columns
+#'   always named `key` and `value`: `NULL` for a null map, a zero-row data
+#'   frame for an empty one. Keys need not be strings or unique, so a map is
+#'   not a named vector.
+#'
+#' Under a null struct every field is `NA` and every list or map `NULL`.
+#' Elements, keys, values and fields get the same R types as flat columns, and
+#' `int64`, `time` and `tz` apply to them.
+#'
+#' `columns` takes the complete path of a leaf or of a group. A leaf path, such
+#' as `"add.path"`, returns its top-level struct with only the selected fields,
+#' in schema order, and keeps the struct's null rows; a group path selects
+#' every leaf under it. A `LIST` or `MAP` is selected whole by its own path:
+#' a path inside one (`"add.tags.key_value.key"`) is an error naming the path
+#' to use. Top-level columns come in the order they are first named.
+#'
+#' qio reads lists and maps whose elements, keys and values are not themselves
+#' lists, maps or structs (a repetition level of at most 1). Anything deeper --
+#' a list of structs, a list of lists, a map with struct values, legacy
+#' two-level lists, bare repeated fields and `VARIANT` -- is never flattened:
+#' read with every column, or through an ancestor, it is left out with one
+#' message of class `qio_message_nested_skipped`, whose `columns` field is a
+#' data frame of the leaves left out with their `group` and `reason`; named in
+#' `columns`, it is an error. [read_plan()] marks such leaves not collectible
+#' and says why. [walk_batches()] reads flat columns only.
 #'
 #' @section Decimal columns:
 #' A `DECIMAL` column is read as `double` with its scale applied, so its values
@@ -252,8 +296,9 @@ metadata.qio_parquet_file <- function(x, ...) {
 #' @param columns Character vector of complete column paths, or `NULL` for all
 #'   columns. Paths are matched exactly as [schema()] and [names()] report
 #'   them, dot-separated for nested leaves, and never by leaf name alone: two
-#'   leaves may share a name under different parents. An unknown path is an
-#'   error, and so is a path matching more than one leaf.
+#'   leaves may share a name under different parents. A path may also name a
+#'   group, which selects every leaf under it; see "Nested columns". An unknown
+#'   path is an error, and so is a path matching more than one leaf or group.
 #' @param row_groups Integer vector of 1-based row-group IDs, or `NULL` for all
 #'   row groups.
 #' @param batch_size Positive number of rows decoded at a time. It bounds the
@@ -285,7 +330,8 @@ metadata.qio_parquet_file <- function(x, ...) {
 #'   it answers "what am I about to get". Written with `message()`, so it goes
 #'   to stderr and `suppressMessages()` silences it.
 #'
-#' @return A data frame.
+#' @return A data frame. Nested columns are data-frame and list columns; see
+#'   the "Nested columns" section.
 #'
 #' @seealso [open_parquet()] for the handle and for `mmap` and `threads`,
 #'   [walk_batches()] to process a file that does not fit in memory,
@@ -325,23 +371,58 @@ collect.qio_parquet_file <- function(
     time = options$time,
     tz = options$tz
   )
-  columns <- qio_select_columns(plan, qio_columns(columns))
-  qio_message_decimal(file_schema, plan, columns)
+  layout <- qio_plan_layout(file_schema)
+  items <- qio_select(plan, qio_columns(columns), layout)
+  leaves <- qio_item_leaves(items)
+  qio_message_decimal(file_schema, plan, leaves)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
   if (verbose) {
-    qio_message_plan(x, plan, columns, row_groups, batch_size)
+    qio_message_plan(x, plan, leaves, row_groups, batch_size)
   }
+  is_flat <- vapply(items, function(item) item$flat, logical(1))
+  flat <- qio_item_leaves(items[is_flat])
   result <- .Call(
     C_qio_parquet_collect,
     x,
-    columns,
+    qio_native_columns(plan, flat),
     row_groups,
     batch_size,
     qio_int64_code(options),
-    qio_column_kinds(plan, columns)
+    qio_column_kinds(plan, flat)
   )
-  qio_apply_plan(result, plan, columns)
+  result <- qio_apply_plan(result, plan, flat)
+  if (all(is_flat)) {
+    return(result)
+  }
+
+  # Nested columns are read leaf by leaf and assembled in R, then placed among
+  # the flat ones in the order the selection gave.
+  rows <- .row_names_info(result, 2L)
+  flags <- new.env(parent = emptyenv())
+  flags$int32 <- character()
+  flags$int64 <- character()
+  out <- vector("list", length(items))
+  out[is_flat] <- unclass(result)
+  for (k in which(!is_flat)) {
+    out[[k]] <- qio_read_nested_item(
+      x,
+      items[[k]],
+      plan,
+      file_schema,
+      layout,
+      row_groups,
+      qio_int64_code(options),
+      rows,
+      flags
+    )
+  }
+  qio_warn_nested_coercion(flags, options)
+  qio_frame(
+    out,
+    vapply(items, function(item) item$name, character(1)),
+    rows
+  )
 }
 
 #' Walk over batches from a Parquet file
@@ -359,6 +440,11 @@ collect.qio_parquet_file <- function(
 #' @param batch_size Positive number of rows decoded per batch.
 #'
 #' @return `x`, invisibly.
+#'
+#' @section Nested columns:
+#' `walk_batches()` reads flat columns only. Nested columns it would select,
+#' through `columns` or by default, are left out with one message of class
+#' `qio_message_nested_skipped`; [collect()] reads them.
 #'
 #' @section Decimal columns:
 #' Decimal columns are read as `double`, and one
@@ -398,15 +484,22 @@ walk_batches <- function(
     time = options$time,
     tz = options$tz
   )
-  columns <- qio_select_columns(plan, qio_columns(columns))
-  qio_message_decimal(file_schema, plan, columns)
+  items <- qio_select(
+    plan,
+    qio_columns(columns),
+    qio_plan_layout(file_schema),
+    nested = FALSE
+  )
+  leaves <- qio_item_leaves(items)
+  columns <- qio_native_columns(plan, leaves)
+  qio_message_decimal(file_schema, plan, leaves)
   row_groups <- qio_row_groups(row_groups)
   batch_size <- qio_whole_number(batch_size, "batch_size", minimum = 1L)
   if (verbose) {
-    qio_message_plan(x, plan, columns, row_groups, batch_size)
+    qio_message_plan(x, plan, leaves, row_groups, batch_size)
   }
   callback <- function(batch, index) {
-    FUN(qio_apply_plan(batch, plan, columns), index, ...)
+    FUN(qio_apply_plan(batch, plan, leaves), index, ...)
   }
   .Call(
     C_qio_parquet_walk,
@@ -622,45 +715,16 @@ qio_columns <- function(columns) {
   columns
 }
 
-# Resolve requested column paths to 1-based physical leaf indexes.
-#
-# Selection is by complete schema path, never by leaf name. Two leaves can
-# share a name under different parents, and carquet's own lookup compares leaf
-# names only, so passing a name to it can silently resolve to the wrong column.
-# Resolving here means the native layer only ever receives unambiguous indexes.
-qio_resolve_columns <- function(plan, columns) {
-  if (is.null(columns)) {
-    return(NULL)
-  }
-  matches <- lapply(columns, function(path) which(plan$path == path))
+# The leaves of a list of output items, in output order.
+qio_item_leaves <- function(items) {
+  as.integer(unlist(lapply(items, function(item) item$leaves)))
+}
 
-  unknown <- columns[lengths(matches) == 0L]
-  if (length(unknown)) {
-    stop(
-      "Unknown Parquet column",
-      if (length(unknown) == 1L) "" else "s",
-      ": ",
-      paste0("`", unknown, "`", collapse = ", "),
-      ".",
-      call. = FALSE
-    )
-  }
-
-  # A flat column literally named "a.b" and a nested leaf b under group a both
-  # render as the path "a.b". Refuse to guess which one was meant.
-  ambiguous <- columns[lengths(matches) > 1L]
-  if (length(ambiguous)) {
-    stop(
-      "Ambiguous Parquet column",
-      if (length(ambiguous) == 1L) "" else "s",
-      ": ",
-      paste0("`", ambiguous, "`", collapse = ", "),
-      ". More than one leaf has that path.",
-      call. = FALSE
-    )
-  }
-
-  as.integer(unlist(matches))
+# What the native layer is passed for a selection of flat leaves: NULL for
+# every column of the file in schema order, which takes its all-columns path,
+# or the 1-based leaf indexes.
+qio_native_columns <- function(plan, leaves) {
+  if (identical(leaves, seq_len(nrow(plan)))) NULL else leaves
 }
 
 # One code per selected column telling the native layer what R object to build.
@@ -823,32 +887,6 @@ qio_format_table <- function(df) {
     format(c(name, values))
   })
   sub("\\s+$", "", paste0("  ", do.call(paste, c(columns, sep = "  "))))
-}
-
-# Resolve a selection and drop leaves qio cannot materialize yet, reporting the
-# count once. Returns NULL for "every column", which lets the native layer take
-# its own all-columns path, or an integer vector of 1-based leaf indexes.
-qio_select_columns <- function(plan, columns) {
-  indexes <- qio_resolve_columns(plan, columns)
-  if (is.null(indexes)) {
-    if (!any(plan$nested)) {
-      return(NULL)
-    }
-    indexes <- seq_len(nrow(plan))
-  }
-
-  nested <- plan$nested[indexes]
-  n <- sum(nested)
-  if (n > 0L) {
-    message(
-      "Skipping ",
-      n,
-      " nested Parquet column",
-      if (n == 1L) "" else "s",
-      "; nested reading is deferred to qio 0.2.0."
-    )
-  }
-  indexes[!nested]
 }
 
 qio_row_groups <- function(row_groups) {

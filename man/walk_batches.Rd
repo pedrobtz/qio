@@ -30,8 +30,9 @@ receives extra arguments. Every argument after it is still name-only.}
 \item{columns}{Character vector of complete column paths, or \code{NULL} for all
 columns. Paths are matched exactly as \code{\link[=schema]{schema()}} and \code{\link[=names]{names()}} report
 them, dot-separated for nested leaves, and never by leaf name alone: two
-leaves may share a name under different parents. An unknown path is an
-error, and so is a path matching more than one leaf.}
+leaves may share a name under different parents. A path may also name a
+group, which selects every leaf under it; see "Nested columns". An unknown
+path is an error, and so is a path matching more than one leaf or group.}
 
 \item{row_groups}{Integer vector of 1-based row-group IDs, or \code{NULL} for all
 row groups.}
@@ -75,6 +76,13 @@ Calls \code{FUN(batch, index, ...)} for every batch. Each batch is an independen
 data frame and can be retained by the callback when desired. Callback return
 values are discarded.
 }
+\section{Nested columns}{
+
+\code{walk_batches()} reads flat columns only. Nested columns it would select,
+through \code{columns} or by default, are left out with one message of class
+\code{qio_message_nested_skipped}; \code{\link[=collect]{collect()}} reads them.
+}
+
 \section{Decimal columns}{
 
 Decimal columns are read as \code{double}, and one

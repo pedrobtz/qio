@@ -73,6 +73,7 @@ test_that("public result frames have exactly the documented columns", {
       "converter",
       "nullable",
       "nested",
+      "shape",
       "collectible",
       "note"
     )

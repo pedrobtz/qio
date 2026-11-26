@@ -427,6 +427,11 @@ qio_parse_time_details <- function(details) {
 #'     \item{`converter`}{Stable identifier of the conversion the reader uses.}
 #'     \item{`nullable`}{Whether the column can contain nulls.}
 #'     \item{`nested`}{Whether the leaf belongs to a nested or repeated field.}
+#'     \item{`shape`}{Where the leaf sits: `"flat"` for a top-level column,
+#'       `"struct"` for a field of a struct, `"list"` for the element of a
+#'       `LIST` and `"map"` for the key or value of a `MAP` (each possibly
+#'       inside structs), or `NA` for a shape qio does not read, which `note`
+#'       names. See the "Nested columns" section of [collect()].}
 #'     \item{`collectible`}{Whether [collect()] can currently materialize the
 #'       column.}
 #'     \item{`note`}{Reason a column is not collectible, or a pending logical
@@ -542,10 +547,20 @@ qio_build_plan <- function(schema, options = qio_read_options()) {
   repeated <- schema$max_repetition_level > 0L
   nested <- repeated | schema$path != schema$name
 
-  # A column is collectible when its physical type maps to an R type and it is
-  # not repeated (nested). An unapplied logical annotation does not block
+  # The shape of each leaf comes from the schema tree that schema() attaches
+  # to a nested file. Without one (a hand-made schema data frame), nested
+  # leaves cannot be placed and are not collectible.
+  layout <- qio_plan_layout(schema)
+  shape <- ifelse(nested, NA_character_, "flat")
+  if (!is.null(layout)) {
+    shape <- layout$leaves$shape
+  }
+
+  # A column is collectible when its physical type maps to an R type and its
+  # shape is one qio reads: flat, or a leaf of a struct, a MAP or a LIST of
+  # repetition level 1. An unapplied logical annotation does not block
   # collection; the column is still read from its physical type.
-  collectible <- !is.na(r_type) & !nested
+  collectible <- !is.na(r_type) & !is.na(shape)
 
   # Notes, in increasing priority so the most specific reason wins.
   note <- rep(NA_character_, nrow(schema))
@@ -569,10 +584,21 @@ qio_build_plan <- function(schema, options = qio_read_options()) {
     " is not supported for reading"
   )
 
-  note[nested] <- paste0(
-    "nested or repeated column is skipped; nested reading is deferred to ",
-    "qio 0.2.0"
-  )
+  unreadable <- nested & is.na(shape)
+  if (is.null(layout)) {
+    note[unreadable] <- paste0(
+      "nested or repeated column is skipped; the schema has no group ",
+      "structure to place it"
+    )
+  } else {
+    note[unreadable] <- paste0(
+      "`",
+      layout$leaves$group[unreadable],
+      "` is a ",
+      layout$leaves$reason[unreadable],
+      ", which qio does not read"
+    )
+  }
 
   plan <- data.frame(
     column = seq_len(nrow(schema)),
@@ -584,6 +610,7 @@ qio_build_plan <- function(schema, options = qio_read_options()) {
     converter = converter,
     nullable = nullable,
     nested = nested,
+    shape = shape,
     collectible = collectible,
     note = note,
     stringsAsFactors = FALSE
@@ -611,6 +638,20 @@ qio_apply_plan <- function(df, plan, columns = NULL) {
     df[[i]] <- qio_apply_converter(df[[i]], plan$converter[[columns[[i]]]])
   }
   df
+}
+
+# The schema tree of a schema() data frame, laid out per leaf, or NULL when it
+# has none (a flat file, or a hand-made schema).
+qio_plan_layout <- function(schema) {
+  nodes <- attr(schema, "qio_nodes", exact = TRUE)
+  if (is.null(nodes)) {
+    return(NULL)
+  }
+  layout <- qio_nested_layout(nodes)
+  if (nrow(layout$leaves) != nrow(schema)) {
+    stop("qio: the schema tree does not describe every column.", call. = FALSE)
+  }
+  layout
 }
 
 qio_apply_converter <- function(x, converter) {

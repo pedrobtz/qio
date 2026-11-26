@@ -7,11 +7,13 @@
 #' @section Not exposed in 0.1.0:
 #'
 #' \describe{
-#'   \item{Nested and repeated columns}{`LIST`, `MAP`, and struct columns are
-#'     skipped on read, with one message per operation. carquet returns the
-#'     definition and repetition levels needed to rebuild them, but assembling
-#'     R objects from those levels, and deciding how a null list differs from an
-#'     empty one, is qio's work and is deferred to 0.2.0.}
+#'   \item{Deeply nested columns}{Since 0.2.0 structs, and `LIST` and `MAP`
+#'     columns of plain values, are read (see the "Nested columns" section of
+#'     [collect()]). Anything with a repetition level above 1 -- a list of
+#'     structs, a list of lists, a map with struct values -- and legacy list
+#'     encodings, bare repeated fields and `VARIANT` are skipped with one
+#'     message, never flattened. [walk_batches()] reads flat columns only, and
+#'     [write_parquet()] writes flat columns only.}
 #'   \item{Predicate pushdown and page filters}{carquet can skip pages using
 #'     statistics. qio reads whole columns. Filtering happens in R, after the
 #'     read, where the answer does not depend on a writer's honesty about its

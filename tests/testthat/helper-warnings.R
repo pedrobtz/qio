@@ -15,3 +15,18 @@ collect_warnings <- function(expr) {
   )
   list(value = value, warnings = messages)
 }
+
+# Moved from test-external.R so the shuffled suite can find it (#73).
+# Every condition of `class` an expression signals, muffled so it neither
+# prints nor stops the expression; other messages pass through untouched.
+decimal_conditions <- function(expr) {
+  seen <- list()
+  value <- withCallingHandlers(
+    expr,
+    qio_message_decimal_double = function(m) {
+      seen[[length(seen) + 1L]] <<- m
+      invokeRestart("muffleMessage")
+    }
+  )
+  list(value = value, conditions = seen)
+}

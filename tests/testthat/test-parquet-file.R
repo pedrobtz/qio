@@ -500,7 +500,8 @@ test_that("a zero-column selection preserves the row count in every API", {
   path <- ext_nested <- test_path("parquet", "name_collision.parquet")
   file <- local_parquet_file(path)
 
-  result <- suppressMessages(collect(file, columns = "s.b"))
+  # Nothing selected in collect(); a nested leaf, which walk_batches() skips.
+  result <- collect(file, columns = character(0))
   expect_identical(dim(result), c(3L, 0L))
 
   rows <- 0L
