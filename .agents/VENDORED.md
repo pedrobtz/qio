@@ -7,7 +7,7 @@ then re-vendor from it.
 | Library | Version | Commit | Retrieved | License |
 |---|---|---|---|---|
 | [carquet](https://github.com/Vitruves/carquet) | v0.6.0 | `06efab6dce5475a7faa86f0938d42e9078b6d440` | 2026-06-29 | MIT (`src/carquet/LICENSE`) |
-| [carquet fork](https://github.com/pedrobtz/carquet) | `qio` branch | `129b09c042ce849c05332b56336c3b0077328e41` | 2026-11-14 | MIT (`src/carquet/LICENSE`) |
+| [carquet fork](https://github.com/pedrobtz/carquet) | `qio` branch | `9f31d2ecadd985b8e0fc48b53eec038835c16b7b` | 2026-11-26 | MIT (`src/carquet/LICENSE`) |
 | [zstd](https://github.com/facebook/zstd) | v1.5.7 | `f8745da6ff1ad1e7bab384bd1f9d742439278e99` | 2026-06-29 | BSD-3-Clause (`src/zstd/LICENSE`) |
 | [lz4](https://github.com/lz4/lz4) | v1.10.0 | `ebb370ca83af193212df4dcbadcc5d87bc0de2f0` | 2026-06-29 | BSD-2-Clause (`src/lz4/LICENSE`) |
 
@@ -473,6 +473,20 @@ carquet test, so each can become its own pull request. Under ASan and UBSan,
 `test_writer_extensions` passes; four other suites report undefined behavior
 in `encoding/delta.c` and the x86 SIMD kernels, files these patches do not
 touch (2026-11-14, macOS arm64).
+
+### Step over an empty data page (`9f31d2e`)
+
+`reader/page_reader.c`. **Read failure.** A data page whose header says
+`num_values = 0` was rejected as an invalid value count, and the column read
+stopped there. Such a page is legal and holds nothing, and Apache Arrow writes
+one between two pages of a repeated column when a page fills at a record
+boundary, so a list column pyarrow wrote with small pages could not be read
+past it. Zero is now accepted (negative stays invalid), the page is marked
+loaded with no values instead of being decoded, and
+`carquet_column_ensure_page_loaded()` moves on while the chunk still has
+values. qio #73 (`nested_shapes-pages-v1.parquet` and `-pages-v2`); carquet
+test `empty_data_page` in `test_nested`. Upstream v0.9.0 still rejects the
+page. **Not yet reported upstream.**
 
 ## Header dependencies
 
