@@ -1,6 +1,23 @@
 # Changelog
 
+## qio (development version)
+
+- The message
+  [`read_parquet()`](https://pedrobtz.github.io/qio/reference/read_parquet.md),
+  [`collect()`](https://pedrobtz.github.io/qio/reference/collect.md) and
+  [`walk_batches()`](https://pedrobtz.github.io/qio/reference/walk_batches.md)
+  emit when they read `DECIMAL` columns as `double` is now a condition
+  of class `qio_message_decimal_double` (a `message`). It names the
+  columns with their precision and scale, and its `columns` field is a
+  data frame of `path`, `physical_type`, `precision` and `scale`, so a
+  caller can muffle it with
+  [`withCallingHandlers()`](https://rdrr.io/r/base/conditions.html) for
+  the columns it has checked
+  ([\#74](https://github.com/pedrobtz/qio/issues/74)).
+
 ## qio 0.1.2
+
+CRAN release: 2026-11-14
 
 ### New features
 

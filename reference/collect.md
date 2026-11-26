@@ -118,6 +118,27 @@ many physical leaf columns were skipped. Nested reading is deferred to
 qio 0.2.0. If every selected column is nested, the result is a
 zero-column data frame with the selected number of rows.
 
+## Decimal columns
+
+A `DECIMAL` column is read as `double` with its scale applied, so its
+values may be inexact. The unscaled integer survives the conversion only
+while it is within `[-2^53, 2^53]`, which every `DECIMAL(p, s)` with
+`p <= 15` satisfies; the result is then the `double` nearest the
+decimal. A read that selects any decimal column signals one message, of
+class `qio_message_decimal_double` (inheriting from `message` and
+`condition`), however many columns, row groups or batches it covers. Its
+`columns` field is a data frame with one row per selected decimal
+column: `path` (the complete column path), `physical_type`, and integer
+`precision` and `scale`. A caller that has checked those columns can
+silence exactly this message:
+
+    withCallingHandlers(
+      collect(pf),
+      qio_message_decimal_double = function(m) {
+        if (all(m$columns$precision <= 15L)) invokeRestart("muffleMessage")
+      }
+    )
+
 ## See also
 
 [`open_parquet()`](https://pedrobtz.github.io/qio/reference/open_parquet.md)

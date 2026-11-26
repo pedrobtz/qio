@@ -105,6 +105,13 @@ walk_batches(
 
 `x`, invisibly.
 
+## Decimal columns
+
+Decimal columns are read as `double`, and one
+`qio_message_decimal_double` message per call (not per batch) lists
+them; see the "Decimal columns" section of
+[`collect()`](https://pedrobtz.github.io/qio/reference/collect.md).
+
 ## See also
 
 [`collect()`](https://pedrobtz.github.io/qio/reference/collect.md) for

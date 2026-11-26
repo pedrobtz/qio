@@ -91,6 +91,12 @@ to preview the R type of each column before reading.
 Nested and repeated columns are skipped with one message. Nested reading
 is deferred to qio 0.2.0.
 
+`DECIMAL` columns are read as `double` with their scale applied, and one
+message of class `qio_message_decimal_double` names them and says the
+values may be inexact; its `columns` field lets a caller muffle it for
+columns it has checked. See the "Decimal columns" section of
+[`collect()`](https://pedrobtz.github.io/qio/reference/collect.md).
+
 The file is memory-mapped for the duration of the read (falling back to
 buffered reads if mapping fails) so columns decode in parallel; the
 mapping is released before the function returns.
